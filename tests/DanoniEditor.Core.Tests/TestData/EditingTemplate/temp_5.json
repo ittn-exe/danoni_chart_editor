@@ -1,0 +1,16 @@
+{
+  "keyTypeId": "5",
+  "keyTypeName": "5key",
+  "keyCount": 5,
+  "comment": "",
+  "blank": 57.5,
+  "divideCnt": 4,
+  "posMax": 5,
+  "lanes": [
+    { "laneId": "left", "dataName": "left", "displayOrder": 0, "keyAssign": "S", "colorGroup": 0, "posIndex": 0, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 0, "engineLaneNum": 0 },
+    { "laneId": "down", "dataName": "down", "displayOrder": 1, "keyAssign": "D", "colorGroup": 0, "posIndex": 1, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": -90, "engineLaneNum": 1 },
+    { "laneId": "up", "dataName": "up", "displayOrder": 2, "keyAssign": "F", "colorGroup": 0, "posIndex": 2, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 90, "engineLaneNum": 2 },
+    { "laneId": "right", "dataName": "right", "displayOrder": 3, "keyAssign": "J", "colorGroup": 0, "posIndex": 3, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 180, "engineLaneNum": 3 },
+    { "laneId": "space", "dataName": "space", "displayOrder": 4, "keyAssign": "Space", "colorGroup": 2, "posIndex": 4, "scrollDirection": "down", "noteGraphic": "onigiri", "rotationAngle": 0, "engineLaneNum": 4 }
+  ]
+}

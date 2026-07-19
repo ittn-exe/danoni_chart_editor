@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{15C6F358-61DA-42E0-8368-0C73D0A496BD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanoniEditor.Core", "src\DanoniEditor.Core\DanoniEditor.Core.csproj", "{E0606641-1A66-48BA-87C6-0D5C2AC75410}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{EF1CDE65-0ACE-4D41-8465-561DDD1D0B83}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanoniEditor.Core.Tests", "tests\DanoniEditor.Core.Tests\DanoniEditor.Core.Tests.csproj", "{F58DE913-0495-4297-AAA1-EF5DCCEF8434}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanoniEditor.App", "src\DanoniEditor.App\DanoniEditor.App.csproj", "{7391ED90-DD79-4397-8F8E-C95ECB774BD8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanoniEditor.Editing", "src\DanoniEditor.Editing\DanoniEditor.Editing.csproj", "{3E9B6DF3-5228-416E-8C59-50886BA02174}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E0606641-1A66-48BA-87C6-0D5C2AC75410}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E0606641-1A66-48BA-87C6-0D5C2AC75410}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E0606641-1A66-48BA-87C6-0D5C2AC75410}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E0606641-1A66-48BA-87C6-0D5C2AC75410}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F58DE913-0495-4297-AAA1-EF5DCCEF8434}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F58DE913-0495-4297-AAA1-EF5DCCEF8434}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F58DE913-0495-4297-AAA1-EF5DCCEF8434}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F58DE913-0495-4297-AAA1-EF5DCCEF8434}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7391ED90-DD79-4397-8F8E-C95ECB774BD8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7391ED90-DD79-4397-8F8E-C95ECB774BD8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7391ED90-DD79-4397-8F8E-C95ECB774BD8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7391ED90-DD79-4397-8F8E-C95ECB774BD8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3E9B6DF3-5228-416E-8C59-50886BA02174}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3E9B6DF3-5228-416E-8C59-50886BA02174}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3E9B6DF3-5228-416E-8C59-50886BA02174}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3E9B6DF3-5228-416E-8C59-50886BA02174}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E0606641-1A66-48BA-87C6-0D5C2AC75410} = {15C6F358-61DA-42E0-8368-0C73D0A496BD}
+		{F58DE913-0495-4297-AAA1-EF5DCCEF8434} = {EF1CDE65-0ACE-4D41-8465-561DDD1D0B83}
+		{7391ED90-DD79-4397-8F8E-C95ECB774BD8} = {15C6F358-61DA-42E0-8368-0C73D0A496BD}
+		{3E9B6DF3-5228-416E-8C59-50886BA02174} = {15C6F358-61DA-42E0-8368-0C73D0A496BD}
+	EndGlobalSection
+EndGlobal

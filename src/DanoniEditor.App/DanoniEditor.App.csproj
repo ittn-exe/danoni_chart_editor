@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Linux CI上でのコンパイルを許可(実行はWindowsのみ) -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- 単独EXE配布(仕様書2章): dotnet publish -r win-x64 -p:PublishSingleFile=true -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DanoniEditor.Core\DanoniEditor.Core.csproj" />
+    <ProjectReference Include="..\DanoniEditor.Editing\DanoniEditor.Editing.csproj" />
+  </ItemGroup>
+
+  <!-- ./template と ./img はexeと同じフォルダにコピーする(Debug実行にもpublish単独exe配布にも対応、仕様書2章/3.1)。
+       開発中は上位ディレクトリ探索でも見つかるが、publish後は単独exeなので同階層コピーが必須。 -->
+  <ItemGroup>
+    <Content Include="..\..\template\**\*.json" Link="template\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\img\**\*.png" Link="img\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\img')" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.3.0" />
+  </ItemGroup>
+</Project>

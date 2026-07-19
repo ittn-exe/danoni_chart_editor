@@ -1,0 +1,102 @@
+{
+  "keyTypeId": "7i",
+  "keyTypeName": "7ikey",
+  "keyCount": 7,
+  "comment": "",
+  "blank": 55,
+  "divideCnt": 6,
+  "posMax": 7,
+  "lanes": [
+    {
+      "laneId": "left",
+      "dataName": "left",
+      "frzDataNameOverride": null,
+      "displayOrder": 0,
+      "keyAssign": "Z",
+      "colorGroup": 2,
+      "posIndex": 0,
+      "scrollDirection": "up",
+      "noteGraphic": "giko",
+      "rotationAngle": 0,
+      "engineLaneNum": 0
+    },
+    {
+      "laneId": "leftdia",
+      "dataName": "leftdia",
+      "frzDataNameOverride": "frzLdia",
+      "displayOrder": 1,
+      "keyAssign": "X",
+      "colorGroup": 2,
+      "posIndex": 1,
+      "scrollDirection": "up",
+      "noteGraphic": "onigiri",
+      "rotationAngle": 0,
+      "engineLaneNum": 1
+    },
+    {
+      "laneId": "down",
+      "dataName": "down",
+      "frzDataNameOverride": null,
+      "displayOrder": 2,
+      "keyAssign": "C",
+      "colorGroup": 2,
+      "posIndex": 2,
+      "scrollDirection": "up",
+      "noteGraphic": "iyo",
+      "rotationAngle": 0,
+      "engineLaneNum": 2
+    },
+    {
+      "laneId": "space",
+      "dataName": "space",
+      "frzDataNameOverride": null,
+      "displayOrder": 3,
+      "keyAssign": "←",
+      "colorGroup": 0,
+      "posIndex": 3,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 0,
+      "engineLaneNum": 3
+    },
+    {
+      "laneId": "up",
+      "dataName": "up",
+      "frzDataNameOverride": null,
+      "displayOrder": 4,
+      "keyAssign": "↓",
+      "colorGroup": 0,
+      "posIndex": 4,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": -90,
+      "engineLaneNum": 4
+    },
+    {
+      "laneId": "rightdia",
+      "dataName": "rightdia",
+      "frzDataNameOverride": "frzRdia",
+      "displayOrder": 5,
+      "keyAssign": "↑",
+      "colorGroup": 0,
+      "posIndex": 5,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 90,
+      "engineLaneNum": 5
+    },
+    {
+      "laneId": "right",
+      "dataName": "right",
+      "frzDataNameOverride": null,
+      "displayOrder": 6,
+      "keyAssign": "→",
+      "colorGroup": 0,
+      "posIndex": 6,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 180,
+      "engineLaneNum": 6
+    }
+  ]
+}

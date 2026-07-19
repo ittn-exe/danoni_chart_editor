@@ -1,0 +1,202 @@
+{
+  "keyTypeId": "14i",
+  "keyTypeName": "14ikey",
+  "keyCount": 14,
+  "comment": "",
+  "blank": 55,
+  "divideCnt": 7,
+  "posMax": 15,
+  "lanes": [
+    {
+      "laneId": "sleft",
+      "dataName": "sleft",
+      "frzDataNameOverride": "sfrzLeft",
+      "displayOrder": 0,
+      "keyAssign": "S",
+      "colorGroup": 0,
+      "posIndex": 8,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 0,
+      "engineLaneNum": 7
+    },
+    {
+      "laneId": "sleftdia",
+      "dataName": "sleftdia",
+      "frzDataNameOverride": "sfrzLdia",
+      "displayOrder": 1,
+      "keyAssign": "D",
+      "colorGroup": 1,
+      "posIndex": 9,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": -45,
+      "engineLaneNum": 8
+    },
+    {
+      "laneId": "sdown",
+      "dataName": "sdown",
+      "frzDataNameOverride": "sfrzDown",
+      "displayOrder": 2,
+      "keyAssign": "F",
+      "colorGroup": 0,
+      "posIndex": 10,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": -90,
+      "engineLaneNum": 9
+    },
+    {
+      "laneId": "sspace",
+      "dataName": "sspace",
+      "frzDataNameOverride": "sfrzSpace",
+      "displayOrder": 3,
+      "keyAssign": "Space",
+      "colorGroup": 2,
+      "posIndex": 11,
+      "scrollDirection": "down",
+      "noteGraphic": "onigiri",
+      "rotationAngle": 0,
+      "engineLaneNum": 10
+    },
+    {
+      "laneId": "sup",
+      "dataName": "sup",
+      "frzDataNameOverride": "sfrzUp",
+      "displayOrder": 4,
+      "keyAssign": "J",
+      "colorGroup": 0,
+      "posIndex": 12,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 90,
+      "engineLaneNum": 11
+    },
+    {
+      "laneId": "srightdia",
+      "dataName": "srightdia",
+      "frzDataNameOverride": "sfrzRdia",
+      "displayOrder": 5,
+      "keyAssign": "K",
+      "colorGroup": 1,
+      "posIndex": 13,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 135,
+      "engineLaneNum": 12
+    },
+    {
+      "laneId": "sright",
+      "dataName": "sright",
+      "frzDataNameOverride": "sfrzRight",
+      "displayOrder": 6,
+      "keyAssign": "L",
+      "colorGroup": 0,
+      "posIndex": 14,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 180,
+      "engineLaneNum": 13
+    },
+    {
+      "laneId": "gor",
+      "dataName": "gor",
+      "frzDataNameOverride": null,
+      "displayOrder": 7,
+      "keyAssign": [
+        "Z",
+        "W"
+      ],
+      "colorGroup": 2,
+      "posIndex": 0,
+      "scrollDirection": "up",
+      "noteGraphic": "giko",
+      "rotationAngle": 0,
+      "engineLaneNum": 0
+    },
+    {
+      "laneId": "space",
+      "dataName": "space",
+      "frzDataNameOverride": null,
+      "displayOrder": 8,
+      "keyAssign": [
+        "X",
+        "E"
+      ],
+      "colorGroup": 2,
+      "posIndex": 1,
+      "scrollDirection": "up",
+      "noteGraphic": "onigiri",
+      "rotationAngle": 0,
+      "engineLaneNum": 1
+    },
+    {
+      "laneId": "iyo",
+      "dataName": "iyo",
+      "frzDataNameOverride": null,
+      "displayOrder": 9,
+      "keyAssign": [
+        "C",
+        "R"
+      ],
+      "colorGroup": 2,
+      "posIndex": 2,
+      "scrollDirection": "up",
+      "noteGraphic": "iyo",
+      "rotationAngle": 0,
+      "engineLaneNum": 2
+    },
+    {
+      "laneId": "left",
+      "dataName": "left",
+      "frzDataNameOverride": null,
+      "displayOrder": 10,
+      "keyAssign": "←",
+      "colorGroup": 3,
+      "posIndex": 3,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 0,
+      "engineLaneNum": 3
+    },
+    {
+      "laneId": "down",
+      "dataName": "down",
+      "frzDataNameOverride": null,
+      "displayOrder": 11,
+      "keyAssign": "↓",
+      "colorGroup": 3,
+      "posIndex": 4,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": -90,
+      "engineLaneNum": 4
+    },
+    {
+      "laneId": "up",
+      "dataName": "up",
+      "frzDataNameOverride": null,
+      "displayOrder": 12,
+      "keyAssign": "↑",
+      "colorGroup": 3,
+      "posIndex": 5,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 90,
+      "engineLaneNum": 5
+    },
+    {
+      "laneId": "right",
+      "dataName": "right",
+      "frzDataNameOverride": null,
+      "displayOrder": 13,
+      "keyAssign": "→",
+      "colorGroup": 3,
+      "posIndex": 6,
+      "scrollDirection": "up",
+      "noteGraphic": "arrow",
+      "rotationAngle": 180,
+      "engineLaneNum": 6
+    }
+  ]
+}
