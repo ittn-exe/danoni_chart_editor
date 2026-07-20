@@ -1,4 +1,5 @@
 using System.Globalization;
+using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Naming;
 using DanoniEditor.Core.Timing;
@@ -248,10 +249,14 @@ public sealed class DosImporter
             // dos.txt側は"0xRRGGBB"表記のことがあるが、エディタ内部(WPFのColorConverter)は
             // "#RRGGBB"しか解釈できないため、取り込み時に0xプレフィックスを#へ正規化する
             // (2026-07-16i: 「6桁カラーコードとして認識できない」バグ修正)。
+            // 2026-07-24: ncolor_data読み込み(状態復元)がこの値(レーンの既定色)を必要とするため、
+            // ImportNColorDataより前に確定させる(以前は後で設定していたが、順序を入れ替えた)。
             if (p.TryGetValue($"setColor{suffix}", out var sc) && sc.Length > 0)
                 tab.SetColorOverride = [.. sc.Split(',', StringSplitOptions.TrimEntries).Select(NormalizeColorToken)];
             if (p.TryGetValue($"frzColor{suffix}", out var fc) && fc.Length > 0)
                 tab.FrzColorOverride = [.. fc.Split(',', StringSplitOptions.TrimEntries).Select(NormalizeColorToken)];
+
+            ImportNColorData($"ncolor{suffix}_data", p, project, tab, template, Snap, warnings);
 
             project.Tabs.Add(tab);
         }
@@ -293,6 +298,218 @@ public sealed class DosImporter
     private static double? GetDouble(Dictionary<string, string> p, string key) =>
         p.TryGetValue(key, out var v) && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
             ? d : null;
+
+    /// <summary>対応済みTargetPattern(2026-07-24、Hit/Shadow系追加)。省略時("")はArrow扱い。</summary>
+    private static readonly string[] SupportedTargetPatterns =
+        ["", "Normal", "NormalBar", "NormalShadow", "ArrowShadow", "Hit", "HitBar", "HitShadow"];
+
+    /// <summary>
+    /// ncolor_dataの読み込み(色編集モード、2026-07-23。永続状態モデルへ2026-07-24に再設計、
+    /// 同日allFlg・Hit/Shadow系対応を追加)。本家仕様ではncolor_data(allFlg無し)は「指定フレーム
+    /// 以降ずっと持続する」永続的な色状態変更のため、行を単純に「そのtickのノートの色」として
+    /// 読み込むと実際の見た目とズレる。本エディタが対応する範囲(個別矢印番号、TargetPatternは
+    /// Arrow/ArrowShadow/Normal/NormalBar/NormalShadow/Hit/HitBar/HitShadowのみ)の行を
+    /// TargetPatternごとにtick順の「色状態の変化点」として集約し、レーン内の各ノート/フリーズに
+    /// ついて「自分の出現tick時点での状態色」を復元してレーン既定色と異なる場合のみ
+    /// ColorOverridesへ格納する(DosExporterの出力アルゴリズムの逆変換)。したがって色変化点は
+    /// 必ずしもノート自身のtickと一致する必要はない(以前はtick一致を要求してそれ以外を警告付き
+    /// スキップしていたが、本家仕様上は不要な制約だったため撤廃した)。4番目のフィールド(all/ALL)は
+    /// NColorEntry.AllFlagとして保持する(1エンティティに寄与する複数トラックで異なるAllFlagが
+    /// 復元された場合は、いずれか1つでもtrueならエントリ全体をtrueとして扱う)。範囲指定(0...7)・
+    /// スラッシュ複数・グループ(g0等)・未対応TargetPatternの照合不能な行は、データを壊さないよう
+    /// 無視した上で件数を警告として積む(仕様書の「読めない物は警告、握りつぶさない」方針に合わせる)。
+    /// 値は本エディタの出力(改行なし1行CSV)と、手書き想定の複数行形式の両方を受け付ける。
+    /// </summary>
+    private static void ImportNColorData(string paramName, Dictionary<string, string> p,
+        ChartProject project, DifficultyTab tab, KeyTemplate template, Func<double, long> snap, List<string> warnings)
+    {
+        if (!p.TryGetValue(paramName, out var raw) || raw.Length == 0) return;
+
+        var engineToLane = new Dictionary<int, int>();
+        for (int j = 0; j < template.KeyCount; j++) engineToLane[template.Lanes[j].EngineLaneNum] = j;
+
+        var lines = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        List<string> rows;
+        if (lines.Count > 1)
+        {
+            rows = lines; // 手書き想定: 1行=1エントリ
+        }
+        else
+        {
+            // 本エディタの出力形式: 改行無しでFrame,ColorNo,ColorCode(,allFlg)の組が連続する1行CSV。
+            // allFlg列は行によって有無が変わる(可変長)ため、次のエントリの先頭(Frame)と
+            // 区別するために4番目のトークンが"all"かどうかを見て3個組/4個組を判定する
+            // (色コード自体が文字列"all"になることは無い前提)。
+            var tokens = raw.Split(',', StringSplitOptions.TrimEntries);
+            rows = [];
+            int i = 0;
+            while (i + 2 < tokens.Length)
+            {
+                bool hasAllFlg = i + 3 < tokens.Length &&
+                    tokens[i + 3].Equals("all", StringComparison.OrdinalIgnoreCase);
+                int take = hasAllFlg ? 4 : 3;
+                rows.Add(string.Join(",", tokens.Skip(i).Take(take)));
+                i += take;
+            }
+        }
+
+        // TargetPattern別・レーン別にtick順の色変化点を集約する(キー: "" | "Normal" | "NormalBar" |
+        // "NormalShadow" | "ArrowShadow" | "Hit" | "HitBar" | "HitShadow")
+        var changesByPattern = SupportedTargetPatterns.ToDictionary(
+            pat => pat, _ => new Dictionary<int, List<(long Tick, string Color, bool AllFlag)>>());
+
+        int skipped = 0;
+        foreach (var row in rows)
+        {
+            var fields = row.Split(',', StringSplitOptions.TrimEntries);
+            if (fields.Length < 3) { skipped++; continue; }
+            if (fields[1] == "-") continue; // コメント行(仕様書「コメント」節)は静かに無視
+            bool allFlag = fields.Length > 3 && fields[3].Equals("all", StringComparison.OrdinalIgnoreCase);
+
+            string colorNoField = fields[1];
+            string numPart = colorNoField;
+            string target = "";
+            int colonIdx = colorNoField.IndexOf(':');
+            if (colonIdx >= 0)
+            {
+                numPart = colorNoField[..colonIdx];
+                target = colorNoField[(colonIdx + 1)..];
+            }
+            string? matchedPattern = SupportedTargetPatterns
+                .FirstOrDefault(pat => target.Equals(pat, StringComparison.OrdinalIgnoreCase));
+            if (matchedPattern is null)
+            { skipped++; continue; } // FrzNormal/FrzHit/Frz等の略記や未対応パターン
+
+            if (!int.TryParse(numPart, out var engineNo) || !engineToLane.TryGetValue(engineNo, out var laneIdx))
+            { skipped++; continue; } // 範囲指定(0...7)・スラッシュ複数・グループ(g0等)・未知レーン
+
+            if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var frameVal))
+            { skipped++; continue; }
+
+            long tick = snap(frameVal);
+            string colorCode = fields[2];
+
+            var bucket = changesByPattern[matchedPattern];
+            if (!bucket.TryGetValue(laneIdx, out var list)) bucket[laneIdx] = list = [];
+            list.Add((tick, colorCode, allFlag));
+        }
+
+        // 状態復元: 各トラックの変化点をtick順に並べ、レーン内の各対象オブジェクトについて
+        // 「自分の出現tick以前の最新の変化点」の色を求める(DosExporterのScanTrackの逆変換)。
+        // 変化点に対応する対象オブジェクトが1つも無いレーンの変化点は、常に無効な指定として警告する。
+        static (string Color, bool AllFlag)? LookupState(List<(long Tick, string Color, bool AllFlag)>? changes, long tick)
+        {
+            if (changes is null) return null;
+            (string Color, bool AllFlag)? found = null;
+            foreach (var (t, color, allFlag) in changes)
+                if (t <= tick) found = (color, allFlag); else break; // changesは呼び出し側でtick昇順ソート済み
+            return found;
+        }
+
+        foreach (var byLane in changesByPattern.Values)
+            foreach (var list in byLane.Values)
+                list.Sort((a, b) => a.Tick.CompareTo(b.Tick));
+
+        List<(long Tick, string Color, bool AllFlag)>? Get(string pattern, int laneIdx) =>
+            changesByPattern[pattern].TryGetValue(laneIdx, out var l) ? l : null;
+
+        for (int laneIdx = 0; laneIdx < tab.Lanes.Count; laneIdx++)
+        {
+            var lane = tab.Lanes[laneIdx];
+            var arrowList = Get("", laneIdx);
+            var arrowShadowList = Get("ArrowShadow", laneIdx);
+            var normalList = Get("Normal", laneIdx);
+            var barList = Get("NormalBar", laneIdx);
+            var normalShadowList = Get("NormalShadow", laneIdx);
+            var hitList = Get("Hit", laneIdx);
+            var hitBarList = Get("HitBar", laneIdx);
+            var hitShadowList = Get("HitShadow", laneIdx);
+
+            bool hasNoteTrack = arrowList is { Count: > 0 } || arrowShadowList is { Count: > 0 };
+            bool hasFreezeTrack = normalList is { Count: > 0 } || barList is { Count: > 0 } ||
+                normalShadowList is { Count: > 0 } || hitList is { Count: > 0 } ||
+                hitBarList is { Count: > 0 } || hitShadowList is { Count: > 0 };
+            if (hasNoteTrack && lane.Notes.Count == 0)
+                skipped += (arrowList?.Count ?? 0) + (arrowShadowList?.Count ?? 0);
+            if (hasFreezeTrack && lane.Freezes.Count == 0)
+                skipped += (normalList?.Count ?? 0) + (barList?.Count ?? 0) + (normalShadowList?.Count ?? 0) +
+                           (hitList?.Count ?? 0) + (hitBarList?.Count ?? 0) + (hitShadowList?.Count ?? 0);
+
+            int colorGroup = template.Lanes[laneIdx].ColorGroup;
+            lane.ColorOverrides.Clear();
+
+            if (hasNoteTrack && lane.Notes.Count > 0)
+            {
+                string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, colorGroup);
+                string arrowShadowDefault = ColorDefaults.ResolveShadowHex(project, colorGroup, "setShadowColor");
+                foreach (var tick in lane.Notes)
+                {
+                    var arrowState = LookupState(arrowList, tick);
+                    var shadowState = LookupState(arrowShadowList, tick);
+                    string arrowColor = arrowState?.Color ?? arrowDefault;
+                    string shadowColor = shadowState?.Color ?? arrowShadowDefault;
+                    string? colorOut = string.Equals(arrowColor, arrowDefault, StringComparison.Ordinal) ? null : arrowColor;
+                    string? shadowOut = string.Equals(shadowColor, arrowShadowDefault, StringComparison.Ordinal) ? null : shadowColor;
+                    if (colorOut is null && shadowOut is null) continue;
+                    bool allFlag = (colorOut is not null && (arrowState?.AllFlag ?? false)) ||
+                                   (shadowOut is not null && (shadowState?.AllFlag ?? false));
+                    lane.ColorOverrides.Add(new NColorEntry(tick, colorOut, null, allFlag, shadowOut));
+                }
+            }
+
+            if (hasFreezeTrack && lane.Freezes.Count > 0)
+            {
+                string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, colorGroup);
+                var (normalDefault, barDefault) =
+                    ColorDefaults.ResolveFrzColorsHex(tab, project, colorGroup, arrowDefault);
+                var (hitDefault, hitBarDefault) =
+                    ColorDefaults.ResolveFrzHitColorsHex(tab, project, colorGroup, normalDefault, barDefault);
+                string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, colorGroup, "frzShadowColor");
+
+                foreach (var f in lane.Freezes)
+                {
+                    var normalState = LookupState(normalList, f.StartTick);
+                    var barState = LookupState(barList, f.StartTick);
+                    var normalShadowState = LookupState(normalShadowList, f.StartTick);
+                    var hitState = LookupState(hitList, f.StartTick);
+                    var hitBarState = LookupState(hitBarList, f.StartTick);
+                    var hitShadowState = LookupState(hitShadowList, f.StartTick);
+
+                    string normalColor = normalState?.Color ?? normalDefault;
+                    string barColor = barState?.Color ?? barDefault;
+                    string normalShadowColor = normalShadowState?.Color ?? normalShadowDefault;
+                    string hitColor = hitState?.Color ?? hitDefault;
+                    string hitBarColor = hitBarState?.Color ?? hitBarDefault;
+                    string hitShadowColor = hitShadowState?.Color ?? normalShadowDefault; // Hit専用ヘッダー無し、NormalShadowへフォールバック
+
+                    string? colorOut = string.Equals(normalColor, normalDefault, StringComparison.Ordinal) ? null : normalColor;
+                    string? bandOut = string.Equals(barColor, barDefault, StringComparison.Ordinal) ? null : barColor;
+                    string? shadowOut = string.Equals(normalShadowColor, normalShadowDefault, StringComparison.Ordinal) ? null : normalShadowColor;
+                    string? hitOut = string.Equals(hitColor, hitDefault, StringComparison.Ordinal) ? null : hitColor;
+                    string? hitBarOut = string.Equals(hitBarColor, hitBarDefault, StringComparison.Ordinal) ? null : hitBarColor;
+                    string? hitShadowOut = string.Equals(hitShadowColor, normalShadowDefault, StringComparison.Ordinal) ? null : hitShadowColor;
+
+                    if (colorOut is null && bandOut is null && shadowOut is null &&
+                        hitOut is null && hitBarOut is null && hitShadowOut is null) continue;
+
+                    bool allFlag = (colorOut is not null && (normalState?.AllFlag ?? false)) ||
+                                   (bandOut is not null && (barState?.AllFlag ?? false)) ||
+                                   (shadowOut is not null && (normalShadowState?.AllFlag ?? false)) ||
+                                   (hitOut is not null && (hitState?.AllFlag ?? false)) ||
+                                   (hitBarOut is not null && (hitBarState?.AllFlag ?? false)) ||
+                                   (hitShadowOut is not null && (hitShadowState?.AllFlag ?? false));
+
+                    lane.ColorOverrides.Add(new NColorEntry(f.StartTick, colorOut, bandOut, allFlag,
+                        shadowOut, hitOut, hitBarOut, hitShadowOut));
+                }
+            }
+        }
+
+        if (skipped > 0)
+            warnings.Add($"{paramName}: {skipped}件の色変化指定(範囲/グループ/全体色変化/未対応対象部位/" +
+                         "対象オブジェクトが存在しないレーンへの指定等)は現在のエディタでは読み込めないため無視しました");
+    }
 
     /// <summary>
     /// 全*_dataのフレーム値を収集してBPMを自動推定する。

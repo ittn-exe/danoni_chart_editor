@@ -12,11 +12,18 @@ public readonly record struct PointerPos(double X, double Y)
 [Flags]
 public enum PointerModifiers { None = 0, Shift = 1, Ctrl = 2 }
 
+/// <summary>Shift+Ctrl+A(全選択)の対象種別(2026-07-21、環境設定で個別ON/OFF可能)</summary>
+public readonly record struct SelectAllOptions(
+    bool Note, bool Freeze, bool Speed, bool Boost, bool Bpm, bool TimeSignature, bool Marker);
+
 /// <summary>マウスボタン種別(セッション中の識別用)</summary>
 public enum PointerButton { Left, Right }
 
 /// <summary>ドラッグ確定後のジェスチャ種別(内部状態)</summary>
 internal enum DragGesture { None, ResizeFreeze, MoveObjects, DragDelete, RectSelect }
+
+/// <summary>色編集モードのサブモード(2026-07-24、「モード内モード」)</summary>
+public enum ColorEditSubMode { Normal, FrzHit, Shadow }
 
 /// <summary>
 /// 譜面編集エリアのスマートツール操作ステートマシン(仕様書6.3.1/6.3.2/7.4/7.5)。
@@ -32,6 +39,42 @@ public sealed class SmartToolController
 
     /// <summary>スマートツールON/OFF(仕様書6.3上段パネル)。OFF時は選択済みオブジェクトのグループ移動のみ有効。</summary>
     public bool SmartToolEnabled { get; set; } = true;
+
+    /// <summary>色編集モードON/OFF(2026-07-23、TBD「ncolor_data」)。ON中はマーカーレーン以外の
+    /// 新規配置・移動・通常削除を一切受け付けず、左クリック=着色、右クリック=着色解除に置き換わる。</summary>
+    public bool ColorEditModeEnabled { get; set; }
+
+    /// <summary>色編集モード中に塗る色(右パネルの色/グラデーション設定から都度セットされる)。
+    /// nullまたは空文字の間はクリックしても何も起きない。</summary>
+    public string? PaintColorCode { get; set; }
+
+    /// <summary>色編集モード中の「即時適用(全体色変化)にする」チェックボックスの状態(2026-07-24)。
+    /// trueの間に塗った/一括塗りつぶしたncolor_dataは、本家仕様上「指定フレーム時点で既に
+    /// 出現済みの矢印/フリーズも含めて即座に塗り替える」全体色変化として出力される。</summary>
+    public bool PaintAllFlag { get; set; }
+
+    /// <summary>色編集モードのサブモード(2026-07-24)。Normal=端点/帯(従来のクリック挙動)、
+    /// FrzHit=フリーズのヒット時色(Hit/HitBar/HitShadow)、Shadow=塗りつぶし色(ArrowShadow/
+    /// NormalShadow)。ColorEditModeEnabledがtrueの間だけ意味を持つ。</summary>
+    public ColorEditSubMode SubMode { get; set; } = ColorEditSubMode.Normal;
+
+    /// <summary>Shadowサブモードで通常ノートに塗る色(ArrowShadow)</summary>
+    public string? PaintArrowShadowColor { get; set; }
+    /// <summary>Shadowサブモードでフリーズに塗る色(NormalShadow)</summary>
+    public string? PaintNormalShadowColor { get; set; }
+
+    /// <summary>FrzHitサブモードでHit(ヒット時端点)を対象に含めるか</summary>
+    public bool HitEnabled { get; set; }
+    /// <summary>FrzHitサブモードでHitBar(ヒット時帯)を対象に含めるか</summary>
+    public bool HitBarEnabled { get; set; }
+    /// <summary>FrzHitサブモードでHitShadow(ヒット時塗りつぶし)を対象に含めるか</summary>
+    public bool HitShadowEnabled { get; set; }
+    /// <summary>FrzHitサブモードで塗るHit色</summary>
+    public string? PaintHitColor { get; set; }
+    /// <summary>FrzHitサブモードで塗るHitBar色</summary>
+    public string? PaintHitBarColor { get; set; }
+    /// <summary>FrzHitサブモードで塗るHitShadow色</summary>
+    public string? PaintHitShadowColor { get; set; }
 
     /// <summary>マーカーレーンクリックで設定される「現在フレーム」相当のtick位置(仕様書7.4)</summary>
     public long? CurrentTick { get; private set; }
@@ -122,6 +165,14 @@ public sealed class SmartToolController
     /// 無い位置でのみ、既定長(現在のスナップ間隔)のフリーズを1件配置する。</summary>
     public void MiddleClick(PointerPos pos)
     {
+        // 2026-07-23: 色編集モード中はフリーズ即時配置を行わず、Shift+クリック相当(端点・帯を
+        // 同時に着色)に置き換える。対象が無ければ何もしない。
+        if (ColorEditModeEnabled)
+        {
+            if (HitAt(pos, hitScale: 1.0) is { } hit) PaintAt(hit, both: true);
+            return;
+        }
+
         if (!SmartToolEnabled) return;
         var col = _doc.CurrentLayout.ColumnAt(pos.X);
         if (col is not { Kind: ColumnKind.Note }) return;
@@ -168,6 +219,9 @@ public sealed class SmartToolController
             return true;
         }
 
+        // 2026-07-23: 色編集モード中はマーカーレーン以外への新規配置を一切受け付けない(誤操作防止)。
+        if (ColorEditModeEnabled) return false;
+
         if (!SmartToolEnabled) return false;
         var action = BuildPlaceAction(col, SnappedTickAt(_startPos), shift);
         if (action is null) return false;
@@ -207,6 +261,12 @@ public sealed class SmartToolController
 
     private DragGesture DetermineGesture()
     {
+        // 2026-07-23: 色編集モード中は左ドラッグ(移動・リサイズ)を一切無効化し、
+        // 右ドラッグは常に範囲選択(削除ドラッグは無効)にする。範囲選択自体は
+        // 一括塗りつぶし用の複数選択構築に必要なため許可する。
+        if (ColorEditModeEnabled)
+            return _button == PointerButton.Right ? DragGesture.RectSelect : DragGesture.None;
+
         if (_button == PointerButton.Left)
         {
             if (!SmartToolEnabled)
@@ -261,20 +321,247 @@ public sealed class SmartToolController
     private void HandleLeftClick()
     {
         // 空セルへの配置・カレントtick設定は押下時(Begin)に処理済み(2026-07-17e)。
-        // ここに残るのは「既存オブジェクト上のクリック=選択」のみ。
+        // ここに残るのは「既存オブジェクト上のクリック」のみ。
         if (_clickHandledOnDown) return;
-        if (_startHit is { } existing) SelectSingle(existing);
-        // 押下時に処理されなかった空セル(レーン外・スマートツールOFF・tick0のBPM等)は何もしない
+        if (_startHit is not { } existing) return;
+        // 押下時に処理されなかった空セル(レーン外・スマートツールOFF・色編集モード・tick0のBPM等)は何もしない
+
+        // 2026-07-23: Ctrl+クリックは色編集モードの有無に関わらず「選択に追加」を優先する
+        // (色編集モードで複数選択→一括塗りつぶしを組み立てるために必要)。
+        if (_modifiers.HasFlag(PointerModifiers.Ctrl))
+        {
+            AddToSelection(existing);
+            return;
+        }
+
+        if (ColorEditModeEnabled)
+        {
+            PaintAt(existing, both: _modifiers.HasFlag(PointerModifiers.Shift));
+            return;
+        }
+
+        SelectSingle(existing);
     }
 
     private void HandleRightClick()
     {
         if (_startHit is not { } hit) return;
+
+        if (ColorEditModeEnabled)
+        {
+            ResetColorAt(hit);
+            return;
+        }
+
         if (!SmartToolEnabled) return;
         var action = BuildDeleteAction(hit);
         if (action is null) return;
         _doc.Execute(action);
         RemoveFromSelection(hit);
+    }
+
+    // =====================================================================
+    // 色編集モード(ncolor_data、2026-07-23)
+    // =====================================================================
+
+    /// <summary>ヒットした部位に応じてColor(端点/ノート本体)・BandColor(帯)のどちらを塗るか決める。
+    /// both=true(Shift+クリック/ホイールクリック)の場合はフリーズの端点・帯を同時に同じ値で塗る。
+    /// SubModeがNormal以外の場合はShadow/FrzHitの塗り分けへ委譲する(2026-07-24、部位の区別は
+    /// 使わず対象実体1つに対して1アクション)。</summary>
+    private void PaintAt(ObjectRef hit, bool both)
+    {
+        switch (SubMode)
+        {
+            case ColorEditSubMode.Shadow:
+                PaintShadowAt(hit);
+                return;
+            case ColorEditSubMode.FrzHit:
+                PaintFrzHitAt(hit);
+                return;
+        }
+
+        if (PaintColorCode is not { Length: > 0 } color) return;
+        switch (hit.Kind)
+        {
+            case ObjectKind.Note:
+                _doc.Execute(new SetNoteColorAction(hit.Lane, hit.Tick, color, setColor: true, setBand: false, PaintAllFlag));
+                break;
+            case ObjectKind.FreezeStart:
+            case ObjectKind.FreezeEnd:
+                _doc.Execute(new SetNoteColorAction(hit.Lane, hit.Tick, color, setColor: true, setBand: both, PaintAllFlag));
+                break;
+            case ObjectKind.FreezeBody:
+                _doc.Execute(new SetNoteColorAction(hit.Lane, hit.Tick, color, setColor: both, setBand: true, PaintAllFlag));
+                break;
+        }
+    }
+
+    /// <summary>Shadowサブモードの塗り(2026-07-24)。通常ノートはPaintArrowShadowColor、
+    /// フリーズ(部位を問わず)はPaintNormalShadowColorを使う。</summary>
+    private void PaintShadowAt(ObjectRef hit)
+    {
+        switch (hit.Kind)
+        {
+            case ObjectKind.Note:
+                if (PaintArrowShadowColor is { Length: > 0 } ac)
+                    _doc.Execute(new SetShadowColorAction(hit.Lane, hit.Tick, ac));
+                break;
+            case ObjectKind.FreezeStart:
+            case ObjectKind.FreezeEnd:
+            case ObjectKind.FreezeBody:
+                if (PaintNormalShadowColor is { Length: > 0 } nc)
+                    _doc.Execute(new SetShadowColorAction(hit.Lane, hit.Tick, nc));
+                break;
+        }
+    }
+
+    /// <summary>FrzHitサブモードの塗り(2026-07-24)。フリーズのみ対象(ノートは無視)。
+    /// チェックが入っている項目だけをまとめて1アクションで設定する。</summary>
+    private void PaintFrzHitAt(ObjectRef hit)
+    {
+        if (hit.Kind is not (ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) return;
+        bool setHit = HitEnabled && PaintHitColor is { Length: > 0 };
+        bool setHitBar = HitBarEnabled && PaintHitBarColor is { Length: > 0 };
+        bool setHitShadow = HitShadowEnabled && PaintHitShadowColor is { Length: > 0 };
+        if (!setHit && !setHitBar && !setHitShadow) return;
+        _doc.Execute(new SetFrzHitColorsAction(hit.Lane, hit.Tick,
+            setHit, PaintHitColor, setHitBar, PaintHitBarColor, setHitShadow, PaintHitShadowColor));
+    }
+
+    /// <summary>右クリックでヒットした部位の色指定のみを解除する(左クリックの塗り分けと対称、
+    /// 2026-07-23ユーザー確定仕様)。対象部位に色が設定されていなければ何もしない。</summary>
+    private void ResetColorAt(ObjectRef hit)
+    {
+        bool resetColor = hit.Kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd;
+        bool resetBand = hit.Kind == ObjectKind.FreezeBody;
+        var list = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides;
+        var entry = list.FirstOrDefault(e => e.Tick == hit.Tick);
+        if (entry is null) return;
+        if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) return;
+        _doc.Execute(new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor, resetBand));
+    }
+
+    /// <summary>選択中のノート/フリーズのうち色が設定されているものだけ色を解除する
+    /// (色編集モード中のDeleteキー、2026-07-23)。フリーズは端点・帯どちらも設定されていれば
+    /// まとめて解除する(選択は個々の部位ではなく実体単位のため)。ノート以外・色未設定のものは無視する。
+    /// 対象が1つも無ければfalseを返す。</summary>
+    public bool ResetSelectionColors()
+    {
+        if (_doc.Selection.Count == 0) return false;
+        var unique = new List<ObjectRef>();
+        foreach (var r in _doc.Selection)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+
+        var actions = new List<IEditAction>();
+        foreach (var r in unique)
+        {
+            if (r.Kind is not (ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) continue;
+            var entry = _doc.CurrentTab.Lanes[r.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == r.Tick);
+            if (entry is null) continue;
+            actions.Add(new ResetNoteColorAction(r.Lane, r.Tick, entry.Color is not null, entry.BandColor is not null));
+        }
+        if (actions.Count == 0) return false;
+        _doc.Execute(new CompositeEditAction(actions, "選択色解除"));
+        return true;
+    }
+
+    /// <summary>選択中のノート/フリーズすべてを指定色で塗る(右パネル「一括塗りつぶし」、2026-07-23)。
+    /// フリーズは端点・帯まとめて同色にする。ノート以外(speed/boost/BPM/マーカー/拍子)は無視する
+    /// (誤って巻き込んで選択していても無視するだけでエラーにしない、ユーザー確定仕様)。</summary>
+    public bool BulkFillSelection(string color)
+    {
+        if (string.IsNullOrEmpty(color) || _doc.Selection.Count == 0) return false;
+        var unique = new List<ObjectRef>();
+        foreach (var r in _doc.Selection)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+
+        var actions = new List<IEditAction>();
+        foreach (var r in unique)
+        {
+            switch (r.Kind)
+            {
+                case ObjectKind.Note:
+                    actions.Add(new SetNoteColorAction(r.Lane, r.Tick, color, setColor: true, setBand: false, PaintAllFlag));
+                    break;
+                case ObjectKind.FreezeStart:
+                case ObjectKind.FreezeEnd:
+                case ObjectKind.FreezeBody:
+                    actions.Add(new SetNoteColorAction(r.Lane, r.Tick, color, setColor: true, setBand: true, PaintAllFlag));
+                    break;
+            }
+        }
+        if (actions.Count == 0) return false;
+        _doc.Execute(new CompositeEditAction(actions, "一括塗りつぶし"));
+        return true;
+    }
+
+    /// <summary>選択中のノート/フリーズをShadowサブモードの色で一括塗りつぶす(2026-07-24)。
+    /// 対象ごとに種別(ノート/フリーズ)を判定し、PaintArrowShadowColor/PaintNormalShadowColorの
+    /// 適切な方を使う。ノート/フリーズ以外は無視する。</summary>
+    public bool BulkFillShadowSelection()
+    {
+        if (_doc.Selection.Count == 0) return false;
+        var unique = new List<ObjectRef>();
+        foreach (var r in _doc.Selection)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+
+        var actions = new List<IEditAction>();
+        foreach (var r in unique)
+        {
+            switch (r.Kind)
+            {
+                case ObjectKind.Note when PaintArrowShadowColor is { Length: > 0 } ac:
+                    actions.Add(new SetShadowColorAction(r.Lane, r.Tick, ac));
+                    break;
+                case ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody
+                    when PaintNormalShadowColor is { Length: > 0 } nc:
+                    actions.Add(new SetShadowColorAction(r.Lane, r.Tick, nc));
+                    break;
+            }
+        }
+        if (actions.Count == 0) return false;
+        _doc.Execute(new CompositeEditAction(actions, "一括塗りつぶし(塗りつぶし色)"));
+        return true;
+    }
+
+    /// <summary>選択中のフリーズをFrzHitサブモードの色で一括塗りつぶす(2026-07-24)。
+    /// フリーズのみ対象(ノート等は無視)。チェックが入っている項目だけを設定する。</summary>
+    public bool BulkFillFrzHitSelection()
+    {
+        if (_doc.Selection.Count == 0) return false;
+        bool setHit = HitEnabled && PaintHitColor is { Length: > 0 };
+        bool setHitBar = HitBarEnabled && PaintHitBarColor is { Length: > 0 };
+        bool setHitShadow = HitShadowEnabled && PaintHitShadowColor is { Length: > 0 };
+        if (!setHit && !setHitBar && !setHitShadow) return false;
+
+        var unique = new List<ObjectRef>();
+        foreach (var r in _doc.Selection)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+
+        var actions = new List<IEditAction>();
+        foreach (var r in unique)
+        {
+            if (r.Kind is not (ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) continue;
+            actions.Add(new SetFrzHitColorsAction(r.Lane, r.Tick,
+                setHit, PaintHitColor, setHitBar, PaintHitBarColor, setHitShadow, PaintHitShadowColor));
+        }
+        if (actions.Count == 0) return false;
+        _doc.Execute(new CompositeEditAction(actions, "一括塗りつぶし(ヒット時色)"));
+        return true;
+    }
+
+    /// <summary>現在のタブの全ncolor_data指定を削除する(右パネル「ncolor_dataを全て削除」)。</summary>
+    public bool ClearAllNoteColors()
+    {
+        if (_doc.CurrentTab.Lanes.All(l => l.ColorOverrides.Count == 0)) return false;
+        _doc.Execute(new ClearAllNoteColorsAction());
+        return true;
+    }
+
+    private void AddToSelection(ObjectRef r)
+    {
+        if (!IsInSelection(r)) _doc.Selection.Add(r);
+        _doc.NotifyChanged(markModified: false);
     }
 
     // --- ドラッグ確定後 ---
@@ -359,8 +646,9 @@ public sealed class SmartToolController
     {
         var tab = _doc.CurrentTab;
         var refs = _doc.CurrentLayout.ObjectsInRect(tab, _doc.Project, _startPos.X, _startPos.Y, _lastPos.X, _lastPos.Y);
-        _doc.Selection.Clear();
-        foreach (var r in refs) _doc.Selection.Add(r);
+        // 2026-07-23: Ctrl+右ドラッグは既存選択を消さず追加する。それ以外は従来通り置き換え。
+        if (!_modifiers.HasFlag(PointerModifiers.Ctrl)) _doc.Selection.Clear();
+        foreach (var r in refs) if (!IsInSelection(r)) _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false); // 選択変更のみ(2026-07-19b)
     }
 
@@ -390,6 +678,10 @@ public sealed class SmartToolController
     {
         if (_doc.Selection.Count == 0) return false;
 
+        // 2026-07-23: 色編集モード中のDeleteは通常削除ではなく、選択中ノート/フリーズの色解除に置き換わる
+        // (誤操作防止、モード中は「配置済みオブジェクトのプロパティ」に触れられない仕様のため)。
+        if (ColorEditModeEnabled) return ResetSelectionColors();
+
         var unique = new List<ObjectRef>();
         foreach (var r in _doc.Selection)
             if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
@@ -405,6 +697,233 @@ public sealed class SmartToolController
         _doc.Selection.Clear();
         _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択解除の通知のみ
         return true;
+    }
+
+    // =====================================================================
+    // 全選択(仕様書13章TBD: Ctrl+A/Shift+Ctrl+A、2026-07-21)
+    // =====================================================================
+
+    /// <summary>Ctrl+A: 現在の難易度のノートレーンにあるノート・フリーズを全選択する(対象固定)。
+    /// 1件も無ければ何もせずfalseを返す。</summary>
+    public bool SelectAllNotes()
+    {
+        var tab = _doc.CurrentTab;
+        var refs = new List<ObjectRef>();
+        for (int lane = 0; lane < tab.Lanes.Count; lane++)
+        {
+            foreach (var t in tab.Lanes[lane].Notes) refs.Add(new ObjectRef(ObjectKind.Note, lane, t));
+            foreach (var f in tab.Lanes[lane].Freezes) refs.Add(new ObjectRef(ObjectKind.FreezeStart, lane, f.StartTick));
+        }
+        if (refs.Count == 0) return false;
+
+        _doc.Selection.Clear();
+        foreach (var r in refs) _doc.Selection.Add(r);
+        _doc.NotifyChanged(markModified: false);
+        return true;
+    }
+
+    /// <summary>Shift+Ctrl+A: 環境設定でONにした種別すべてを全選択する。tick0のBPM(不変条件)は
+    /// Bpmを対象にしていても除外する。1件も無ければ何もせずfalseを返す。</summary>
+    public bool SelectAllTargets(SelectAllOptions options)
+    {
+        var tab = _doc.CurrentTab;
+        var project = _doc.Project;
+        var refs = new List<ObjectRef>();
+
+        if (options.Note || options.Freeze)
+        {
+            for (int lane = 0; lane < tab.Lanes.Count; lane++)
+            {
+                if (options.Note)
+                    foreach (var t in tab.Lanes[lane].Notes) refs.Add(new ObjectRef(ObjectKind.Note, lane, t));
+                if (options.Freeze)
+                    foreach (var f in tab.Lanes[lane].Freezes) refs.Add(new ObjectRef(ObjectKind.FreezeStart, lane, f.StartTick));
+            }
+        }
+        if (options.Speed)
+            foreach (var e in tab.SpeedEvents) refs.Add(new ObjectRef(ObjectKind.Speed, -1, e.Tick));
+        if (options.Boost)
+            foreach (var e in tab.BoostEvents) refs.Add(new ObjectRef(ObjectKind.Boost, -1, e.Tick));
+        if (options.Bpm)
+            foreach (var e in project.BpmEvents)
+                if (e.Tick != 0) refs.Add(new ObjectRef(ObjectKind.Bpm, -1, e.Tick));
+        if (options.TimeSignature)
+            // TimeSignatureはtickではなく物理小節番号で識別する(既存のChartLayout.HitTest等と同じ規約)
+            foreach (var e in project.TimeSignatures) refs.Add(new ObjectRef(ObjectKind.TimeSignature, -1, e.MeasureIndex));
+        if (options.Marker)
+            foreach (var m in project.Markers) refs.Add(new ObjectRef(ObjectKind.Marker, -1, m.Tick));
+
+        if (refs.Count == 0) return false;
+
+        _doc.Selection.Clear();
+        foreach (var r in refs) _doc.Selection.Add(r);
+        _doc.NotifyChanged(markModified: false);
+        return true;
+    }
+
+    // =====================================================================
+    // クリップボード(仕様書13章: Ctrl+X/C/V、6.3上段「クリップボード系」)
+    // =====================================================================
+
+    /// <summary>選択中オブジェクトをクリップボードへコピーする(Ctrl+C)。
+    /// TimeSignature(7.5: 物理小節頭固定のため貼り付け先での意味が保証できない)と
+    /// tick0のBPM(不変条件、常に存在する固定点)はコピー対象から除外する。
+    /// コピー可能な対象が1つも無ければ何もせず(既存クリップボードも保持したまま)falseを返す。</summary>
+    public bool CopySelection()
+    {
+        var entries = BuildClipboardEntries(_doc.Selection);
+        if (entries.Count == 0) return false;
+        EditorClipboard.Set(entries);
+        return true;
+    }
+
+    /// <summary>選択中オブジェクトを切り取る(Ctrl+X = コピー + 選択削除、13章)。
+    /// コピー自体はUndo対象外(クリップボードはドキュメント状態ではない)だが、
+    /// 削除は既存のDeleteSelection(1ジェスチャ=1Undoアクション)がそのまま使われる。</summary>
+    public bool CutSelection()
+    {
+        if (!CopySelection()) return false;
+        DeleteSelection();
+        return true;
+    }
+
+    /// <summary>クリップボードの内容を貼り付ける(Ctrl+V)。
+    /// tick基準点はCurrentTick(マーカーレーンクリックで設定される「現在フレーム」、7.4)。
+    /// 一度も設定されていなければtick0を基準にする。laneはコピー時の元レーンをそのまま使い、
+    /// 現在のテンプレートのレーン数に収まらない対象はスキップする(キー種違いのプロジェクトへ
+    /// 貼り付けた場合など)。貼り付け後は新規オブジェクトを選択状態にし、そのままグループ移動
+    /// (6.3.2)で位置調整できるようにする。1回の呼び出し=1Undoアクション。</summary>
+    public bool Paste()
+    {
+        var entries = EditorClipboard.Entries;
+        if (entries is null || entries.Count == 0) return false;
+
+        long anchorTick = CurrentTick ?? 0;
+        int laneCount = _doc.CurrentTemplate.KeyCount;
+
+        var actions = new List<IEditAction>();
+        var pasted = new List<ObjectRef>();
+
+        foreach (var e in entries)
+        {
+            long tick = anchorTick + e.TickOffset;
+            if (tick < 0) continue;
+
+            switch (e.Kind)
+            {
+                case ObjectKind.Note:
+                    if (e.Lane < 0 || e.Lane >= laneCount) break;
+                    actions.Add(new PlaceNoteAction(e.Lane, tick));
+                    pasted.Add(new ObjectRef(ObjectKind.Note, e.Lane, tick));
+                    break;
+
+                case ObjectKind.FreezeStart:
+                    if (e.Lane < 0 || e.Lane >= laneCount) break;
+                    actions.Add(new PlaceFreezeAction(e.Lane, tick, tick + e.DurationTicks));
+                    pasted.Add(new ObjectRef(ObjectKind.FreezeStart, e.Lane, tick));
+                    break;
+
+                case ObjectKind.Speed:
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Speed, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Speed, -1, tick));
+                    break;
+
+                case ObjectKind.Boost:
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Boost, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Boost, -1, tick));
+                    break;
+
+                case ObjectKind.Bpm:
+                    if (tick == 0) break; // tick0は不変条件(既存イベントが常に存在)
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Bpm, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Bpm, -1, tick));
+                    break;
+
+                case ObjectKind.Marker:
+                    actions.Add(new PlaceMarkerAction(tick, e.Comment));
+                    pasted.Add(new ObjectRef(ObjectKind.Marker, -1, tick));
+                    break;
+            }
+        }
+
+        if (actions.Count == 0) return false;
+
+        _doc.Execute(new CompositeEditAction(actions, "貼り付け"));
+        _doc.Selection.Clear();
+        foreach (var r in pasted) _doc.Selection.Add(r);
+        _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択更新の通知のみ
+        return true;
+    }
+
+    /// <summary>選択集合からクリップボードエントリ一覧を組み立てる。SameEntityで重複除去した上で、
+    /// コピー対象外(TimeSignature・tick0のBPM)を除き、コピー範囲内の最小tick/最小laneを基準に
+    /// 相対tickへ変換する(laneは相対化せず元の値をそのまま保持、Paste側のコメント参照)。</summary>
+    private List<ClipboardEntry> BuildClipboardEntries(IEnumerable<ObjectRef> selection)
+    {
+        var unique = new List<ObjectRef>();
+        foreach (var r in selection)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+
+        var copyable = unique
+            .Where(r => r.Kind != ObjectKind.TimeSignature && !(r.Kind == ObjectKind.Bpm && r.Tick == 0))
+            .ToList();
+        if (copyable.Count == 0) return [];
+
+        long minTick = copyable.Min(r => r.Tick);
+
+        var result = new List<ClipboardEntry>();
+        foreach (var r in copyable)
+        {
+            switch (r.Kind)
+            {
+                case ObjectKind.Note:
+                    result.Add(new ClipboardEntry(ObjectKind.Note, r.Lane, r.Tick - minTick, 0, 0, ""));
+                    break;
+
+                case ObjectKind.FreezeStart:
+                case ObjectKind.FreezeEnd:
+                case ObjectKind.FreezeBody:
+                    {
+                        var freeze = _doc.CurrentTab.Lanes[r.Lane].Freezes.FirstOrDefault(f => f.StartTick == r.Tick);
+                        if (freeze is null) break;
+                        result.Add(new ClipboardEntry(ObjectKind.FreezeStart, r.Lane, r.Tick - minTick, freeze.EndTick - freeze.StartTick, 0, ""));
+                        break;
+                    }
+
+                case ObjectKind.Speed:
+                    {
+                        var e = _doc.CurrentTab.SpeedEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                        if (e is null) break;
+                        result.Add(new ClipboardEntry(ObjectKind.Speed, 0, r.Tick - minTick, 0, e.Value, ""));
+                        break;
+                    }
+
+                case ObjectKind.Boost:
+                    {
+                        var e = _doc.CurrentTab.BoostEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                        if (e is null) break;
+                        result.Add(new ClipboardEntry(ObjectKind.Boost, 0, r.Tick - minTick, 0, e.Value, ""));
+                        break;
+                    }
+
+                case ObjectKind.Bpm:
+                    {
+                        var e = _doc.Project.BpmEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                        if (e is null) break;
+                        result.Add(new ClipboardEntry(ObjectKind.Bpm, 0, r.Tick - minTick, 0, e.Bpm, ""));
+                        break;
+                    }
+
+                case ObjectKind.Marker:
+                    {
+                        var m = _doc.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
+                        if (m is null) break;
+                        result.Add(new ClipboardEntry(ObjectKind.Marker, 0, r.Tick - minTick, 0, 0, m.Comment));
+                        break;
+                    }
+            }
+        }
+        return result;
     }
 
     // =====================================================================
@@ -467,8 +986,10 @@ public sealed class SmartToolController
     /// スナップON時は通常のグリッドスナップ、OFF時は「最寄りの整数フレーム」に丸めたtickを返す
     /// (2026-07-17: OFF時のフリー移動が小数フレーム単位になり扱いづらいとの要望対応。
     /// BPMによっては1tickが1frame未満になるため、tick単位で丸めるだけでは不十分)。
-    /// </summary>
-    private long SnappedTickAt(PointerPos pos)
+    /// 2026-07-25: 「今クリックすると実際にどこへ配置されるか」をChartCanvas側のカーソルライン
+    /// (マウスホバー中の最寄りグリッド表示)が実際の配置ロジックと必ず一致するよう、この既存の
+    /// スナップ解決ロジックをそのまま外部公開する(表示用に別ロジックを複製しない)。</summary>
+    public long SnappedTickAt(PointerPos pos)
     {
         double rawTick = _doc.CurrentLayout.YToTick(pos.Y);
         // フレーム情報モード中は常にフレーム単位スナップ(2026-07-17i、仕様書7.6)。

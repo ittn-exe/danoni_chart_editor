@@ -39,6 +39,24 @@ public sealed class AppSettings
     /// <summary>再生開始フレーム可視化ラインの色(6桁カラーコード)。</summary>
     public string PlaybackStartLineColorHex { get; set; } = "#4FC3F7";
 
+    // =====================================================================
+    // カーソルライン(マウスモード、2026-07-25): ホバー中の最寄りスナップ位置を示す横線と、
+    // カーソルが乗っているレーンを強調する帯。それぞれ独立に太さ・色を変更できる。
+    // =====================================================================
+
+    /// <summary>カーソルライン(全レーン共通、細い横線)の太さ(px)。</summary>
+    public double CursorLineWidth { get; set; } = 1.0;
+
+    /// <summary>カーソルラインの色(6桁カラーコード)。描画時は薄く重なるよう固定の半透明度を
+    /// 追加で適用する(他のライン設定同様、アルファ自体は設定項目に含めない)。</summary>
+    public string CursorLineColorHex { get; set; } = "#FFFFFF";
+
+    /// <summary>カーソルが乗っているレーンを強調する帯の太さ(px)。</summary>
+    public double CursorHighlightWidth { get; set; } = 8.0;
+
+    /// <summary>カーソル強調帯の色(6桁カラーコード)。</summary>
+    public string CursorHighlightColorHex { get; set; } = "#00E5FF";
+
     /// <summary>プレイテスト: Reverse(スクロール反転)ON/OFF(2026-07-17g)。</summary>
     public bool PlaytestReverse { get; set; } = false;
 
@@ -51,6 +69,30 @@ public sealed class AppSettings
     /// <summary>プレイテスト: ウィンドウサイズ倍率(x0.5〜3.0、2026-07-17h)。
     /// キー種別の基準サイズ(本家autoSpread準拠の横幅×高さ)に掛けて実ウィンドウサイズとする。</summary>
     public double PlaytestWindowScale { get; set; } = 1.0;
+
+    /// <summary>プレイテスト: オートプレイON/OFF(2026-07-20)。ONの場合、全ノートを±0Fジャストで
+    /// 自動的に拾う(手動キー入力は終了キー以外無効)。</summary>
+    public bool PlaytestAutoPlay { get; set; } = false;
+
+    /// <summary>プレイテスト: 中断キーとしてDeleteキーを使用するか(2026-07-20)。
+    /// Delete/BackSpace/Escapeのうち、checkedのものだけが中断キーとして機能する。</summary>
+    public bool PlaytestQuitKeyDelete { get; set; } = true;
+
+    /// <summary>プレイテスト: 中断キーとしてBackSpaceキーを使用するか(2026-07-20)</summary>
+    public bool PlaytestQuitKeyBackSpace { get; set; } = true;
+
+    /// <summary>プレイテスト: 中断キーとしてEscapeキーを使用するか(2026-07-20)</summary>
+    public bool PlaytestQuitKeyEscape { get; set; } = true;
+
+    /// <summary>譜面ビュー(編集画面)のReverse表示(2026-07-22)。ONの場合、tick0を画面下端・末尾を
+    /// 上端にして進行方向を逆にする(画像等は上下反転しない、座標変換のみを反転する仕様)。
+    /// プレイテスト(PlaytestReverse)とは完全に独立した設定。環境設定からのみ切替可能
+    /// (ボタン・チェックボックス・ショートカットキーは用意しない、2026-07-22ユーザー確定仕様)。</summary>
+    public bool ChartViewReverse { get; set; } = false;
+
+    /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)。0.1〜2.0、0.1刻み。
+    /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>
+    public double PlaybackSpeed { get; set; } = 1.0;
 
     // =====================================================================
     // 新規プロジェクトのheaderデフォルト(仕様書6.4.1/14章 headerDefaults、2026-07-19b)。
@@ -82,6 +124,32 @@ public sealed class AppSettings
 
     /// <summary>未保存の変更があるままエディタを閉じる時に確認ダイアログを出すか(未解決事項§2-6)</summary>
     public bool ConfirmUnsavedOnClose { get; set; } = true;
+
+    // =====================================================================
+    // SKB操作モード(キーボード操作、2026-07-21確定仕様)
+    // =====================================================================
+
+    /// <summary>同時押しとみなす時間閾値(ms)。この時間以内の連続キー入力は同一カーソル位置への
+    /// 入力として扱われ、カーソルを進めない(SKBエディタの実装に準拠、既定30ms)。</summary>
+    public double SimultaneousPressThresholdMs { get; set; } = 30;
+
+    /// <summary>Ctrl+1〜9,0,-,^によるグリッド分解能切替のキー割り当てプリセット(2026-07-26)。
+    /// "original"=分解能の単純な昇順(このエディタ独自)、"skbExtended"=SKBエディタのCtrl+1〜7割り当てを
+    /// 踏襲した拡張セット(<see cref="GridShortcutPresets"/>参照)。エディタ本体にUIは設けず、
+    /// 環境設定からのみ変更できる。</summary>
+    public string GridShortcutPreset { get; set; } = GridShortcutPresets.Original;
+
+    // --- Shift+Ctrl+A(全選択)の対象種別(2026-07-21、TBD項目「shift+ctrl+a targets selectable in preferences」) ---
+    // Ctrl+A(修飾無し)は常にノート・フリーズのみを対象とする(仕様固定)。Shift+Ctrl+Aはここで
+    // ON にした種別すべてを対象に全選択する。
+
+    public bool SelectAllTargetNote { get; set; } = true;
+    public bool SelectAllTargetFreeze { get; set; } = true;
+    public bool SelectAllTargetSpeed { get; set; } = true;
+    public bool SelectAllTargetBoost { get; set; } = true;
+    public bool SelectAllTargetBpm { get; set; } = true;
+    public bool SelectAllTargetTimeSignature { get; set; } = true;
+    public bool SelectAllTargetMarker { get; set; } = true;
 
     // =====================================================================
     // マーカー表示(仕様書7.4: コメントの全文表示/先頭数文字のみ表示、2026-07-19b)
@@ -129,6 +197,11 @@ public sealed class AppSettings
         }
     }
 
-    public void Save(string path) =>
+    public void Save(string path)
+    {
+        // 2026-07-20: settings.jsonが./settingsサブディレクトリへ移動したため、初回はフォルダが無い
+        var dir = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOpts));
+    }
 }

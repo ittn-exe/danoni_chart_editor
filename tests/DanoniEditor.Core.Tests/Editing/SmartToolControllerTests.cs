@@ -396,4 +396,517 @@ public class SmartToolControllerTests
         Assert.Null(ex);
         Assert.Contains(doc.Project.BpmEvents, e => e.Tick == 0);
     }
+
+    // =====================================================================
+    // Ctrl+クリック/Ctrl+右ドラッグ = 選択に追加(2026-07-23)
+    // =====================================================================
+
+    [Fact]
+    public void CtrlClick_AddsToSelection_WithoutClearingExisting()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(1, 96 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+        Click(ctrl, At(layout.NoteColumn(1), layout, 96 * T), PointerModifiers.Ctrl);
+
+        Assert.Equal(2, doc.Selection.Count);
+        Assert.Contains(doc.Selection, r => r.Lane == 0 && r.Tick == 48 * T);
+        Assert.Contains(doc.Selection, r => r.Lane == 1 && r.Tick == 96 * T);
+    }
+
+    [Fact]
+    public void CtrlClick_AlreadySelected_DoesNotDuplicate()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T), PointerModifiers.Ctrl);
+        Assert.Single(doc.Selection);
+    }
+
+    [Fact]
+    public void CtrlRightDrag_AddsToSelection_WithoutClearingExisting()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(2, 200 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        var col2 = layout.NoteColumn(2);
+        double y = layout.TickToY(200 * T);
+        var from = new PointerPos(col2.CenterX - 5, y - 20);
+        var to = new PointerPos(col2.CenterX + 5, y + 20);
+        ctrl.BeginRight(from, PointerModifiers.Ctrl);
+        ctrl.Move(new PointerPos((from.X + to.X) / 2, (from.Y + to.Y) / 2));
+        ctrl.End(to);
+
+        Assert.Equal(2, doc.Selection.Count);
+        Assert.Contains(doc.Selection, r => r.Lane == 0 && r.Tick == 48 * T);
+        Assert.Contains(doc.Selection, r => r.Lane == 2 && r.Tick == 200 * T);
+    }
+
+    [Fact]
+    public void RightDrag_WithoutCtrl_ReplacesExistingSelection()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(2, 200 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        var col2 = layout.NoteColumn(2);
+        double y = layout.TickToY(200 * T);
+        DragRight(ctrl, new PointerPos(col2.CenterX - 5, y - 20), new PointerPos(col2.CenterX + 5, y + 20));
+
+        Assert.Single(doc.Selection);
+        Assert.Contains(doc.Selection, r => r.Lane == 2 && r.Tick == 200 * T);
+    }
+
+    // =====================================================================
+    // 色編集モード(ncolor_data、2026-07-23)
+    // =====================================================================
+
+    [Fact]
+    public void ColorEditMode_ClickNote_PaintsColorOnly()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#ff0000";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color);
+        Assert.Null(entry.BandColor);
+    }
+
+    [Fact]
+    public void ColorEditMode_ClickFreezeEdge_PaintsColorOnly()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#00ff00";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 0)); // 始点(端点)
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#00ff00", entry.Color);
+        Assert.Null(entry.BandColor);
+    }
+
+    [Fact]
+    public void ColorEditMode_ClickFreezeBody_PaintsBandOnly()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#0000ff";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T)); // 帯(始点終点の中間)
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Null(entry.Color);
+        Assert.Equal("#0000ff", entry.BandColor);
+    }
+
+    [Fact]
+    public void ColorEditMode_ShiftClickFreezeEdge_PaintsColorAndBandTogether()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#123456";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 0), PointerModifiers.Shift);
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#123456", entry.Color);
+        Assert.Equal("#123456", entry.BandColor);
+    }
+
+    [Fact]
+    public void ColorEditMode_MiddleClickFreeze_PaintsColorAndBandTogether()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#654321";
+
+        ctrl.MiddleClick(At(layout.NoteColumn(0), layout, 0));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#654321", entry.Color);
+        Assert.Equal("#654321", entry.BandColor);
+    }
+
+    [Fact]
+    public void ColorEditMode_RightClickColoredNote_ResetsColor_ButNotTheNote()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#ff0000";
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+        Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+
+        RightClick(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void ColorEditMode_RightClickUncoloredNote_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        int undoDepthBefore = doc.UndoStack.UndoDepth;
+
+        RightClick(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes); // 通常削除に化けない
+        Assert.Equal(undoDepthBefore, doc.UndoStack.UndoDepth); // 空振りでUndo履歴も積まれない
+    }
+
+    [Fact]
+    public void ColorEditMode_EmptyCellClick_DoesNotPlaceNote()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#ff0000";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void ColorEditMode_MarkerLaneClick_StillSetsCurrentTick()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        ctrl.ColorEditModeEnabled = true;
+        var col = layout.Column(ColumnKind.Marker);
+
+        Click(ctrl, At(col, layout, 48 * T));
+
+        Assert.Equal(48 * T, ctrl.CurrentTick);
+    }
+
+    [Fact]
+    public void ColorEditMode_LeftDrag_DoesNotMoveSelectedObjects()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+
+        DragLeft(ctrl, At(layout.NoteColumn(0), layout, 48 * T), At(layout.NoteColumn(0), layout, 96 * T));
+
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes);
+        Assert.DoesNotContain(96 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void ColorEditMode_DeleteKey_ResetsOnlyColoredSelectedNotes()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(1, 48 * T)); // こちらは色未設定のまま
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.PaintColorCode = "#ff0000";
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 1, 48 * T));
+
+        Assert.True(ctrl.DeleteSelection());
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes); // ノート自体は消えない
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[1].Notes);
+    }
+
+    [Fact]
+    public void ColorEditMode_DeleteKey_NoColoredSelection_ReturnsFalse()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        Assert.False(ctrl.DeleteSelection());
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void BulkFillSelection_PaintsNoteAndFreeze_IgnoresOtherKinds()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceFreezeAction(1, 96 * T, 192 * T));
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 48 * T, 1.5));
+
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 1, 96 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Speed, -1, 48 * T)); // 無視される
+
+        Assert.True(ctrl.BulkFillSelection("#abcdef"));
+
+        var noteEntry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#abcdef", noteEntry.Color);
+        var freezeEntry = Assert.Single(doc.CurrentTab.Lanes[1].ColorOverrides);
+        Assert.Equal("#abcdef", freezeEntry.Color);
+        Assert.Equal("#abcdef", freezeEntry.BandColor);
+    }
+
+    [Fact]
+    public void BulkFillSelection_NoNoteOrFreezeSelected_ReturnsFalse()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 48 * T, 1.5));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Speed, -1, 48 * T));
+
+        Assert.False(ctrl.BulkFillSelection("#abcdef"));
+    }
+
+    [Fact]
+    public void ClearAllNoteColors_RemovesAllOverrides_UndoRestores()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new SetNoteColorAction(0, 48 * T, "#ff0000", setColor: true, setBand: false));
+
+        Assert.True(ctrl.ClearAllNoteColors());
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+
+        doc.Undo();
+        Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+    }
+
+    [Fact]
+    public void ClearAllNoteColors_NoOverrides_ReturnsFalse()
+    {
+        var (doc, ctrl, _) = NewScene();
+        Assert.False(ctrl.ClearAllNoteColors());
+    }
+
+    // =====================================================================
+    // SnappedTickAt(2026-07-25、マウスカーソルライン表示用に公開)
+    // =====================================================================
+
+    [Fact]
+    public void SnappedTickAt_SnapEnabled_MatchesSnapService()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Division = 16; // GridTicks = 12
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, 100 * T); // グリッドから少しずれた位置
+
+        long expected = doc.Snap.Snap(layout.YToTick(pos.Y));
+        Assert.Equal(expected, ctrl.SnappedTickAt(pos));
+    }
+
+    [Fact]
+    public void SnappedTickAt_SnapDisabled_RoundsToNearestFrame()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Enabled = false;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, 100 * T);
+
+        // スナップOFF時は「最寄りの整数フレーム」に丸められるため、tick単位の素の丸めとは異なりうる。
+        // ここでは少なくとも0以上の妥当なtickが返ることと、実際の配置結果(クリック)と一致することを確認する。
+        long snapped = ctrl.SnappedTickAt(pos);
+        Assert.True(snapped >= 0);
+
+        Click(ctrl, pos);
+        Assert.Contains(snapped, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    // =====================================================================
+    // Shadowサブモード / FrzHitサブモード(2026-07-24)
+    // =====================================================================
+
+    [Fact]
+    public void ShadowSubMode_ClickNote_PaintsArrowShadowOnly()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        ctrl.PaintArrowShadowColor = "#111111";
+        ctrl.PaintNormalShadowColor = "#222222"; // ノートには使われないはず
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#111111", entry.ShadowColor);
+        Assert.Null(entry.Color);
+    }
+
+    [Fact]
+    public void ShadowSubMode_ClickFreezeAnyPart_PaintsNormalShadow()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        ctrl.PaintNormalShadowColor = "#333333";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T)); // 帯部分をクリック
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#333333", entry.ShadowColor);
+        Assert.Null(entry.Color);
+        Assert.Null(entry.BandColor);
+    }
+
+    [Fact]
+    public void ShadowSubMode_NoColorSet_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+    }
+
+    [Fact]
+    public void BulkFillShadowSelection_PaintsNoteAndFreezeWithRespectiveColors()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceFreezeAction(1, 96 * T, 192 * T));
+        ctrl.PaintArrowShadowColor = "#aaaaaa";
+        ctrl.PaintNormalShadowColor = "#bbbbbb";
+
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 1, 96 * T));
+
+        Assert.True(ctrl.BulkFillShadowSelection());
+
+        var noteEntry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#aaaaaa", noteEntry.ShadowColor);
+        var freezeEntry = Assert.Single(doc.CurrentTab.Lanes[1].ColorOverrides);
+        Assert.Equal("#bbbbbb", freezeEntry.ShadowColor);
+    }
+
+    [Fact]
+    public void BulkFillShadowSelection_NoColorsSet_ReturnsFalse()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        Assert.False(ctrl.BulkFillShadowSelection());
+    }
+
+    [Fact]
+    public void FrzHitSubMode_ClickFreeze_PaintsOnlyEnabledFields()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.FrzHit;
+        ctrl.HitEnabled = true;
+        ctrl.PaintHitColor = "#ff0000";
+        ctrl.HitBarEnabled = false;
+        ctrl.PaintHitBarColor = "#00ff00"; // Bar側は無効化されているので反映されないはず
+        ctrl.HitShadowEnabled = true;
+        ctrl.PaintHitShadowColor = "#0000ff";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 0));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.HitColor);
+        Assert.Null(entry.HitBarColor);
+        Assert.Equal("#0000ff", entry.HitShadowColor);
+    }
+
+    [Fact]
+    public void FrzHitSubMode_ClickNote_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.FrzHit;
+        ctrl.HitEnabled = true;
+        ctrl.PaintHitColor = "#ff0000";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+    }
+
+    [Fact]
+    public void FrzHitSubMode_AllCheckboxesDisabled_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.FrzHit;
+        ctrl.PaintHitColor = "#ff0000"; // 色は入っているがEnabledが全てfalse
+        ctrl.PaintHitBarColor = "#00ff00";
+        ctrl.PaintHitShadowColor = "#0000ff";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 0));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+    }
+
+    [Fact]
+    public void BulkFillFrzHitSelection_FreezeOnly_IgnoresNotes()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceFreezeAction(1, 96 * T, 192 * T));
+        ctrl.HitEnabled = true;
+        ctrl.PaintHitColor = "#123456";
+        ctrl.HitBarEnabled = true;
+        ctrl.PaintHitBarColor = "#654321";
+
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 1, 96 * T));
+
+        Assert.True(ctrl.BulkFillFrzHitSelection());
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides); // ノートは無視される
+        var freezeEntry = Assert.Single(doc.CurrentTab.Lanes[1].ColorOverrides);
+        Assert.Equal("#123456", freezeEntry.HitColor);
+        Assert.Equal("#654321", freezeEntry.HitBarColor);
+    }
+
+    [Fact]
+    public void BulkFillFrzHitSelection_NoCheckboxEnabled_ReturnsFalse()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceFreezeAction(0, 48 * T, 96 * T));
+        ctrl.PaintHitColor = "#123456"; // Enabled無しなので不成立
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 0, 48 * T));
+
+        Assert.False(ctrl.BulkFillFrzHitSelection());
+    }
+
+    [Fact]
+    public void NormalSubMode_UnaffectedByShadowOrHitFields()
+    {
+        // SubMode切り替えロジックがNormalモードの既存動作を壊していないことの回帰確認
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Normal;
+        ctrl.PaintColorCode = "#ff0000";
+        ctrl.PaintArrowShadowColor = "#000000";
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color);
+        Assert.Null(entry.ShadowColor);
+    }
 }

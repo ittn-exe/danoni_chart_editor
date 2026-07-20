@@ -65,6 +65,9 @@
                     <TextBlock Text="プレーテスト:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <CheckBox x:Name="PlaytestReverseCheck" Content="Reverse" VerticalAlignment="Center" Margin="0,0,8,0"
                               Checked="PlaytestSetting_Changed" Unchecked="PlaytestSetting_Changed"/>
+                    <!-- 2026-07-20: オートプレイON/OFF。ONで全ノート±0Fジャスト自動判定 -->
+                    <CheckBox x:Name="PlaytestAutoPlayCheck" Content="AutoPlay" VerticalAlignment="Center" Margin="0,0,8,0"
+                              Checked="PlaytestSetting_Changed" Unchecked="PlaytestSetting_Changed"/>
                     <TextBlock Text="HS:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                     <ComboBox x:Name="PlaytestHiSpeedCombo" Width="60" VerticalAlignment="Center" Margin="0,0,8,0"
                               SelectionChanged="PlaytestSetting_Changed"/>
@@ -74,7 +77,11 @@
                     <TextBlock Text="倍率:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                     <ComboBox x:Name="PlaytestScaleCombo" Width="60" VerticalAlignment="Center" Margin="0,0,8,0"
                               SelectionChanged="PlaytestSetting_Changed"/>
-                    <TextBlock Text="[Ctrl+P]開始" VerticalAlignment="Center" Foreground="Gray"/>
+                    <TextBlock Text="[Ctrl+P]開始" VerticalAlignment="Center" Foreground="Gray" Margin="0,0,8,0"/>
+                    <!-- 2026-07-23: 再生速度(目視テスト・プレイテスト共通、0.1〜2.0・0.1刻み) -->
+                    <TextBlock Text="再生速度:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                    <ComboBox x:Name="PlaybackSpeedCombo" Width="60" VerticalAlignment="Center" Margin="0,0,8,0"
+                              SelectionChanged="PlaybackSpeedCombo_Changed"/>
                     <ToggleButton x:Name="ShowNoteImagesToggle" Content="ノート画像 表示" Width="100" Margin="0,0,4,0"
                                   IsChecked="True" Checked="ShowNoteImagesToggle_Changed" Unchecked="ShowNoteImagesToggle_Changed"/>
                     <!-- 2026-07-16j: ノート画像と強調表示を独立にON/OFFできるようにする要望対応。
@@ -91,7 +98,13 @@
             </StatusBarItem>
         </StatusBar>
         <Border DockPanel.Dock="Left" Width="72" Background="#E8E8E8">
-            <TextBlock Text="ツール" HorizontalAlignment="Center" Margin="4"/>
+            <StackPanel Margin="4">
+                <TextBlock Text="ツール" HorizontalAlignment="Center" Margin="0,0,0,6"/>
+                <ToggleButton x:Name="KeyboardModeToggle" Content="キーボード&#x0a;モード" Padding="2,6"
+                              ToolTip="SKB操作モード(Ctrl+,)" Click="KeyboardModeToggle_Click"/>
+                <ToggleButton x:Name="ColorEditModeToggle" Content="色編集&#x0a;モード" Padding="2,6" Margin="0,6,0,0"
+                              ToolTip="ncolor_data個別色編集モード" Click="ColorEditModeToggle_Click"/>
+            </StackPanel>
         </Border>
         <Border DockPanel.Dock="Right" Width="280" Background="#E8E8E8">
             <TabControl x:Name="PropertyTabControl">
@@ -200,21 +213,135 @@
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
+                <TabItem x:Name="ColorEditTabItem" Header="色編集">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="色編集モードON中、ノート/フリーズをクリックすると下記の色が着色されます(ncolor_data)。"
+                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
+
+                            <TextBlock Text="編集対象" FontWeight="Bold" Margin="0,0,0,2"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <RadioButton x:Name="NColorSubModeNormalRadio" Content="通常色" GroupName="NColorSubMode"
+                                             IsChecked="True" Checked="NColorSubMode_Changed" Margin="0,0,10,0"/>
+                                <RadioButton x:Name="NColorSubModeFrzHitRadio" Content="ヒット時色" GroupName="NColorSubMode"
+                                             Checked="NColorSubMode_Changed" Margin="0,0,10,0"/>
+                                <RadioButton x:Name="NColorSubModeShadowRadio" Content="塗りつぶし色" GroupName="NColorSubMode"
+                                             Checked="NColorSubMode_Changed"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="NColorNormalPanel">
+                                <TextBlock Text="種類" Margin="0,4,0,2"/>
+                                <ComboBox x:Name="NColorGradientTypeCombo" SelectionChanged="NColorField_Changed"/>
+
+                                <TextBlock x:Name="NColorDirectionLabel" Text="方向(省略可、例: 45deg / to right)" Margin="0,8,0,2"/>
+                                <TextBox x:Name="NColorDirectionBox" TextChanged="NColorField_Changed"/>
+
+                                <TextBlock Text="色" FontWeight="Bold" Margin="0,8,0,2"/>
+                                <StackPanel x:Name="NColorListPanel"/>
+                                <Button x:Name="NColorAddColorButton" Content="+ 色を追加" HorizontalAlignment="Left" Margin="0,4,0,4" Click="NColorAddColorButton_Click"/>
+
+                                <Border x:Name="NColorPreviewSwatch" Height="20" BorderBrush="Black" BorderThickness="1" Margin="0,4,0,12"/>
+
+                                <CheckBox x:Name="NColorAllFlagCheck" Content="即時適用(全体色変化)にする" Checked="NColorAllFlagCheck_Changed" Unchecked="NColorAllFlagCheck_Changed" Margin="0,0,0,4"/>
+                                <TextBlock Text="ONの間に塗った色は、指定フレーム時点で既に出現済みの矢印/フリーズも含めて即座に塗り替わります(allFlg)。OFF(既定)は以後新規出現するものだけに適用されます。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
+
+                                <Separator Margin="0,4,0,8"/>
+                                <Button x:Name="NColorBulkFillButton" Content="一括塗りつぶし(選択中のノート/フリーズ)" Click="NColorBulkFillButton_Click" Margin="0,0,0,4"/>
+                                <TextBlock Text="複数選択したノート/フリーズを、上記の色で塗りつぶします。ノート/フリーズ以外は無視されます。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="NColorFrzHitPanel" Visibility="Collapsed">
+                                <TextBlock Text="フリーズの判定中(ヒット時)の表示色を個別指定します。対象はフリーズのみです(ノートは無視されます)。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,8"/>
+
+                                <CheckBox x:Name="NColorHitEnabledCheck" Content="端点(Hit)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBox x:Name="NColorHitColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitColorBox_LostFocus"/>
+                                    <Button x:Name="NColorHitHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitHistoryButton_Click"/>
+                                </StackPanel>
+
+                                <CheckBox x:Name="NColorHitBarEnabledCheck" Content="帯(HitBar)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBox x:Name="NColorHitBarColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitBarColorBox_LostFocus"/>
+                                    <Button x:Name="NColorHitBarHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitBarHistoryButton_Click"/>
+                                </StackPanel>
+
+                                <CheckBox x:Name="NColorHitShadowEnabledCheck" Content="塗りつぶし(HitShadow)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBox x:Name="NColorHitShadowColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitShadowColorBox_LostFocus"/>
+                                    <Button x:Name="NColorHitShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitShadowHistoryButton_Click"/>
+                                </StackPanel>
+
+                                <Separator Margin="0,4,0,8"/>
+                                <Button x:Name="NColorFrzHitBulkFillButton" Content="一括塗りつぶし(選択中のフリーズ)" Click="NColorFrzHitBulkFillButton_Click" Margin="0,0,0,4"/>
+                                <TextBlock Text="上記でチェックした項目だけを、選択中のフリーズへまとめて設定します。ノートは無視されます。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="NColorShadowPanel" Visibility="Collapsed">
+                                <TextBlock Text="ノート/フリーズの塗りつぶし色(ArrowShadow/NormalShadow)を指定します。クリックした対象の種類(ノート/フリーズ)に応じて自動的にどちらかが使われます。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,8"/>
+
+                                <TextBlock Text="ノート(ArrowShadow)" Margin="0,4,0,2"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBox x:Name="NColorArrowShadowColorBox" Width="96" TextChanged="NColorShadowField_Changed" LostFocus="NColorArrowShadowColorBox_LostFocus"/>
+                                    <Button x:Name="NColorArrowShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorArrowShadowHistoryButton_Click"/>
+                                </StackPanel>
+
+                                <TextBlock Text="フリーズ(NormalShadow)" Margin="0,4,0,2"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBox x:Name="NColorNormalShadowColorBox" Width="96" TextChanged="NColorShadowField_Changed" LostFocus="NColorNormalShadowColorBox_LostFocus"/>
+                                    <Button x:Name="NColorNormalShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorNormalShadowHistoryButton_Click"/>
+                                </StackPanel>
+
+                                <Separator Margin="0,4,0,8"/>
+                                <Button x:Name="NColorShadowBulkFillButton" Content="一括塗りつぶし(選択中のノート/フリーズ)" Click="NColorShadowBulkFillButton_Click" Margin="0,0,0,4"/>
+                                <TextBlock Text="選択中のノート/フリーズを、それぞれの種類に応じた上記の色で塗りつぶします。"
+                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
+                            </StackPanel>
+
+                            <Separator Margin="0,4,0,8"/>
+                            <Button x:Name="NColorClearAllButton" Content="ncolor_dataを全て削除" Click="NColorClearAllButton_Click" Foreground="DarkRed"/>
+                            <TextBlock Text="現在の難易度タブの色指定(ncolor_data)を全て削除します(Ctrl+Zで戻せます)。"
+                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
             </TabControl>
         </Border>
         <Grid Background="#202020">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
+            <!-- 2026-07-20: マルチプロジェクトタブ(仕様書TBD#10)。上段=プロジェクトタブ、下段=難易度タブの2段構成。
+                 同一グループ内のみD&Dで並び替え可能(TabControl_Preview*/*_Dropは両方の行で共用のヘルパ)。 -->
             <DockPanel Grid.Row="0" Height="28">
+                <Button DockPanel.Dock="Right" Content="プロジェクトを閉じる" Width="110" Click="CloseProject_Click"/>
+                <TabControl x:Name="ProjectTabControl"
+                            SelectionChanged="ProjectTabControl_SelectionChanged"
+                            AllowDrop="True"
+                            PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
+                            PreviewMouseMove="TabControl_PreviewMouseMove"
+                            PreviewDragOver="TabControl_PreviewDragOver"
+                            Drop="ProjectTabControl_Drop"/>
+            </DockPanel>
+            <DockPanel Grid.Row="1" Height="28">
                 <!-- 2026-07-17: 「タブを閉じる」ができず難易度タブを削除できないとの要望対応。
                      選択中のタブを閉じる(最低1タブは残す)。 -->
                 <Button DockPanel.Dock="Right" Content="タブを閉じる" Width="90" Click="CloseCurrentTab_Click"/>
                 <TabControl x:Name="DifficultyTabControl"
-                            SelectionChanged="DifficultyTabControl_SelectionChanged"/>
+                            SelectionChanged="DifficultyTabControl_SelectionChanged"
+                            AllowDrop="True"
+                            PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
+                            PreviewMouseMove="TabControl_PreviewMouseMove"
+                            PreviewDragOver="TabControl_PreviewDragOver"
+                            Drop="DifficultyTabControl_Drop"/>
             </DockPanel>
-            <ScrollViewer x:Name="ChartScrollViewer" Grid.Row="1"
+            <ScrollViewer x:Name="ChartScrollViewer" Grid.Row="2"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           ScrollChanged="ChartScrollViewer_ScrollChanged">
                 <local:ChartCanvas x:Name="Canvas"/>

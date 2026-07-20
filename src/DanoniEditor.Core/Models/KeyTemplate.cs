@@ -67,6 +67,14 @@ public sealed class LaneDef
     [JsonConverter(typeof(KeyAssignConverter))]
     public required IReadOnlyList<string> KeyAssign { get; init; }
 
+    /// <summary>SKB操作モード(キーボード入力、2026-07-21)専用のノート入力キー。KeyAssignと書式は
+    /// 同じだが別データとして分離している(KeyAssignは本家の実プレイキー割当であり、5key等の多くの
+    /// キー種で矢印/Spaceを含む。矢印/Space/BackSpace等はキーボードモードのカーソル移動に予約済みの
+    /// ため、そのままでは衝突する)。未指定(空配列)のレーンはキーボードモードでの入力を受け付けない。
+    /// 標準テンプレートへの値の追加は別途対応(2026-07-21時点は空のまま出荷)。</summary>
+    [JsonConverter(typeof(KeyAssignConverter))]
+    public IReadOnlyList<string> KeyboardInputKeys { get; init; } = [];
+
     public required int ColorGroup { get; init; }
     public required double PosIndex { get; init; }            // 本体pos値(9hkey等で小数あり)
 
@@ -94,6 +102,11 @@ public sealed class LaneDef
     /// <summary>列見出し等に使う表示用ラベル(複数キーは"/"連結)</summary>
     [JsonIgnore]
     public string KeyAssignLabel => string.Join("/", KeyAssign);
+
+    /// <summary>キーボードモードのレーンラベル表示用(2026-07-22)。KeyAssignLabelと同様に"/"連結。
+    /// KeyboardInputKeys未設定のレーンは空文字列になる。</summary>
+    [JsonIgnore]
+    public string KeyboardInputKeysLabel => string.Join("/", KeyboardInputKeys);
 }
 
 /// <summary>keyAssignの「文字列 or 文字列配列」両対応コンバータ(書き戻しも元の形式を維持)</summary>

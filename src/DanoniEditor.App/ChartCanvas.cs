@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Audio;
+using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Timing;
 using DanoniEditor.Editing;
 
@@ -19,10 +20,6 @@ namespace DanoniEditor.App;
 /// </summary>
 public sealed class ChartCanvas : FrameworkElement
 {
-    // --- 07-16手記§5: 既定レーン色・イベントタグ色 ---
-    private static readonly string[] DefaultLaneColors =
-        ["#99ffff", "#ffff33", "#ffffff", "#ff0066", "#ff9966", "#99ff99"];
-
     private static readonly Brush BackgroundBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20)));
     private static readonly Brush GridLineBrush = Freeze(new SolidColorBrush(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF)));
     private static readonly Brush BeatLineBrush = Freeze(new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)));
@@ -38,6 +35,8 @@ public sealed class ChartCanvas : FrameworkElement
     private static readonly Brush BpmBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x50, 0xC0, 0x60)));
     private static readonly Brush TimeSigBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x60, 0xC0, 0xE0)));
     private static readonly Brush MarkerBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x90, 0x90, 0x90)));
+    private static readonly Brush LaneLabelBackgroundBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xE0, 0x10, 0x10, 0x10))); // 2026-07-22: レーンラベル背景
+    private static readonly Brush KeyboardInputKeyBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x4F, 0xC3, 0xF7))); // 2026-07-22: キーボードモード入力キー(2行目)の色分け
     private static readonly Brush SelectionBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xA0, 0xFF, 0xEE, 0x00)));
     private static readonly Pen SelectionPen = Freeze(new Pen(SelectionBrush, 2));
     private static readonly Typeface Typeface = new("Segoe UI");
@@ -284,7 +283,10 @@ public sealed class ChartCanvas : FrameworkElement
 
         // 下ドラッグ=譜面が曲に対して後ろへ=StartNumber増。波形が画面に固定されて見えるよう
         // スクロールオフセットを同量だけ補償する(上端近くでは補償しきれず波形側が動いて見える)
-        Document.Project.StartNumber = _snStartNumber0 + dpx * _snFramesPerPx;
+        // 2026-07-22: 譜面ビューReverse時はtickの進行方向(≒StartNumber変化の意味)が画面上下で
+        // 入れ替わるため、符号を反転する。
+        double snSign = Reverse ? -1 : 1;
+        Document.Project.StartNumber = _snStartNumber0 + snSign * dpx * _snFramesPerPx;
         sv?.ScrollToVerticalOffset(Math.Max(0, _snScrollOffset0 - dpx));
         InvalidateVisual();
         e.Handled = true;
@@ -310,7 +312,9 @@ public sealed class ChartCanvas : FrameworkElement
             long bestTick = -1;
             long tick = 0;
             int measure = 0;
-            long maxTick = (long)Document.CurrentLayout.YToTick(guideY + 2000) + 1;
+            // 2026-07-22: 「guideYから画面下方向へ2000px」はReverse時に意味が逆転する(下方向=tick減少に
+            // なりうる)ため、tick基準(guideのtick + 2000px相当のtick数)で探索上限を求める形に変更。
+            long maxTick = (long)engine.FrameToTick(gf) + (long)(2000 / Document.CurrentLayout.PxPerTick) + 1;
             while (tick <= maxTick && measure < 10000)
             {
                 double y = Document.CurrentLayout.TickToY(tick);
@@ -336,6 +340,9 @@ public sealed class ChartCanvas : FrameworkElement
 
     /// <summary>マウス操作の受け皿(仕様書6.3.1)。MainWindowがEditorDocumentと紐付けて生成する。</summary>
     public SmartToolController? Controller { get; set; }
+
+    /// <summary>マウスホバー中の座標(2026-07-25、カーソルライン表示用)。キャンバス外に出るとnull。</summary>
+    private Point? _hoverPos;
 
     public ChartCanvas()
     {
@@ -406,9 +413,20 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        // 2026-07-25: カーソルライン(最寄りスナップ位置の可視化)のため、ボタン押下の有無に関わらず
+        // 常にホバー座標を更新して再描画する(以前はドラッグ中=IsMouseCaptured時のみ再描画していた)。
+        _hoverPos = e.GetPosition(this);
         if (StartNumberEditMode) { SnMove(e); return; }
-        if (Controller is null || !IsMouseCaptured) return;
-        Controller.Move(PosOf(e.GetPosition(this)));
+        if (Controller is null) { InvalidateVisual(); return; }
+        if (IsMouseCaptured) Controller.Move(PosOf(e.GetPosition(this)));
+        InvalidateVisual();
+    }
+
+    /// <summary>マウスがキャンバス外に出たらカーソルラインを消す(2026-07-25)。</summary>
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _hoverPos = null;
         InvalidateVisual();
     }
 
@@ -497,7 +515,10 @@ public sealed class ChartCanvas : FrameworkElement
         if (Document is null) return new Size(0, 0);
         var layout = Document.CurrentLayout;
         long maxTick = MaxTickInProject(Document);
-        double h = layout.ContentHeight(maxTick);
+        double h = layout.ContentHeight(maxTick); // Reverseの影響を受けない素の高さ(スクロール範囲自体は不変)
+        // 2026-07-22: マウス操作(YToTick)がOnRenderの前に発生するケースに備え、ここでも反転基準を更新しておく。
+        layout.Reverse = Reverse;
+        layout.RefreshContentHeight(maxTick);
         return new Size(layout.TotalWidth, h);
     }
 
@@ -531,11 +552,19 @@ public sealed class ChartCanvas : FrameworkElement
         var tab = Document.CurrentTab;
         var engine = project.CreateTimingEngine();
 
+        // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)。RefreshContentHeightは反転基準の
+        // コンテンツ高さを最新化する(Reverse=false時は参照されないが常に呼んでおいて問題ない)。
+        layout.Reverse = Reverse;
+        layout.RefreshContentHeight(MaxTickInProject(Document));
+
         var viewport = ViewportRect.IsEmpty ? new Rect(0, 0, layout.TotalWidth, Math.Max(RenderSize.Height, 600)) : ViewportRect;
         double yTop = Math.Max(0, viewport.Top - 32);   // 少し余裕を持ってカリング
         double yBottom = viewport.Bottom + 32;
-        long tickMin = Math.Max(0, (long)layout.YToTick(yTop) - 1);
-        long tickMax = (long)layout.YToTick(yBottom) + 1;
+        // 2026-07-22: Reverse時はYが大きいほどtickが小さくなるため、YToTick後にMin/Maxを取り直す
+        // (yTop<yBottomは常に成立するが、対応するtickの大小は反転しうる)。
+        double tA = layout.YToTick(yTop), tB = layout.YToTick(yBottom);
+        long tickMin = Math.Max(0, (long)Math.Min(tA, tB) - 1);
+        long tickMax = (long)Math.Max(tA, tB) + 1;
 
         DrawWaveform(dc, layout, engine, yTop, yBottom); // 最下層(2026-07-18)。カラム背景は半透明のため透ける
         DrawColumnBackgrounds(dc, layout, yTop, yBottom);
@@ -550,10 +579,36 @@ public sealed class ChartCanvas : FrameworkElement
         DrawPlaybackLine(dc, layout, tickMin, tickMax);
         DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
+        DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
+        DrawLaneLabels(dc, layout, viewport); // 2026-07-22: レーンラベル(常に最前面)
     }
+
+    /// <summary>譜面ビューReverse表示(2026-07-22、環境設定のみで切替。プレイテストには非適用)。</summary>
+    public bool Reverse { get; set; }
+
+    /// <summary>SKB操作モード(キーボード操作)が有効中か(2026-07-22、レーンラベルの2行目表示に使用)。
+    /// MainWindow.ToggleKeyboardModeから反映される。</summary>
+    public bool KeyboardModeActive { get; set; }
 
     private static readonly Brush WaveformBrush = MakeFrozen(new SolidColorBrush(Color.FromArgb(0x55, 0x4F, 0xC3, 0xF7)));
     private static readonly Pen GuidePen = MakeFrozenPen(new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)), 2) { DashStyle = new DashStyle([6, 3], 0) });
+
+    // --- カーソルライン(2026-07-25): マウスホバー中、最寄りのスナップ位置を可視化する。
+    // 全レーン共通の細い線(今どのtickへスナップするか)+ホバー中のレーンだけ太い帯で強調
+    // (今クリックするとどこに何が置かれるかを事前に明示する要望対応)。太さ・色は表示設定
+    // (DisplaySettingsDialog)から変更可能(2026-07-25b、HighlightLineWidth/Colorと同じ方式)。
+    public double CursorLineWidth { get; set; } = 1.0;
+    public Color CursorLineColor { get; set; } = Color.FromRgb(0xFF, 0xFF, 0xFF);
+    public double CursorHighlightWidth { get; set; } = 8.0;
+    public Color CursorHighlightColor { get; set; } = Color.FromRgb(0x00, 0xE5, 0xFF);
+
+    public void ApplyCursorLineSettings(double lineWidth, Color lineColor, double highlightWidth, Color highlightColor)
+    {
+        CursorLineWidth = lineWidth;
+        CursorLineColor = lineColor;
+        CursorHighlightWidth = highlightWidth;
+        CursorHighlightColor = highlightColor;
+    }
 
     private static Brush MakeFrozen(Brush b) { b.Freeze(); return b; }
     private static Pen MakeFrozenPen(Pen p) { p.Freeze(); return p; }
@@ -594,6 +649,41 @@ public sealed class ChartCanvas : FrameworkElement
         }
         geo.Freeze();
         dc.DrawGeometry(WaveformBrush, null, geo);
+    }
+
+    /// <summary>マウスカーソルの直下ではなく「今クリックしたら実際にどこへスナップされるか」を
+    /// 可視化するカーソルライン(2026-07-25)。SmartToolController.SnappedTickAtをそのまま使うため、
+    /// 実際の配置ロジックと表示が食い違うことは無い。StartNumber編集モード中は専用のガイド線
+    /// (DrawGuideLine)と役割が重複し紛らわしいため非表示にする。</summary>
+    private void DrawCursorLine(DrawingContext dc, ChartLayout layout)
+    {
+        if (StartNumberEditMode) return;
+        if (_hoverPos is not { } pos || Controller is null) return;
+
+        long tick = Controller.SnappedTickAt(new PointerPos(pos.X, pos.Y));
+        double y = layout.TickToY(tick);
+        double left = layout.Columns[0].X;
+        double right = layout.Columns[^1].X + layout.Columns[^1].Width;
+
+        // 2026-07-25b: 太さ・色はAppSettings経由で可変のため、DrawPlaybackStartLineと同様に
+        // 毎回組み立てる(Freeze可能な値なので描画コストは軽微)。全レーンに薄く重ねるため、
+        // 設定色へ固定の半透明度を追加で適用する(アルファ自体は表示設定の対象外)。
+        var lineColor = Color.FromArgb(0x90, CursorLineColor.R, CursorLineColor.G, CursorLineColor.B);
+        var linePen = new Pen(Freeze(new SolidColorBrush(lineColor)), CursorLineWidth) { DashStyle = new DashStyle([4, 3], 0) };
+        linePen.Freeze();
+        dc.DrawLine(linePen, new Point(left, y), new Point(right, y));
+
+        // カーソルが乗っているレーン(列)だけ、太い帯で強調する
+        // (今クリックすると「ここ」に配置される、という対象レーンの明示)。
+        var hoverCol = layout.ColumnAt(pos.X);
+        if (hoverCol is not null)
+        {
+            var fillColor = Color.FromArgb(0x80, CursorHighlightColor.R, CursorHighlightColor.G, CursorHighlightColor.B);
+            var borderPen = new Pen(Freeze(new SolidColorBrush(CursorHighlightColor)), 1.5);
+            borderPen.Freeze();
+            var rect = new Rect(hoverCol.X, y - CursorHighlightWidth / 2, hoverCol.Width, CursorHighlightWidth);
+            dc.DrawRectangle(Freeze(new SolidColorBrush(fillColor)), borderPen, rect);
+        }
     }
 
     /// <summary>StartNumber編集モードのスナップ用ガイド線(最大1本、波形=絶対フレームに固定)。
@@ -638,7 +728,9 @@ public sealed class ChartCanvas : FrameworkElement
         double fMin = engine.TickToFrame(tickMin);
         double fMax = engine.TickToFrame(Math.Max(tickMax, tickMin + 1));
         if (fMax <= fMin) return;
-        double pxPerFrame = (layout.TickToY(tickMax) - layout.TickToY(tickMin)) / (fMax - fMin);
+        // 2026-07-22: Reverse時はtickMax側のYがtickMin側より小さくなるため絶対値を取る
+        // (この値はグリッド間隔[px]の大きさのみに使うスカラー量で、各線のY自体は個別にTickToYで求める)。
+        double pxPerFrame = Math.Abs((layout.TickToY(tickMax) - layout.TickToY(tickMin)) / (fMax - fMin));
         if (pxPerFrame <= 0) return;
 
         double[] steps = [1, 2, 5, 10, 15, 30, 60, 300, 600];
@@ -726,31 +818,82 @@ public sealed class ChartCanvas : FrameworkElement
             double cx = col.CenterX;
             double half = layout.NoteSize / 2;
             var image = GetNoteImage(laneDef.NoteGraphic); // ./img/{noteGraphic}.png、無ければnull(ベクターへフォールバック)
+            // 2026-07-25: 塗りつぶし色(ShadowColor編集モード)用の画像。本体側の素材命名に合わせ、
+            // arrow.png使用レーンはarrowShadow.png、それ以外(onigiri/giko/iyo/c/monar/morara)は
+            // 共通のaaShadow.pngを使う。素材が無ければ従来通り塗りつぶし色は表示に反映されない
+            // (画像そのものを毎フレーム塗り潰す方式は負荷が高いため採用しない、2026-07-25ユーザー確定仕様)。
+            var shadowImage = GetNoteImage(laneDef.NoteGraphic == "arrow" ? "arrowShadow" : "aaShadow");
 
             var (frzNoteColor, frzBandColor) = FrzColors(tab, project, laneDef.ColorGroup, brush);
+            // 2026-07-23: 色編集モード(ncolor_data)で個別指定された色をtickで引けるようにする。
+            var colorOverrides = tab.Lanes[i].ColorOverrides.ToDictionary(c => c.Tick);
+
+            // 2026-07-24: frzHitColor編集モード中は、判定中(ヒット時)の色をプレビュー表示する
+            // (仕様: 対象色パラメータが変わり、譜面ビュー上のフリーズアローの表示色がヒット時設定の
+            // ものになるようにしたい)。通常表示への影響を避けるため、この間だけ既定色・個別上書きの
+            // 参照元をHit/HitBar系に差し替える(端点/帯の描画ロジック自体は変えない)。
+            bool hitPreview = Controller is { ColorEditModeEnabled: true, SubMode: ColorEditSubMode.FrzHit };
+            Color frzHitNoteColor = frzNoteColor, frzHitBandColor = frzBandColor;
+            if (hitPreview)
+            {
+                var (hitHex, hitBarHex) = ColorDefaults.ResolveFrzHitColorsHex(tab, project, laneDef.ColorGroup,
+                    ColorToHex(frzNoteColor), ColorToHex(frzBandColor));
+                frzHitNoteColor = TryParseColor(hitHex, frzNoteColor);
+                frzHitBandColor = TryParseColor(hitBarHex, frzBandColor);
+            }
+
+            // 2026-07-25: 塗りつぶし色(ArrowShadow/NormalShadow、frzHitColorプレビュー中はHitShadow)の
+            // 既定色。HitShadowは専用ヘッダーが無いためNormalShadowの解決値へフォールバックする
+            // (DosImporter/DosExporterと同じ簡略化、2026-07-24開示済み)。
+            Color arrowShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "setShadowColor"), Colors.Black);
+            Color normalShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "frzShadowColor"), Colors.Black);
+
             foreach (var f in tab.Lanes[i].Freezes)
             {
                 if (f.EndTick < tickMin || f.StartTick > tickMax) continue;
                 double y1 = layout.TickToY(f.StartTick);
                 double y2 = layout.TickToY(f.EndTick);
 
-                // 帯(フリーズ胴体)はfrzColorのスロット[1]("帯(通常)")を使う(仕様書6.4.2)
-                var bandBrush = Freeze(new SolidColorBrush(frzBandColor) { Opacity = 0.5 });
-                dc.DrawRectangle(bandBrush, null, new Rect(cx - half / 2, y1, half, y2 - y1));
+                colorOverrides.TryGetValue(f.StartTick, out var fOver);
+                Color edgeColor, bandColor, shadowColor;
+                if (hitPreview)
+                {
+                    edgeColor = fOver?.HitColor is { } hc ? ParseDisplayColor(hc, frzHitNoteColor) : frzHitNoteColor;
+                    bandColor = fOver?.HitBarColor is { } hbc ? ParseDisplayColor(hbc, frzHitBandColor) : frzHitBandColor;
+                    shadowColor = fOver?.HitShadowColor is { } hsc ? ParseDisplayColor(hsc, normalShadowDefault) : normalShadowDefault;
+                }
+                else
+                {
+                    edgeColor = fOver?.Color is { } ec ? ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
+                    bandColor = fOver?.BandColor is { } bc ? ParseDisplayColor(bc, frzBandColor) : frzBandColor;
+                    shadowColor = fOver?.ShadowColor is { } sc ? ParseDisplayColor(sc, normalShadowDefault) : normalShadowDefault;
+                }
+
+                // 帯(フリーズ胴体)はfrzColorのスロット[1]("帯(通常)")、またはncolor_data帯指定を使う(仕様書6.4.2)
+                // 2026-07-22: Reverse時はy2<y1になりうるため、Rect構築はMin/Abs基準にする(順序非依存)。
+                var bandBrush = Freeze(new SolidColorBrush(bandColor) { Opacity = 0.5 });
+                dc.DrawRectangle(bandBrush, null, new Rect(cx - half / 2, Math.Min(y1, y2), half, Math.Abs(y2 - y1)));
 
                 // 2026-07-16j: ShowNoteImages/ShowHighlightGridは独立トグルになったため、
                 // 「画像 or ベクターフォールバック」を描いた上で、強調グリッドは条件を問わず追加で重ねて描く。
                 if (ShowNoteImages && image is not null)
                 {
-                    // 始点・終点ともレーンのノート画像を使う(2026-07-16h)。frzColorのスロット[0]の色を
-                    // 乗算着色する(2026-07-16k: 画像表示時もfrzColorが反映されない不具合の対応)。
-                    DrawNoteImage(dc, image, laneDef, cx, y1, layout.NoteSize, frzNoteColor);
-                    DrawNoteImage(dc, image, laneDef, cx, y2, layout.NoteSize, frzNoteColor);
+                    // 2026-07-25: 塗りつぶし色の画像(あれば)を本体画像より先に描き、下地として重ねる
+                    // (本体側の見た目に合わせ、塗りつぶしを背面レイヤーとして扱う)。
+                    if (shadowImage is not null)
+                    {
+                        DrawNoteImage(dc, shadowImage, laneDef, cx, y1, layout.NoteSize, shadowColor);
+                        DrawNoteImage(dc, shadowImage, laneDef, cx, y2, layout.NoteSize, shadowColor);
+                    }
+                    // 始点・終点ともレーンのノート画像を使う(2026-07-16h)。frzColor(またはncolor_data端点指定)の
+                    // 色を乗算着色する(2026-07-16k: 画像表示時もfrzColorが反映されない不具合の対応)。
+                    DrawNoteImage(dc, image, laneDef, cx, y1, layout.NoteSize, edgeColor);
+                    DrawNoteImage(dc, image, laneDef, cx, y2, layout.NoteSize, edgeColor);
                 }
                 else if (ShowNoteImages)
                 {
-                    // 画像が無い場合のベクターフォールバック。色はfrzColorのスロット[0]("始点終点(通常)")
-                    var noteBrush = Freeze(new SolidColorBrush(frzNoteColor));
+                    // 画像が無い場合のベクターフォールバック。色はfrzColorのスロット[0](またはncolor_data端点指定)
+                    var noteBrush = Freeze(new SolidColorBrush(edgeColor));
                     dc.DrawEllipse(noteBrush, null, new Point(cx, y1), half / 2, half / 2);
                     dc.DrawEllipse(noteBrush, new Pen(Brushes.White, 1), new Point(cx, y2), half / 2, half / 2);
                 }
@@ -767,15 +910,23 @@ public sealed class ChartCanvas : FrameworkElement
             {
                 if (t < tickMin || t > tickMax) continue;
                 double y = layout.TickToY(t);
+                colorOverrides.TryGetValue(t, out var nOver);
+                var noteColor = nOver?.Color is { } nc ? ParseDisplayColor(nc, ((SolidColorBrush)brush).Color) : ((SolidColorBrush)brush).Color;
+                var noteShadowColor = nOver?.ShadowColor is { } nsc ? ParseDisplayColor(nsc, arrowShadowDefault) : arrowShadowDefault;
                 // 2026-07-16j: 独立トグル化。ノート画像(or ベクターフォールバック)と強調グリッドは
                 // 排他ではなく、それぞれのフラグに応じて重ねて描く。
                 if (ShowNoteImages)
                 {
                     if (image is not null)
-                        // setColorの色を乗算着色する(2026-07-16k: 画像表示時もsetColorが反映されない不具合の対応)。
-                        DrawNoteImage(dc, image, laneDef, cx, y, layout.NoteSize, ((SolidColorBrush)brush).Color);
+                    {
+                        // 2026-07-25: 塗りつぶし色の画像(あれば)を本体画像より先に描く(フリーズと同じ扱い)。
+                        if (shadowImage is not null)
+                            DrawNoteImage(dc, shadowImage, laneDef, cx, y, layout.NoteSize, noteShadowColor);
+                        // setColor(またはncolor_data指定)の色を乗算着色する(2026-07-16k: 画像表示時もsetColorが反映されない不具合の対応)。
+                        DrawNoteImage(dc, image, laneDef, cx, y, layout.NoteSize, noteColor);
+                    }
                     else
-                        dc.DrawRectangle(brush, new Pen(Brushes.Black, 0.5), new Rect(cx - half, y - half, half * 2, half * 2));
+                        dc.DrawRectangle(Freeze(new SolidColorBrush(noteColor)), new Pen(Brushes.Black, 0.5), new Rect(cx - half, y - half, half * 2, half * 2));
                 }
 
                 if (ShowHighlightGrid)
@@ -819,11 +970,9 @@ public sealed class ChartCanvas : FrameworkElement
     /// </summary>
     internal static Brush LaneBrush(DifficultyTab tab, ChartProject project, int colorGroup) // 2026-07-17g: internal化(同上)
     {
-        var overrides = tab.SetColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].SetColorOverride : null);
-        if (overrides is not null && colorGroup >= 0 && colorGroup < overrides.Count)
-            return BrushOf(overrides[colorGroup]);
-        var hex = DefaultLaneColors[colorGroup % DefaultLaneColors.Length];
-        return BrushOf(hex);
+        // 2026-07-24: 既定色解決ロジックはCore側のColorDefaultsへ集約(DosExporter/DosImporterの
+        // ncolor_data永続化対応と表示を一致させるため、算出方法を1箇所に統一した)。
+        return BrushOf(ColorDefaults.ResolveSetColorHex(tab, project, colorGroup));
     }
 
     /// <summary>
@@ -835,31 +984,40 @@ public sealed class ChartCanvas : FrameworkElement
     /// </summary>
     internal static (Color NoteColor, Color BandColor) FrzColors(DifficultyTab tab, ChartProject project, int colorGroup, Brush setColorBrush) // 2026-07-17g: internal化(同上)
     {
+        // 2026-07-24: 既定色解決ロジックはCore側のColorDefaultsへ集約(LaneBrushと同じ理由)。
         var fallback = ((SolidColorBrush)setColorBrush).Color;
-
-        // 2026-07-16l: defaultFrzColorUse=trueの間、frzColorの指定は強制的にOFF扱いにする
-        // (dos-h0063の仕様上、trueの時は本体側の既定フリーズアロー色セットが使われ、frzColorの
-        // 値そのものが無視されるため。エディタは本体既定色セットまでは実装していないので、
-        // 代わりにsetColor由来の色へフォールバックする — ユーザー向けに開示済みの簡略化)。
-        bool defaultFrzColorUse = project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
-        if (defaultFrzColorUse) return (fallback, fallback);
-
-        var frz = tab.FrzColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].FrzColorOverride : null);
-        if (frz is null) return (fallback, fallback);
-
-        int baseIdx = colorGroup * 4;
-        string? noteHex = baseIdx < frz.Count ? frz[baseIdx] : null;
-        string? bandHex = baseIdx + 1 < frz.Count ? frz[baseIdx + 1] : null;
-
-        Color noteColor = string.IsNullOrWhiteSpace(noteHex) ? fallback : TryParseColor(noteHex!, fallback);
-        Color bandColor = string.IsNullOrWhiteSpace(bandHex) ? fallback : TryParseColor(bandHex!, fallback);
-        return (noteColor, bandColor);
+        var (normalHex, barHex) = ColorDefaults.ResolveFrzColorsHex(tab, project, colorGroup,
+            ColorDefaults.ResolveSetColorHex(tab, project, colorGroup));
+        return (TryParseColor(normalHex, fallback), TryParseColor(barHex, fallback));
     }
 
     private static Color TryParseColor(string hex, Color fallback)
     {
         try { return (Color)ColorConverter.ConvertFromString(hex)!; }
         catch { return fallback; }
+    }
+
+    /// <summary>frzHitColorプレビュー用にResolveFrzHitColorsHex(hex文字列ベース)へ渡すためのColor→hex変換
+    /// (2026-07-24)。DrawNotesAndFreezesが既に解決済みのColorしか持たないため、Core側のColorDefaultsを
+    /// 再利用するにはここで一度hexへ戻す必要がある。</summary>
+    private static string ColorToHex(Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+
+    /// <summary>ncolor_data用ColorCode(単色/グラデーション記法)の譜面ビュー表示用近似色を求める
+    /// (2026-07-23)。譜面ビューは編集用プレビューでありグラデーション自体は描画しないため、
+    /// 先頭の色区間(@種類指定・先頭のグラデーション方向指定を除いた最初の色)だけを単色として使う。
+    /// "0xRRGGBB"表記(dos.txt由来)にも対応する。</summary>
+    internal static Color ParseDisplayColor(string code, Color fallback)
+    {
+        var head = code.Split('@', 2)[0].Split(':', StringSplitOptions.TrimEntries)[0];
+        // linear-gradientの方向指定("45deg"/"to right"等)が先頭に来ている場合はスキップして次の区間を見る
+        if (head.Length > 0 && !head.StartsWith('#') && !head.StartsWith("0x") && !head.StartsWith("0X")
+            && !char.IsLetter(head, 0))
+        {
+            var parts = code.Split('@', 2)[0].Split(':', StringSplitOptions.TrimEntries);
+            head = parts.Length > 1 ? parts[1] : head;
+        }
+        if (head.Length > 2 && head[0] == '0' && (head[1] is 'x' or 'X')) head = "#" + head[2..];
+        return TryParseColor(head, fallback);
     }
 
     private static void DrawValueEvents(DrawingContext dc, ChartLayout layout, DifficultyTab tab, ChartProject project, long tickMin, long tickMax)
@@ -906,6 +1064,56 @@ public sealed class ChartCanvas : FrameworkElement
             if (tick < tickMin || tick > tickMax) continue;
             DrawEventTag(dc, col, layout.TickToY(tick), TimeSigBrush, $"{s.Numerator}/{s.Denominator}", pointLeft: true, layout.ZoomScale);
         }
+    }
+
+    /// <summary>
+    /// 譜面ビュー上部(Reverse時は下部)に常時固定表示するレーンラベル(2026-07-22)。
+    /// 情報レーン(マーカー/拍子/speed/boost/BPM)は単語1つ、ノートレーンは実キー(1行目、KeyAssignLabel)+
+    /// キーボードモード中のみ入力キー(2行目、KeyboardInputKeysLabel、水色で区別)を表示する。
+    /// 固定ヘッダーのXAML要素は作らず、viewport(スクロール位置)に追従してOnRenderのたびに
+    /// その位置へ描き直す方式(ChartCanvas全体が1枚のCanvasで、ScrollViewerが外側にあるため)。
+    /// </summary>
+    private void DrawLaneLabels(DrawingContext dc, ChartLayout layout, Rect viewport)
+    {
+        if (Document is null) return;
+        var template = Document.CurrentTemplate;
+        double fontSize = Math.Max(7, 9 * layout.ZoomScale);
+        double lineH = fontSize + 3;
+        double barHeight = (KeyboardModeActive ? lineH * 2 : lineH) + 6;
+        double barTop = Reverse ? viewport.Bottom - barHeight : viewport.Top;
+
+        dc.DrawRectangle(LaneLabelBackgroundBrush, null, new Rect(viewport.Left, barTop, viewport.Width, barHeight));
+
+        foreach (var col in layout.Columns)
+        {
+            string? line1 = col.Kind switch
+            {
+                ColumnKind.Marker => "マーカー",
+                ColumnKind.Measure => "拍子",
+                ColumnKind.Speed => "speed",
+                ColumnKind.Boost => "boost",
+                ColumnKind.Bpm => "BPM",
+                ColumnKind.Note => template.Lanes[col.NoteLaneIndex].KeyAssignLabel,
+                _ => null,
+            };
+            if (string.IsNullOrEmpty(line1)) continue;
+
+            DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, Brushes.White);
+
+            if (col.Kind == ColumnKind.Note && KeyboardModeActive)
+            {
+                var line2 = template.Lanes[col.NoteLaneIndex].KeyboardInputKeysLabel;
+                if (!string.IsNullOrEmpty(line2))
+                    DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, line2, fontSize, KeyboardInputKeyBrush);
+            }
+        }
+    }
+
+    private static void DrawLaneLabelText(DrawingContext dc, double centerX, double top, string text, double fontSize, Brush brush)
+    {
+        var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight, Typeface, fontSize, brush, 1.0);
+        dc.DrawText(ft, new Point(centerX - ft.Width / 2, top));
     }
 
     /// <summary>
@@ -1000,7 +1208,7 @@ public sealed class ChartCanvas : FrameworkElement
                             double y1 = layout.TickToY(freeze.StartTick + mv.TickDelta);
                             double y2 = layout.TickToY(freeze.EndTick + mv.TickDelta);
                             double half = layout.NoteSize / 2;
-                            dc.DrawRectangle(null, ghostPen, new Rect(col.CenterX - half / 2, y1, half, y2 - y1));
+                            dc.DrawRectangle(null, ghostPen, new Rect(col.CenterX - half / 2, Math.Min(y1, y2), half, Math.Abs(y2 - y1)));
                             dc.DrawEllipse(null, ghostPen, new Point(col.CenterX, y1), half / 2, half / 2);
                             dc.DrawEllipse(null, ghostPen, new Point(col.CenterX, y2), half / 2, half / 2);
                             break;
@@ -1027,7 +1235,7 @@ public sealed class ChartCanvas : FrameworkElement
             double y1 = layout.TickToY(rf.StartTick);
             double y2 = layout.TickToY(rf.EndTick);
             double half = layout.NoteSize / 2;
-            dc.DrawRectangle(null, ghostPen, new Rect(col.CenterX - half / 2, y1, half, y2 - y1));
+            dc.DrawRectangle(null, ghostPen, new Rect(col.CenterX - half / 2, Math.Min(y1, y2), half, Math.Abs(y2 - y1)));
             dc.DrawEllipse(null, ghostPen, new Point(col.CenterX, y1), half / 2, half / 2);
             dc.DrawEllipse(null, ghostPen, new Point(col.CenterX, y2), half / 2, half / 2);
         }
@@ -1074,7 +1282,7 @@ public sealed class ChartCanvas : FrameworkElement
                     double y1 = layout.TickToY(freeze.StartTick);
                     double y2 = layout.TickToY(freeze.EndTick);
                     double half = layout.NoteSize / 2 + 3;
-                    dc.DrawRectangle(null, deletePen, new Rect(col.CenterX - half, y1 - half, half * 2, (y2 - y1) + half * 2));
+                    dc.DrawRectangle(null, deletePen, new Rect(col.CenterX - half, Math.Min(y1, y2) - half, half * 2, Math.Abs(y2 - y1) + half * 2));
                     break;
                 }
             case ObjectKind.Speed:
@@ -1146,7 +1354,7 @@ public sealed class ChartCanvas : FrameworkElement
                         var col = layout.NoteColumn(r.Lane);
                         double y1 = layout.TickToY(f.StartTick);
                         double y2 = layout.TickToY(f.EndTick);
-                        dc.DrawRectangle(null, SelectionPen, new Rect(col.CenterX - half - 2, y1 - 2, half * 2 + 4, (y2 - y1) + 4));
+                        dc.DrawRectangle(null, SelectionPen, new Rect(col.CenterX - half - 2, Math.Min(y1, y2) - 2, half * 2 + 4, Math.Abs(y2 - y1) + 4));
                         break;
                     }
                 case ObjectKind.Speed:

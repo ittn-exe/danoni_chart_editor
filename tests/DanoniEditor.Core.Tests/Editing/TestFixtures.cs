@@ -21,11 +21,11 @@ internal static class TestFixtures
 
     public static TemplateRepository Repository() => new(TemplateDir());
 
-    /// <summary>BPM120・拍子4/4・5keyタブ1つを持つ最小プロジェクト</summary>
-    public static ChartProject NewProject(double bpm = 120)
+    /// <summary>BPM120・拍子4/4・keyTypeId(既定"5")タブ1つを持つ最小プロジェクト</summary>
+    public static ChartProject NewProject(double bpm = 120, string keyTypeId = "5")
     {
         var repo = Repository();
-        var template = repo.Get("5");
+        var template = repo.Get(keyTypeId);
         var project = new ChartProject
         {
             ProjectName = "test",
@@ -36,5 +36,5 @@ internal static class TestFixtures
         return project;
     }
 
-    public static EditorDocument NewDocument(double bpm = 120) => new(NewProject(bpm), Repository());
+    public static EditorDocument NewDocument(double bpm = 120, string keyTypeId = "5") => new(NewProject(bpm, keyTypeId), Repository());
 }

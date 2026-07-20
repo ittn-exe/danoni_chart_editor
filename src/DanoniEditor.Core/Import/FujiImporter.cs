@@ -41,15 +41,32 @@ public sealed class FujiImportResult
 }
 
 /// <summary>
-/// FUJIエディタ形式のインポーター(仕様書15.3)。実データ(a.txt/a_dos.txt, by_node)で検証した解釈:
+/// FUJIエディタ形式のインポーター(仕様書15.3)。実データ(a.txt/a_dos.txt, by_node,
+/// 2026-07-25の1224frztest.txt/1224frztest_dos.txt全数比較)で検証した解釈:
 /// - $frame=A/B/C/D,E: blank=B/10, 総フレーム=C/10, E=小節数。ヘッダーのblankFrameより$frameのBが優先。
 /// - mlen = (C/10 − blank) / (E − Σskip/16)   ※skipは$barcutの16分単位カット量
 /// - 小節行 "MMMM:tok,tok,..." のトークン:
-///   - 4hex "PPLL": 通常ノート。frame = cum(M) + PP/256 × mlen。LL = engineLaneNum×0x10
-///   - "X8LL-QQQQ": フリーズ。X=1/16スロット、start = cum(M) + X/16 × mlen、
-///     dur = (QQQQ ≥ 0x100 ? QQQQ−0x60 : QQQQ)/256 × mlen
+///   - 4hex "PPDF": 通常ノート。PP=2桁16進(下位ニブルはレーン拡張ビット+16、2026-07-18c)、
+///     D=レーン数字(1桁16進)、F=fine文字(位置微調整、下記参照)。frame = cum(M) + PP/256 × mlen
+///     をF='0'なら無補正、それ以外はfine文字の規則で補正する。
+///   - "X8DF-QQQQ": フリーズ。X=1/16スロット(始点)、D=レーン数字、F=始点のfine文字。
+///     フラグ'8'/'9'(2文字目)はレーン+16拡張(実データの'0920-0120'等から確定)。
+///     終点QQQQが全て16進ならdur=(QQQQ≥0x100?QQQQ−0x60:QQQQ)/256×mlenをそのまま加算。
+///     QQQQの末尾が16進以外(fine文字)の場合、残り3桁dを1/16値とみなし(pp=d×16)、
+///     終点はcum(M)+ResolveFineFrame(pp,終点fine文字)(始点のfine補正の影響を受けない、
+///     2026-07-25確定)。
+///   - fine文字の規則(ノート位置・フリーズ始点・フリーズ終点で共通、2026-07-25全数検証確定):
+///     '0'=補正なし、'1'〜'9'=+1〜+9フレーム、'A'〜'I'=−1〜−9フレーム(旧「9−d」式は
+///     A〜Fでのみ数学的に等価だっただけで、1〜9側は誤りだった)、'T'=+3フレーム固定、
+///     'X'=−3フレーム固定(新規)、'R'=12分グリッド丸め、'S'=24分グリッド丸め。
+///     ただし通常ノートの'R'は、対象レーンでフリーズが小節を跨いでいる場合に限り
+///     「継続マーカー」として無視される(2026-07-15確定、フリーズ終点側の'R'とは別物)。
 ///   - "X400-VVVV": speed変化(値=VVVV/1000)、"X410-VVVV": boost変化
 /// - カット小節は拍子オブジェクト (16−skip)/16 として表現(次の非カット小節で元拍子へ復帰)
+/// - 未確定事項(2026-07-25時点、docs/fuji_format_notes.md参照): フリーズ終点の'R'は実例2件のみで
+///   12分/24分グリッドが一致する位置だったため式が確定しきれていない、終点側で数字(1〜9,A〜I)を
+///   使うケースは実例なし、'T'/'X'の固定+3/−3フレーム説は特殊なmlen(=100)のサンプルのため
+///   「PP+8単位」説と数値上区別できていない、レーン拡張(マーカー'9')はフリーズ終点未検証。
 /// </summary>
 public sealed class FujiImporter
 {
@@ -57,6 +74,49 @@ public sealed class FujiImporter
 
     public FujiImporter(Func<string, KeyTemplate> templateResolver)
         => _templateResolver = templateResolver;
+
+    /// <summary>
+    /// ファイルからdifData行を、キー種で絞り込まずに全て読み取る(2026-07-20: D&D等で
+    /// 「まずdifDataを見てキー種・難易度を自動/選択で決める」フローに使う。従来はImport()に
+    /// キー種を先に渡す必要があったが、difData自体は各行が自分のキー種を持つ自己完結データ
+    /// なので、キー種決定より前に読める)。difData未記載のファイルは空リストを返す
+    /// (呼び出し側はキー種を手動で聞く必要がある)。$frameが無い非FUJI形式でも例外を投げない。
+    /// </summary>
+    public static IReadOnlyList<DifDataCandidate> ScanDifData(string fileText)
+    {
+        var headerParams = DosParamParser.Parse(ExtractHeaderText(fileText));
+        if (!headerParams.TryGetValue("difData", out var difData)) return [];
+
+        return difData.Split('$', '\n')
+            .Select(r => r.Trim()).Where(r => r.Length > 0)
+            .Select(r => r.Split(','))
+            .Where(r => r.Length >= 2)
+            .Select(r => new DifDataCandidate(
+                r[0].Trim(),
+                r[1].Trim(),
+                r.Length > 2 && double.TryParse(r[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : null))
+            .ToList();
+    }
+
+    /// <summary>$header〜次の$セクションまでの本文を取り出す(Import()とScanDifData()で共用)</summary>
+    private static string ExtractHeaderText(string fileText)
+    {
+        var headerText = new System.Text.StringBuilder();
+        string mode = "";
+        foreach (var raw in fileText.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            if (line.StartsWith('$'))
+            {
+                var eq = line.IndexOf('=');
+                var key = eq > 0 ? line[1..eq] : line[1..];
+                mode = key == "header" ? "header" : "";
+                continue;
+            }
+            if (mode == "header") headerText.AppendLine(raw);
+        }
+        return headerText.ToString();
+    }
 
     public FujiImportResult Import(string fileText, string keyTypeId)
     {
@@ -219,6 +279,83 @@ public sealed class FujiImporter
             return tick;
         }
 
+        // =====================================================================
+        // fine文字(位置微調整)の共通処理(2026-07-25、1224frztest.txt/1224frztest_dos.txtの
+        // 全数比較で確定。ノート位置・フリーズ始点・フリーズ終点(duration)のいずれでも同じ体系を使う)。
+        //   '0'      : 補正なし
+        //   '1'〜'9' : +1〜+9フレーム(そのまま。旧実装の「9−d」式はA〜Fの範囲でしか正しくなかった
+        //              ことが今回判明。1〜8側は「実例未観測の外挿」と明記されていた通り誤りだった)
+        //   'A'〜'I' : −1〜−9フレーム(A=10〜I=18として−(値−9)。G/H/Iは16進として無効なため
+        //              従来は警告スキップになっていた新規範囲)
+        //   'T'      : 常に+3フレーム(固定値。旧実装は「PP+8単位」説だったが、今回は固定+3の方が
+        //              単純に一致する。mlenが特殊値のサンプルのため両説は数値上区別できておらず、
+        //              異なるmlenでの追加検証が望ましい)
+        //   'X'      : 常に−3フレーム(新規判明、Tの逆)
+        //   'R'      : ノート位置・フリーズ始点では12分グリッド丸め(旧実装のR式のまま、旧実装から
+        //              変更なし)。フリーズ終点(duration)側だけは実例2件(いずれもRとSの式が数値上
+        //              一致する位置)しかなく、S式(24分グリッド)と区別できていない — 未確定のまま
+        //              据え置き(DurationQuantizedPp参照)
+        //   'S'      : 24分グリッド丸め(旧実装のS式のまま)
+        // =====================================================================
+
+        static double? LiteralFrameShift(char fine) => fine switch
+        {
+            '0' => 0,
+            >= '1' and <= '9' => fine - '0',
+            >= 'A' and <= 'I' => -(fine - 'A' + 1),
+            'T' => 3,
+            'X' => -3,
+            _ => null,
+        };
+
+        // ノート位置・フリーズ始点用(旧実装のまま、変更なし): RとSは別々の式を持つ。
+        //   R = 12分グリッドへ最近傍丸め(タイは後ろ優先)
+        //   S = 24分グリッドへの加算式(32刻みなら+32/3、それ以外は+16/3)
+        static double PositionQuantizedPp(double pp, char fine) => fine switch
+        {
+            'R' => Math.Floor(pp * 3.0 / 64.0 + 0.5) * 64.0 / 3.0,
+            'S' => pp + (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0),
+            _ => pp,
+        };
+
+        // フリーズ終点(duration)専用。Sは実測(7点)でS式(24分グリッド)と厳密一致を確認済み。
+        // Rは実例2点(d=1,2)しか無く、たまたま12分/24分グリッドが数値上一致する位置だったため、
+        // 「終点のRも本当に24分グリッドを使うのか、12分グリッド式を維持しているのか」は未確定
+        // (2026-07-25時点)。ひとまず実測と矛盾しないS式を両方に適用しておく。
+        static double DurationQuantizedPp(double pp, char fine) => fine switch
+        {
+            'S' or 'R' => pp + (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0),
+            _ => pp,
+        };
+
+        // (measure, pp[0-255スケール])にfine文字による微調整を適用した最終フレーム値を返す。
+        // R/Sはpp自体をグリッドへ丸めた上でフレーム変換、それ以外(数字/T/X)は無補正のフレームに
+        // 対して文字ごとの固定フレームシフトを加算する(2026-07-25確定)。durationContext=true指定時は
+        // フリーズ終点用のDurationQuantizedPp(R/S式共通)を、それ以外はPositionQuantizedPp
+        // (R/S式が別々)を使う。
+        double ResolveFineFrame(int measure, double pp, char fine, bool durationContext = false)
+        {
+            if (fine == 'R' || fine == 'S')
+            {
+                double adjustedPp = durationContext ? DurationQuantizedPp(pp, fine) : PositionQuantizedPp(pp, fine);
+                double tickF = engine.MeasureStartTick(measure) + adjustedPp / 256.0 * (4.0 * TimingEngine.TicksPerBeat);
+                return FrameAtFractionalTick(engine, tickF);
+            }
+            double baseTickF = engine.MeasureStartTick(measure) + pp / 256.0 * (4.0 * TimingEngine.TicksPerBeat);
+            double baseFrame = FrameAtFractionalTick(engine, baseTickF);
+            return baseFrame + (LiteralFrameShift(fine) ?? 0);
+        }
+
+        // ResolveFineFrameが返したフレーム値をtickへ変換し、TickOfで最終スナップ(丸め警告込み)する。
+        long FrameToMeasureTick(int measure, double frame)
+        {
+            double tickF = engine.FrameToTick(frame);
+            return TickOf(measure, (tickF - engine.MeasureStartTick(measure)) / (4.0 * TimingEngine.TicksPerBeat));
+        }
+
+        static bool IsKnownFineChar(char fine) =>
+            fine == 'R' || fine == 'S' || LiteralFrameShift(fine) is not null;
+
         foreach (var line in scoreLines)
         {
             var colon = line.IndexOf(':');
@@ -236,88 +373,45 @@ public sealed class FujiImporter
                     // 2026-07-18c: PPフィールドの下位ニブルはレーン番号の拡張ビット(+16)であることが
                     // 実データ(nkeys25W、レーン16以降を含む23key譜面の90トークン)から確定。
                     // 例: '2160' = PP=0x20, レーン6+16=22(bright)。位置は上位ニブルのみで表す。
+                    // 2026-07-25: 3文字目(レーン数字)+4文字目(fine文字)の構造はfine='0'の場合も
+                    // 含めて常に同一であることが判明(旧「PPLL」解釈はfine='0'のときの特殊ケースに
+                    // すぎなかった)。以下、両ケースを統一的に処理する。
                     int ppRaw = Convert.ToInt32(token[..2], 16);
                     int laneExt = (ppRaw & 0x0F) * 16;
                     int pp = ppRaw & 0xF0;
                     char laneDigitChar = token[2];
                     char fineChar = token[3];
 
+                    if (!int.TryParse(laneDigitChar.ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int laneDigit))
+                    { warnings.Add($"小節{measure}: 不明トークン'{token}'を無視"); return; }
+                    int fujiLane = laneDigit + laneExt;
+                    if (!laneByFuji.TryGetValue(fujiLane, out int laneIdx))
+                    { warnings.Add($"小節{measure}: FUJIレーン{fujiLane}は{keyTypeId}keyに存在しません('{token}')"); return; }
+
+                    if (fineChar == 'R')
+                    {
+                        // 'R'はフリーズが小節を跨いでいるレーンでは「継続マーカー」(2026-07-15確定)の
+                        // 用途もあるため、該当時は静かに無視する(フリーズ中のレーンにノートは
+                        // 置けないため、位置微調整用途とは衝突しない)。
+                        long mStartR = engine.MeasureStartTick(measure);
+                        long mEndR = engine.MeasureStartTick(measure + 1);
+                        bool freezeSpanning = tab.Lanes[laneIdx].Freezes
+                            .Any(f => (f.StartTick < mStartR && f.EndTick > mStartR)
+                                   || (f.StartTick < mEndR && f.EndTick > mEndR));
+                        if (freezeSpanning) return; // フリーズ継続マーカー
+                    }
+
+                    if (!IsKnownFineChar(fineChar))
+                    { warnings.Add($"小節{measure}: 不明なfine文字を含むトークン'{token}'を無視"); return; }
+
                     if (fineChar == '0')
                     {
-                        // 通常ノート PPLL(LL=FUJI列番号の下位×0x10)
-                        int ll = Convert.ToInt32(token[2..], 16);
-                        if ((ll & 0x0F) != 0)
-                        { warnings.Add($"小節{measure}: 不明トークン'{token}'を無視(LL下位ニブル非0)"); return; }
-                        int fujiLane = (ll >> 4) + laneExt;
-                        if (!laneByFuji.TryGetValue(fujiLane, out int laneIdx))
-                        { warnings.Add($"小節{measure}: FUJIレーン{fujiLane}は{keyTypeId}keyに存在しません('{token}')"); return; }
                         tab.Lanes[laneIdx].Notes.Add(TickOf(measure, pp / 256.0));
                         return;
                     }
 
-                    // 2026-07-17: 高精度ノート。4文字目が'0'以外(1-F、または'T')の場合、3文字目は
-                    // レーン番号を直接指す(×0x10しない)。4文字目の意味は2種類あることがユーザーに
-                    // 確認済み:
-                    //  ・'T': 16分グリッド(PP)から32分音符ぶん(=PP単位で+8、tick換算で+6)後ろの位置を
-                    //         表す固定マーカー(最終拍に32分音符を含む譜面のデータで確認済み)。
-                    //  ・1-F: PP単位をさらに16分割する微調整量(FUJIエディタ上で手動フレーム補正した
-                    //         ノートのデータ、実測小節47のパターンから逆算)。
-                    if (!int.TryParse(laneDigitChar.ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int laneDigit))
-                    { warnings.Add($"小節{measure}: 不明トークン'{token}'を無視"); return; }
-                    int fineFujiLane = laneDigit + laneExt;
-                    if (!laneByFuji.TryGetValue(fineFujiLane, out int fineLaneIdx))
-                    { warnings.Add($"小節{measure}: FUJIレーン{fineFujiLane}は{keyTypeId}keyに存在しません('{token}')"); return; }
-
-                    double finePp;
-                    if (fineChar == 'T')
-                    {
-                        finePp = pp + 8; // 32分音符ぶん後ろ(PP単位、256分の1測度)
-                    }
-                    else if (fineChar == 'S')
-                    {
-                        // 2026-07-18e 確定(nkeys25W修正版+dos出力の全ノート照合):
-                        // 'S' = 24分グリッド配置。PPの16分スロット内にある唯一の24分3連位置へ「後ろに」シフト。
-                        //   PP%32==0(8分表) → +2/3×16分(+32/3pp)   例: 0x00→10.67, 0x20→42.67
-                        //   PP%32==16(8分裏) → +1/3×16分(+16/3pp)  例: 0x10→21.33, 0x90→149.33
-                        // tick換算では常に整数(24分=8tick)。
-                        finePp = pp + (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0);
-                    }
-                    else if (fineChar == 'R')
-                    {
-                        // 2026-07-18e 確定(同上): 'R' = 12分グリッド配置。PPを12分グリッドへ
-                        // 四捨五入する(同距離のときは後ろへ)。Sと違い前方向へも動く
-                        // (例: '70CR'=112→106.67、'313R'=48→42.67。60小節の実データで確認)。
-                        // なお'R'はフリーズが小節を跨いでいるレーンでは「継続マーカー」(2026-07-15確定)の
-                        // 用途もあるため、該当時は従来通り静かに無視する(フリーズ中のレーンに
-                        // ノートは置けないため両用途は衝突しない)。
-                        long mStartR = engine.MeasureStartTick(measure);
-                        long mEndR = engine.MeasureStartTick(measure + 1);
-                        bool freezeSpanning = tab.Lanes[fineLaneIdx].Freezes
-                            .Any(f => (f.StartTick < mStartR && f.EndTick > mStartR)
-                                   || (f.StartTick < mEndR && f.EndTick > mEndR));
-                        if (freezeSpanning) return; // フリーズ継続マーカー
-                        double n = Math.Floor(pp * 3.0 / 64.0 + 0.5); // 12分単位で四捨五入(0.5は切り上げ)
-                        finePp = n * 64.0 / 3.0;
-                    }
-                    else if (!int.TryParse(fineChar.ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int fineDigit))
-                    { warnings.Add($"小節{measure}: 不明トークン'{token}'を無視"); return; }
-                    else
-                    {
-                        // 2026-07-18e 確定(dos出力4トークンとの照合、誤差全て0.5f未満):
-                        // fine桁d(1〜F)は「PP位置から(9−d)フレームのシフト」を表す手動フレーム補正。
-                        //   A〜F → −1〜−6フレーム(手前へ)、1〜8 → +8〜+1フレーム(後ろへ、実例未観測の外挿)。
-                        // 従来解釈(+d/16 PP)は誤りだった(最大5フレームずれていた)。
-                        // フレーム軸の補正はtickグリッドに乗らないため、最近傍tickへの丸めが発生する
-                        // (下のTickOfが情報として警告を出す)。
-                        double baseTickF = engine.MeasureStartTick(measure) + pp / 256.0 * (4.0 * TimingEngine.TicksPerBeat);
-                        double baseFrame = FrameAtFractionalTick(engine, baseTickF);
-                        double shifted = baseFrame + (9 - fineDigit);
-                        double tickF = engine.FrameToTick(shifted);
-                        tab.Lanes[fineLaneIdx].Notes.Add(TickOf(measure, (tickF - engine.MeasureStartTick(measure)) / (4.0 * TimingEngine.TicksPerBeat)));
-                        return;
-                    }
-
-                    tab.Lanes[fineLaneIdx].Notes.Add(TickOf(measure, finePp / 256.0));
+                    double frame = ResolveFineFrame(measure, pp, fineChar);
+                    tab.Lanes[laneIdx].Notes.Add(FrameToMeasureTick(measure, frame));
                 }
                 else
                 {
@@ -325,19 +419,49 @@ public sealed class FujiImporter
                     var tail = token[(dash + 1)..];
                     if (head.Length != 4) { warnings.Add($"小節{measure}: 不明トークン'{token}'を無視"); return; }
                     int x = Convert.ToInt32(head[..1], 16);
-                    int value = Convert.ToInt32(tail, 16);
 
                     if (head[1] == '8' || head[1] == '9')
                     {
-                        // フリーズ X8LL-QQQQ(2026-07-18c: フラグ'9'はレーン番号+16の拡張。
-                        // 実データの'0920-0120'(レーン2+16=18=sright)等から確定)
-                        int ll = Convert.ToInt32(head[2..], 16);
-                        int fujiLane = (ll >> 4) + (head[1] == '9' ? 16 : 0);
+                        // フリーズ: head=開始スロット(1/16)+マーカー(8/9)+レーン数字+fine文字、
+                        // tail=終点(duration)。2026-07-25判明: headの3・4文字目はノート位置と同じ
+                        // 「レーン数字+fine文字」構造(旧「LL=レーン<<4」解釈はfine='0'の特殊ケース)。
+                        // 'フラグ9'はレーン番号+16の拡張(実データの'0920-0120'等から確定、変更なし)。
+                        if (!int.TryParse(head[2].ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int laneDigit))
+                        { warnings.Add($"小節{measure}: フリーズの不明トークン'{token}'を無視"); return; }
+                        int fujiLane = laneDigit + (head[1] == '9' ? 16 : 0);
                         if (!laneByFuji.TryGetValue(fujiLane, out int laneIdx))
                         { warnings.Add($"小節{measure}: フリーズのFUJIレーン{fujiLane}が不明('{token}')"); return; }
-                        int dur = value >= 0x100 ? value - 0x60 : value; // 実データ検証済みの補正(仕様15.3)
-                        long startTick = TickOf(measure, x / 16.0);
-                        long endTick = TickOf(measure, x / 16.0 + dur / 256.0);
+
+                        char startFine = head[3];
+                        if (!IsKnownFineChar(startFine))
+                        { warnings.Add($"小節{measure}: フリーズ始点の不明なfine文字を含むトークン'{token}'を無視"); return; }
+
+                        double startPp = x * 16.0;
+                        long startTick = startFine == '0'
+                            ? TickOf(measure, startPp / 256.0)
+                            : FrameToMeasureTick(measure, ResolveFineFrame(measure, startPp, startFine));
+
+                        // 終点(duration): 全て16進なら従来通りQQQQをそのままpp値として使う
+                        // (0x100以上は−0x60補正、仕様15.3で検証済み)。末尾が16進以外の場合、
+                        // 2026-07-25判明: 残り3桁の16進値dを1/16値とみなし(pp=d×16)、始点と同じ
+                        // fine文字体系で終点を求める。この終点はトークン自身の開始小節基準であり、
+                        // 始点側のfine補正の影響は受けない(実測で確認済み)。
+                        // なお終点側で数字(1〜9,A〜I)を使うケースは実例が無く未検証。
+                        long endTick;
+                        if (int.TryParse(tail, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int durFull))
+                        {
+                            int dur = durFull >= 0x100 ? durFull - 0x60 : durFull; // 実データ検証済みの補正(仕様15.3)
+                            endTick = TickOf(measure, x / 16.0 + dur / 256.0);
+                        }
+                        else
+                        {
+                            char endFine = tail[^1];
+                            if (!int.TryParse(tail[..^1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int durDigit) || !IsKnownFineChar(endFine))
+                            { warnings.Add($"小節{measure}: フリーズ終点の不明なトークン'{token}'を無視"); return; }
+                            double durPp = durDigit * 16.0;
+                            endTick = FrameToMeasureTick(measure, ResolveFineFrame(measure, durPp, endFine, durationContext: true));
+                        }
+
                         tab.Lanes[laneIdx].Freezes.Add(new FreezeNote(startTick, endTick));
                     }
                     else if (head[1] == '4' && (head[2..] == "00" || head[2..] == "10"))

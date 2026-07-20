@@ -100,4 +100,74 @@ public class ChartLayoutTests
         Assert.DoesNotContain(refs, r => r.Kind == ObjectKind.Bpm && r.Tick == 0);
         Assert.Contains(refs, r => r.Kind == ObjectKind.Bpm && r.Tick == 96 * T);
     }
+
+    // --- Reverse(譜面ビュー、2026-07-22追加) ---
+
+    [Fact]
+    public void Reverse_TickToY_And_YToTick_AreStillInverse()
+    {
+        var layout = NewLayout();
+        layout.Reverse = true;
+        layout.RefreshContentHeight(1000 * T);
+        double y = layout.TickToY(384 * T);
+        Assert.Equal(384 * T, layout.YToTick(y), 6);
+    }
+
+    [Fact]
+    public void Reverse_Tick0_IsNearBottom_LaterTick_IsAboveIt()
+    {
+        var layout = NewLayout();
+        layout.Reverse = true;
+        layout.RefreshContentHeight(1000 * T);
+
+        double y0 = layout.TickToY(0);
+        double yLater = layout.TickToY(500 * T);
+
+        Assert.True(y0 > yLater); // tick0の方が画面下(Yが大きい)
+    }
+
+    [Fact]
+    public void Reverse_Off_TickToY_MatchesNonReverseBehavior()
+    {
+        var layout = NewLayout();
+        layout.RefreshContentHeight(1000 * T); // Reverse=false時は無視されるはず
+        Assert.Equal(ChartLayout.TopMargin, layout.TickToY(0));
+    }
+
+    [Fact]
+    public void Reverse_HitTest_FreezeBody_StillDetected_DespiteInvertedYOrder()
+    {
+        var layout = NewLayout();
+        layout.Reverse = true;
+        var project = TestFixtures.NewProject();
+        var tab = project.Tabs[0];
+        tab.Lanes[0].Freezes.Add(new FreezeNote(0, 400 * T));
+        layout.RefreshContentHeight(1000 * T);
+        var col = layout.NoteColumn(0);
+
+        var hitBody = layout.HitTest(tab, project, col.CenterX, layout.TickToY(100 * T));
+        Assert.Equal(ObjectKind.FreezeBody, hitBody!.Value.Kind);
+
+        var hitStart = layout.HitTest(tab, project, col.CenterX, layout.TickToY(0));
+        Assert.Equal(ObjectKind.FreezeStart, hitStart!.Value.Kind);
+        var hitEnd = layout.HitTest(tab, project, col.CenterX, layout.TickToY(400 * T));
+        Assert.Equal(ObjectKind.FreezeEnd, hitEnd!.Value.Kind);
+    }
+
+    [Fact]
+    public void Reverse_ObjectsInRect_FindsEventsRegardlessOfScreenYOrder()
+    {
+        var layout = NewLayout();
+        layout.Reverse = true;
+        var project = TestFixtures.NewProject();
+        project.BpmEvents.Add(new(96 * T, 150));
+        layout.RefreshContentHeight(1000 * T);
+        var col = layout.Column(ColumnKind.Bpm);
+
+        // Reverse時、Yの小さい方(画面上)が後のtickになる点に注意しつつ、通常時と同じ呼び出し方
+        // (y1<y2を渡す)で正しくヒットすることを確認する。
+        var refs = layout.ObjectsInRect(project.Tabs[0], project,
+            col.X, layout.TickToY(300 * T), col.X + col.Width, layout.TickToY(-10 * T)).ToList();
+        Assert.Contains(refs, r => r.Kind == ObjectKind.Bpm && r.Tick == 96 * T);
+    }
 }

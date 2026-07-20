@@ -159,4 +159,163 @@ public class EditActionsTests
         doc.Undo();
         Assert.Contains(doc.Project.TimeSignatures, s => s.MeasureIndex == 4 && s.Numerator == 5);
     }
+
+    // =====================================================================
+    // 色編集モード(ncolor_data、2026-07-23)
+    // =====================================================================
+
+    [Fact]
+    public void SetNoteColorAction_Note_SetsColorOnly_UndoRemoves()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new SetNoteColorAction(0, 48, "#ff0000", setColor: true, setBand: false));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color);
+        Assert.Null(entry.BandColor);
+
+        doc.Undo();
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+    }
+
+    [Fact]
+    public void SetNoteColorAction_Freeze_ColorAndBandAreIndependent()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceFreezeAction(0, 48, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#111111", setColor: true, setBand: false));
+        doc.Execute(new SetNoteColorAction(0, 48, "#222222", setColor: false, setBand: true));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#111111", entry.Color);
+        Assert.Equal("#222222", entry.BandColor);
+
+        doc.Undo(); // 帯の設定だけ取り消し
+        var afterUndo = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#111111", afterUndo.Color);
+        Assert.Null(afterUndo.BandColor);
+    }
+
+    [Fact]
+    public void ResetNoteColorAction_ClearsOnlySpecifiedPart_KeepsOther()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceFreezeAction(0, 48, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#111111", setColor: true, setBand: true));
+
+        doc.Execute(new ResetNoteColorAction(0, 48, resetColor: true, resetBand: false));
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Null(entry.Color);
+        Assert.Equal("#111111", entry.BandColor);
+    }
+
+    [Fact]
+    public void ResetNoteColorAction_BothPartsCleared_RemovesEntryEntirely()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceFreezeAction(0, 48, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#111111", setColor: true, setBand: true));
+
+        doc.Execute(new ResetNoteColorAction(0, 48, resetColor: true, resetBand: true));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+
+        doc.Undo();
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#111111", entry.Color);
+        Assert.Equal("#111111", entry.BandColor);
+    }
+
+    [Fact]
+    public void ClearAllNoteColorsAction_ClearsEveryLane_UndoRestoresAll()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(1, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#ff0000", setColor: true, setBand: false));
+        doc.Execute(new SetNoteColorAction(1, 96, "#00ff00", setColor: true, setBand: false));
+
+        doc.Execute(new ClearAllNoteColorsAction());
+        Assert.All(doc.CurrentTab.Lanes, l => Assert.Empty(l.ColorOverrides));
+
+        doc.Undo();
+        Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Single(doc.CurrentTab.Lanes[1].ColorOverrides);
+    }
+
+    [Fact]
+    public void DeleteNoteAction_RemovesAssociatedColor_UndoRestoresBoth()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new SetNoteColorAction(0, 48, "#ff0000", setColor: true, setBand: false));
+
+        doc.Execute(new DeleteNoteAction(0, 48));
+        Assert.DoesNotContain(48L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+
+        doc.Undo();
+        Assert.Contains(48L, doc.CurrentTab.Lanes[0].Notes);
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color);
+    }
+
+    [Fact]
+    public void DeleteFreezeAction_RemovesAssociatedColor_UndoRestoresBoth()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceFreezeAction(0, 48, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#111111", setColor: true, setBand: true));
+
+        doc.Execute(new DeleteFreezeAction(0, 48));
+        Assert.Empty(doc.CurrentTab.Lanes[0].Freezes);
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+
+        doc.Undo();
+        Assert.Single(doc.CurrentTab.Lanes[0].Freezes);
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#111111", entry.Color);
+        Assert.Equal("#111111", entry.BandColor);
+    }
+
+    [Fact]
+    public void MoveObjects_Note_CarriesColorToNewPosition()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new SetNoteColorAction(0, 48, "#ff0000", setColor: true, setBand: false));
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 1, tickDelta: 48));
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides); // 元の位置には残らない
+        var entry = Assert.Single(doc.CurrentTab.Lanes[1].ColorOverrides);
+        Assert.Equal(96, entry.Tick);
+        Assert.Equal("#ff0000", entry.Color);
+
+        doc.Undo();
+        Assert.Empty(doc.CurrentTab.Lanes[1].ColorOverrides);
+        var back = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal(48, back.Tick);
+        Assert.Equal("#ff0000", back.Color);
+    }
+
+    [Fact]
+    public void MoveObjects_Freeze_CarriesColorToNewStartTick()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceFreezeAction(0, 48, 96));
+        doc.Execute(new SetNoteColorAction(0, 48, "#123456", setColor: true, setBand: true));
+        var targets = new[] { new ObjectRef(ObjectKind.FreezeStart, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 100));
+
+        var moved = doc.CurrentTab.Lanes[0].Freezes.Single();
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal(moved.StartTick, entry.Tick);
+        Assert.Equal("#123456", entry.Color);
+        Assert.Equal("#123456", entry.BandColor);
+    }
 }

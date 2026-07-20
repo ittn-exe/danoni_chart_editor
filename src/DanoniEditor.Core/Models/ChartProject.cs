@@ -99,6 +99,11 @@ public sealed class LaneNotes
 
     /// <summary>フリーズアロー(始点tick, 終点tick)</summary>
     public List<FreezeNote> Freezes { get; set; } = [];
+
+    /// <summary>ncolor_data個別色指定(色編集モード、2026-07-23)。通常ノートはNotes中のtickで、
+    /// フリーズはFreezes中のStartTickで同定する(1レーン内でtickが重複することは無い前提)。
+    /// ノート移動・削除の際はこのリストのエントリも追随させる必要がある(EditActions.cs参照)。</summary>
+    public List<NColorEntry> ColorOverrides { get; set; } = [];
 }
 
 public sealed record FreezeNote(long StartTick, long EndTick);
@@ -108,3 +113,18 @@ public sealed record ValueEvent(long Tick, double Value);
 
 /// <summary>エディタ専用マーカー(仕様書7.4)</summary>
 public sealed record Marker(long Tick, string Comment);
+
+/// <summary>ncolor_dataの個別色指定1件(2026-07-23、仕様書TBD「色編集モード」)。
+/// 通常ノートはColorのみを使う(BandColorは常にnull)。フリーズは始点・終点(端点、本家のNormal相当)と
+/// 帯(本家のNormalBar相当)を別々に持てる。ColorCodeの書式はdos.txt側のncolor_dataのColorCode欄
+/// (#RRGGBB、色名、コロン区切りグラデーション記法)をそのまま格納する。
+/// AllFlag(2026-07-24)はncolor_dataの4番目のフィールド(即時適用フラグ)に対応する。trueの場合、
+/// 本家仕様上は「指定フレームの時点で既に出現済みの矢印/フリーズも含めて即座に塗り替える」
+/// (全体色変化)。falseの場合は「以後新規出現するものだけに適用」(個別色変化、従来の既定動作)。
+/// エントリ全体で1つのフラグを共有する(ColorとBandColorを別々には持たない)。
+/// ShadowColor/HitColor/HitBarColor/HitShadowColor(2026-07-24、frzHitColor/ShadowColor編集モード用):
+/// ShadowColorは通常ノートのArrowShadow、フリーズのNormalShadowを兼ねる(tickが属する実体の種別で
+/// 判別する)。HitColor/HitBarColor/HitShadowColorはフリーズのヒット時(判定中)専用で、
+/// 通常ノートには存在しない。</summary>
+public sealed record NColorEntry(long Tick, string? Color, string? BandColor, bool AllFlag = false,
+    string? ShadowColor = null, string? HitColor = null, string? HitBarColor = null, string? HitShadowColor = null);

@@ -99,8 +99,34 @@ public sealed class ChartLayout
     }
 
     // --- 座標変換 ---
-    public double TickToY(double tick) => TopMargin + tick * PxPerTick;
-    public double YToTick(double y) => (y - TopMargin) / PxPerTick;
+
+    /// <summary>譜面ビューのReverse表示(2026-07-22追加、環境設定のみで切替、プレイテストには非適用)。
+    /// trueの場合、tick0がコンテンツ下端・末尾が上端になるよう座標変換を反転する
+    /// (frameの増減ロジック自体には触れず、TickToY/YToTickの写像のみを反転させる設計)。</summary>
+    public bool Reverse { get; set; }
+
+    /// <summary>Reverse時の反転基準となるコンテンツ全体高さ(直近のRefreshContentHeightで更新)。
+    /// 初期値は空プロジェクト相当(RefreshContentHeightが呼ばれる前の保険)。</summary>
+    private double _reverseContentHeight = 600;
+
+    /// <summary>コンテンツの最終tickが変わりうるタイミング(MeasureOverride/OnRenderの先頭)で呼び、
+    /// Reverse反転の基準高さを更新する。Reverse=false時は参照されないが、常に呼んでおいて問題ない。</summary>
+    public void RefreshContentHeight(long maxTick) => _reverseContentHeight = ContentHeight(maxTick);
+
+    /// <summary>Reverseの影響を受けない、素の座標変換(tick0=TopMargin、下方向へ増加)</summary>
+    private double RawTickToY(double tick) => TopMargin + tick * PxPerTick;
+
+    public double TickToY(double tick)
+    {
+        double y = RawTickToY(tick);
+        return Reverse ? _reverseContentHeight - y : y;
+    }
+
+    public double YToTick(double y)
+    {
+        double rawY = Reverse ? _reverseContentHeight - y : y;
+        return (rawY - TopMargin) / PxPerTick;
+    }
 
     public ColumnInfo? ColumnAt(double x) => Columns.FirstOrDefault(c => c.Contains(x));
 
@@ -108,8 +134,9 @@ public sealed class ChartLayout
     public ColumnInfo NoteColumn(int laneIndex) => Columns.First(c => c.Kind == ColumnKind.Note && c.NoteLaneIndex == laneIndex);
     public ColumnInfo Column(ColumnKind kind) => Columns.First(c => c.Kind == kind);
 
-    /// <summary>コンテンツ全体の高さ(最終オブジェクト+4小節ぶんの余白)</summary>
-    public double ContentHeight(long maxTick) => TickToY(maxTick + 4L * TimingEngine.TicksPerBeat * 4);
+    /// <summary>コンテンツ全体の高さ(最終オブジェクト+4小節ぶんの余白)。Reverseの影響を受けない
+    /// 素の高さ(RawTickToY基準)であり、RefreshContentHeightの反転基準そのものでもある。</summary>
+    public double ContentHeight(long maxTick) => RawTickToY(maxTick + 4L * TimingEngine.TicksPerBeat * 4);
 
     // --- ヒットテスト ---
     /// <summary>点(x,y)にあるオブジェクトを返す(上に描画されるもの優先)。hitScale=0.5でドラッグ削除用の縮小判定(6.3.1)</summary>
@@ -137,8 +164,13 @@ public sealed class ChartLayout
                         if (Math.Abs(TickToY(t) - y) <= half)
                             return new ObjectRef(ObjectKind.Note, col.NoteLaneIndex, t);
                     foreach (var f in lane.Freezes)
-                        if (y > TickToY(f.StartTick) && y < TickToY(f.EndTick))
+                    {
+                        // 2026-07-22: Reverse時はStartTick側のYがEndTick側より大きくなるため、
+                        // 順序を仮定しないMin/Max判定にする(仕様書外の座標系反転対応)。
+                        double ys = TickToY(f.StartTick), ye = TickToY(f.EndTick);
+                        if (y > Math.Min(ys, ye) && y < Math.Max(ys, ye))
                             return new ObjectRef(ObjectKind.FreezeBody, col.NoteLaneIndex, f.StartTick);
+                    }
                     return null;
                 }
             case ColumnKind.Speed:
@@ -176,7 +208,10 @@ public sealed class ChartLayout
     {
         if (x1 > x2) (x1, x2) = (x2, x1);
         if (y1 > y2) (y1, y2) = (y2, y1);
-        long tMin = (long)Math.Floor(YToTick(y1)), tMax = (long)Math.Ceiling(YToTick(y2));
+        // 2026-07-22: Reverse時はy(画面座標)の大小とtickの大小が逆転するため、
+        // YToTick後にMin/Maxを取り直す(y1<y2でもYToTick(y1)>YToTick(y2)になりうる)。
+        double tA = YToTick(y1), tB = YToTick(y2);
+        long tMin = (long)Math.Floor(Math.Min(tA, tB)), tMax = (long)Math.Ceiling(Math.Max(tA, tB));
 
         foreach (var col in Columns)
         {

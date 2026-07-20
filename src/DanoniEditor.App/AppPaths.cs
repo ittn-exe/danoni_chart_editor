@@ -21,8 +21,21 @@ internal static class AppPaths
     }
 
     /// <summary>
-    /// アプリケーション環境設定ファイル(仕様書14章)のパス。template/imgと同じく
-    /// exe直下に置くポータブル方式(settings.jsonが無ければ初回起動として既定値を使う)。
+    /// アプリケーション環境設定ファイルの格納フォルダ(exe直下の./settings、2026-07-20)。
+    /// 将来設定ファイルの種類が増えた場合に備えてサブディレクトリに分離する。
     /// </summary>
-    public static string SettingsFilePath => Path.Combine(AppContext.BaseDirectory, "settings.json");
+    public static string SettingsDir => Path.Combine(AppContext.BaseDirectory, "settings");
+
+    /// <summary>
+    /// アプリケーション環境設定ファイル(仕様書14章)のパス。ポータブル方式
+    /// (settings.jsonが無ければ初回起動として既定値を使う)。フォルダが無ければ保存時に作成する。
+    /// </summary>
+    public static string SettingsFilePath => Path.Combine(SettingsDir, "settings.json");
+
+    /// <summary>
+    /// プロジェクトファイルの既定保存フォルダ(仕様書3.1確定: exe直下の./projects)。
+    /// exeと同じフォルダにプロジェクトファイルが散らばるのを避けるための専用フォルダ。
+    /// フォルダが無ければ保存/参照時に作成する。
+    /// </summary>
+    public static string ProjectsDir => Path.Combine(AppContext.BaseDirectory, "projects");
 }

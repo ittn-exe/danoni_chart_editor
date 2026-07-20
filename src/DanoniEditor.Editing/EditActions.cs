@@ -30,12 +30,28 @@ public sealed class PlaceNoteAction(int lane, long tick) : IEditAction
     public void Undo(EditorDocument doc) => doc.CurrentTab.Lanes[lane].Notes.Remove(tick);
 }
 
-/// <summary>通常ノートの削除(仕様書6.3.1: オブジェクト右クリック)</summary>
+/// <summary>通常ノートの削除(仕様書6.3.1: オブジェクト右クリック)。
+/// 2026-07-23: 色編集モードで指定した色(ColorOverrides)も一緒に削除・Undoで復元する
+/// (実体を消したのに色だけ残る=別tickに幽霊の色指定が残る事故を防ぐ)。</summary>
 public sealed class DeleteNoteAction(int lane, long tick) : IEditAction
 {
+    private NColorEntry? _removedColor;
+
     public string Label => "ノート削除";
-    public void Do(EditorDocument doc) => doc.CurrentTab.Lanes[lane].Notes.Remove(tick);
-    public void Undo(EditorDocument doc) => doc.CurrentTab.Lanes[lane].Notes.Add(tick);
+
+    public void Do(EditorDocument doc)
+    {
+        doc.CurrentTab.Lanes[lane].Notes.Remove(tick);
+        var colors = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        _removedColor = colors.FirstOrDefault(c => c.Tick == tick);
+        if (_removedColor is not null) colors.Remove(_removedColor);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        doc.CurrentTab.Lanes[lane].Notes.Add(tick);
+        if (_removedColor is not null) doc.CurrentTab.Lanes[lane].ColorOverrides.Add(_removedColor);
+    }
 }
 
 // =====================================================================
@@ -60,10 +76,12 @@ public sealed class PlaceFreezeAction : IEditAction
     public void Undo(EditorDocument doc) => doc.CurrentTab.Lanes[_lane].Freezes.Remove(_freeze);
 }
 
-/// <summary>フリーズアローの削除(始点tickで同定、仕様書6.3.1)</summary>
+/// <summary>フリーズアローの削除(始点tickで同定、仕様書6.3.1)。
+/// 2026-07-23: DeleteNoteActionと同様、ColorOverrides(端点色・帯色)も一緒に削除・Undo復元する。</summary>
 public sealed class DeleteFreezeAction(int lane, long startTick) : IEditAction
 {
     private FreezeNote? _removed;
+    private NColorEntry? _removedColor;
 
     public string Label => "フリーズ削除";
 
@@ -72,11 +90,14 @@ public sealed class DeleteFreezeAction(int lane, long startTick) : IEditAction
         var lanes = doc.CurrentTab.Lanes[lane];
         _removed = lanes.Freezes.FirstOrDefault(f => f.StartTick == startTick);
         if (_removed is not null) lanes.Freezes.Remove(_removed);
+        _removedColor = lanes.ColorOverrides.FirstOrDefault(c => c.Tick == startTick);
+        if (_removedColor is not null) lanes.ColorOverrides.Remove(_removedColor);
     }
 
     public void Undo(EditorDocument doc)
     {
         if (_removed is not null) doc.CurrentTab.Lanes[lane].Freezes.Add(_removed);
+        if (_removedColor is not null) doc.CurrentTab.Lanes[lane].ColorOverrides.Add(_removedColor);
     }
 }
 
@@ -109,6 +130,177 @@ public sealed class ResizeFreezeAction : IEditAction
         var lanes = doc.CurrentTab.Lanes[_lane];
         lanes.Freezes.Remove(_newFreeze);
         lanes.Freezes.Add(_oldFreeze);
+    }
+}
+
+// =====================================================================
+// 色編集モード(ncolor_data、2026-07-23)
+// =====================================================================
+
+/// <summary>NColorEntryの一部フィールドだけを書き換えつつ、他の全フィールドは_beforeの値を保持した
+/// 新しいエントリを組み立てる(2026-07-24、Shadow/Hit系フィールド追加に伴う共通ヘルパー)。
+/// set*=falseの項目は_beforeの値をそのまま引き継ぐ(allFlagのみnull=保持、値ありで上書き)。</summary>
+internal static class NColorEntryMerge
+{
+    public static NColorEntry Merge(NColorEntry? before, long tick,
+        string? color = null, bool setColor = false,
+        string? band = null, bool setBand = false,
+        string? shadow = null, bool setShadow = false,
+        string? hit = null, bool setHit = false,
+        string? hitBar = null, bool setHitBar = false,
+        string? hitShadow = null, bool setHitShadow = false,
+        bool? allFlag = null) =>
+        new(tick,
+            setColor ? color : before?.Color,
+            setBand ? band : before?.BandColor,
+            allFlag ?? before?.AllFlag ?? false,
+            setShadow ? shadow : before?.ShadowColor,
+            setHit ? hit : before?.HitColor,
+            setHitBar ? hitBar : before?.HitBarColor,
+            setHitShadow ? hitShadow : before?.HitShadowColor);
+
+    /// <summary>全フィールドがnull/falseかどうか(エントリ自体を削除してよいかの判定に使う)</summary>
+    public static bool IsEmpty(NColorEntry e) =>
+        e.Color is null && e.BandColor is null && e.ShadowColor is null &&
+        e.HitColor is null && e.HitBarColor is null && e.HitShadowColor is null;
+}
+
+/// <summary>ノート/フリーズへ色を設定する(色編集モード「通常」サブモードの左クリック/Shift+クリック/
+/// ホイールクリック)。通常ノートはsetColor=true・setBand=falseで固定(BandColorは常にnull)。
+/// フリーズは端点(Normal)と帯(NormalBar)を独立に指定でき、Shift/ホイールクリック時はsetColor・
+/// setBand両方trueで同一値を渡す。Shadow/Hit系フィールドは変更しない(既存値を保持)。</summary>
+public sealed class SetNoteColorAction(int lane, long tick, string value, bool setColor, bool setBand, bool allFlag = false) : IEditAction
+{
+    private NColorEntry? _before;
+
+    public string Label => "色指定";
+
+    public void Do(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        _before = list.FirstOrDefault(e => e.Tick == tick);
+        list.RemoveAll(e => e.Tick == tick);
+        list.Add(NColorEntryMerge.Merge(_before, tick, value, setColor, value, setBand, allFlag: allFlag));
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        list.RemoveAll(e => e.Tick == tick);
+        if (_before is not null) list.Add(_before);
+    }
+}
+
+/// <summary>ノート/フリーズの色指定を解除する(色編集モード「通常」サブモードの右クリック/選択中
+/// Deleteキー)。resetColor/resetBandで指定した部位のみクリアする。Shadow/Hit系フィールドが
+/// 残っていればエントリ自体は削除しない(それらも0件になった場合のみエントリを削除)。</summary>
+public sealed class ResetNoteColorAction(int lane, long tick, bool resetColor, bool resetBand) : IEditAction
+{
+    private NColorEntry? _before;
+
+    public string Label => "色指定解除";
+
+    public void Do(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        _before = list.FirstOrDefault(e => e.Tick == tick);
+        if (_before is null) return;
+        list.Remove(_before);
+        var merged = new NColorEntry(tick,
+            resetColor ? null : _before.Color,
+            resetBand ? null : _before.BandColor,
+            _before.AllFlag, _before.ShadowColor, _before.HitColor, _before.HitBarColor, _before.HitShadowColor);
+        if (!NColorEntryMerge.IsEmpty(merged)) list.Add(merged);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_before is null) return;
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        list.RemoveAll(e => e.Tick == tick);
+        list.Add(_before);
+    }
+}
+
+/// <summary>ノート/フリーズの塗りつぶし色(ArrowShadow/NormalShadow)を設定する(2026-07-24、
+/// ShadowColor編集モード)。ShadowColorフィールド1つを通常ノート・フリーズ共通で使う
+/// (dos.txt出力時に対象実体の種別でArrowShadow/NormalShadowへ振り分ける、DosExporter側の責務)。</summary>
+public sealed class SetShadowColorAction(int lane, long tick, string value) : IEditAction
+{
+    private NColorEntry? _before;
+
+    public string Label => "塗りつぶし色指定";
+
+    public void Do(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        _before = list.FirstOrDefault(e => e.Tick == tick);
+        list.RemoveAll(e => e.Tick == tick);
+        list.Add(NColorEntryMerge.Merge(_before, tick, shadow: value, setShadow: true));
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        list.RemoveAll(e => e.Tick == tick);
+        if (_before is not null) list.Add(_before);
+    }
+}
+
+/// <summary>フリーズアローのヒット時(判定中)色を設定する(2026-07-24、frzHitColor編集モード)。
+/// Hit/HitBar/HitShadowのうちチェックが入っている項目だけをまとめて1アクションで設定する
+/// (ユーザー確定仕様: 1クリックでチェック済み項目を全て同時に塗る)。</summary>
+public sealed class SetFrzHitColorsAction(int lane, long tick,
+    bool setHit, string? hitValue, bool setHitBar, string? hitBarValue, bool setHitShadow, string? hitShadowValue) : IEditAction
+{
+    private NColorEntry? _before;
+
+    public string Label => "ヒット時色指定";
+
+    public void Do(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        _before = list.FirstOrDefault(e => e.Tick == tick);
+        list.RemoveAll(e => e.Tick == tick);
+        list.Add(NColorEntryMerge.Merge(_before, tick,
+            hit: hitValue, setHit: setHit,
+            hitBar: hitBarValue, setHitBar: setHitBar,
+            hitShadow: hitShadowValue, setHitShadow: setHitShadow));
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        list.RemoveAll(e => e.Tick == tick);
+        if (_before is not null) list.Add(_before);
+    }
+}
+
+/// <summary>現在のタブの全ncolor_data指定を削除する(右パネル「ncolor_dataを全て削除」ボタン)。</summary>
+public sealed class ClearAllNoteColorsAction : IEditAction
+{
+    private List<(int Lane, List<NColorEntry> Saved)>? _before;
+
+    public string Label => "色指定全削除";
+
+    public void Do(EditorDocument doc)
+    {
+        var tab = doc.CurrentTab;
+        _before = [];
+        for (int i = 0; i < tab.Lanes.Count; i++)
+        {
+            if (tab.Lanes[i].ColorOverrides.Count == 0) continue;
+            _before.Add((i, [.. tab.Lanes[i].ColorOverrides]));
+            tab.Lanes[i].ColorOverrides.Clear();
+        }
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_before is null) return;
+        var tab = doc.CurrentTab;
+        foreach (var (laneIdx, saved) in _before)
+            tab.Lanes[laneIdx].ColorOverrides = [.. saved];
     }
 }
 
@@ -447,6 +639,7 @@ public sealed class MoveObjectsAction : IEditAction
                     int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
                     long newTick = r.Tick + tickDelta;
                     tab.Lanes[newLane].Notes.Add(newTick);
+                    MoveColorEntry(tab, r.Lane, r.Tick, newLane, newTick);
                     return new ObjectRef(ObjectKind.Note, newLane, newTick);
                 }
             case ObjectKind.FreezeStart:
@@ -460,6 +653,7 @@ public sealed class MoveObjectsAction : IEditAction
                     int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
                     var moved = new FreezeNote(f.StartTick + tickDelta, f.EndTick + tickDelta);
                     tab.Lanes[newLane].Freezes.Add(moved);
+                    MoveColorEntry(tab, r.Lane, f.StartTick, newLane, moved.StartTick);
                     return new ObjectRef(ObjectKind.FreezeStart, newLane, moved.StartTick);
                 }
             case ObjectKind.Speed:
@@ -516,6 +710,7 @@ public sealed class MoveObjectsAction : IEditAction
             case ObjectKind.Note:
                 if (!tab.Lanes[from.Lane].Notes.Remove(from.Tick)) return false;
                 tab.Lanes[to.Lane].Notes.Add(to.Tick);
+                MoveColorEntry(tab, from.Lane, from.Tick, to.Lane, to.Tick);
                 return true;
             case ObjectKind.FreezeStart:
             case ObjectKind.FreezeEnd:
@@ -527,6 +722,7 @@ public sealed class MoveObjectsAction : IEditAction
                     lane.Freezes.Remove(f);
                     long len = f.EndTick - f.StartTick;
                     tab.Lanes[to.Lane].Freezes.Add(new FreezeNote(to.Tick, to.Tick + len));
+                    MoveColorEntry(tab, from.Lane, from.Tick, to.Lane, to.Tick);
                     return true;
                 }
             case ObjectKind.Speed:
@@ -564,6 +760,17 @@ public sealed class MoveObjectsAction : IEditAction
             default:
                 return false;
         }
+    }
+
+    /// <summary>色編集モードで指定したColorOverridesエントリを、ノート/フリーズ本体の移動に追随させる
+    /// (2026-07-23)。無ければ何もしない(色未指定のオブジェクトの移動では発生しない)。</summary>
+    private static void MoveColorEntry(DifficultyTab tab, int fromLane, long fromTick, int toLane, long toTick)
+    {
+        var src = tab.Lanes[fromLane].ColorOverrides;
+        var entry = src.FirstOrDefault(c => c.Tick == fromTick);
+        if (entry is null) return;
+        src.Remove(entry);
+        tab.Lanes[toLane].ColorOverrides.Add(entry with { Tick = toTick });
     }
 
     private static IEnumerable<ObjectRef> DistinctEntities(IEnumerable<ObjectRef> refs)

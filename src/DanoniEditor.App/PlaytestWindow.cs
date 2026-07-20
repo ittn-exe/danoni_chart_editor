@@ -55,11 +55,37 @@ internal sealed class PlaytestWindow : Window
     private readonly double _startFrame;
     private readonly double _playingWidth;
     private readonly double _playingHeight;
+    private readonly bool _autoPlay;
+    private readonly bool _quitKeyDelete;
+    private readonly bool _quitKeyBackSpace;
+    private readonly bool _quitKeyEscape;
+    private readonly double _playbackSpeed;
     private double _currentFrame;
+
+    // --- スクロール速度・ステップゾーン位置(2026-07-20、danoniplus本体 js/danoni_main.js準拠) ---
+    // 本家の実ピクセル移動量は HiSpeed(表示倍率) × baseSpeed × 2。baseSpeedはplayingHeight/stepY/stepYR
+    // ヘッダーから算出される画面サイズ補正値(4422-4431行目)。stepY/stepYRヘッダーはステップゾーンの
+    // 上側/下側位置も個別にずらす(14572行目のmainSpriteシフト+15399行目のreverseStepY計算より導出)。
+    private readonly double _baseSpeed;
+    private readonly double _baseScrollSpeed; // = HiSpeed × baseSpeed × 2 (speed_data倍率を含まない定数部)
+    private readonly double _stepYTop;
+    private readonly double _stepYBottom;
+
+    // --- speed_data/boost_data(2026-07-21、danoniplus本体準拠) ---
+    // speed_data: 今この瞬間(現在フレーム)に画面上の全ノートへ一斉に効くグローバル倍率。
+    // boost_data: 各ノート自身の到達フレームで生成時に一度だけ決定され、以後変わらない固定倍率
+    // (本家13431-13445/13535/15489行目)。本家はフレーム毎の加算で位置を求めるが、区分定数関数
+    // (speed_data)の積分は区分線形になるため、ここでは解析的な累積距離関数として計算する。
+    private readonly List<(double Frame, double Value)> _speedBreaks;
+    private readonly List<(double Frame, double Value)> _boostBreaks;
 
     private readonly Dictionary<Key, int> _keyToLane = [];
     private readonly HashSet<Key>[] _pressedKeys;
     private readonly List<string> _unmappedLabels = [];
+
+    // --- オートプレイ(2026-07-20)。各レーンの矢印/フリーズをFrame昇順に1件ずつ処理するカーソル ---
+    private readonly int[] _autoPlayArrowCursor;
+    private readonly int[] _autoPlayFreezeCursor;
 
     private string _judgeText = "";
     private Brush _judgeBrush = Brushes.White;
@@ -67,27 +93,58 @@ internal sealed class PlaytestWindow : Window
 
     private readonly PlaySurface _surface;
 
-    public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0)
+    public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0, bool autoPlay = false,
+        bool quitKeyDelete = true, bool quitKeyBackSpace = true, bool quitKeyEscape = true, double playbackSpeed = 1.0)
     {
         _doc = doc;
         _template = doc.CurrentTemplate;
         _reverse = reverse;
         _hiSpeed = Math.Max(0.25, hiSpeed);
         _startFrame = startFrame;
+        _autoPlay = autoPlay;
+        _quitKeyDelete = quitKeyDelete;
+        _quitKeyBackSpace = quitKeyBackSpace;
+        _quitKeyEscape = quitKeyEscape;
+        _playbackSpeed = Math.Clamp(playbackSpeed, 0.1, 2.0); // 2026-07-23: 再生速度スライダー
         // 幅: playingWidthヘッダー指定 > 本家autoSpread準拠のキー種別自動決定(2026-07-17h)
         _playingWidth = HeaderDouble("playingWidth", AutoSpreadWidth(_template.KeyTypeId));
         _playingHeight = HeaderDouble("playingHeight", 500);
+
+        // 2026-07-20: stepY/stepYRヘッダー(本家C_STEP_Y=70基準)からスクロール速度補正・
+        // ステップゾーン位置を算出。distY/baseSpeedの式はjs/danoni_main.js 4422-4431行目に準拠。
+        double stepYHeader = HeaderDoubleAny("stepY", StepY);
+        double stepYRHeader = HeaderDoubleAny("stepYR", 0);
+        double distY = _playingHeight - StepY + stepYRHeader;
+        _baseSpeed = 1 + ((distY - (stepYHeader - StepY) * 2) / (500 - StepY) - 1) * 0.85;
+        _baseScrollSpeed = _hiSpeed * _baseSpeed * 2;
+        _stepYTop = stepYHeader + ArrowSize / 2;
+        _stepYBottom = _playingHeight + stepYRHeader - stepYHeader - ArrowSize / 2;
+
         double scale = Math.Clamp(windowScale, 0.5, 3.0);
+
+        var timing = doc.Project.CreateTimingEngine();
+
+        // 2026-07-21: speed_data/boost_data(tick単位)をフレーム基準のbreakpointリストに変換
+        _speedBreaks = doc.CurrentTab.SpeedEvents
+            .Select(e => (Frame: timing.TickToFrame(e.Tick) + offsetFrames, e.Value))
+            .OrderBy(b => b.Frame)
+            .ToList();
+        _boostBreaks = doc.CurrentTab.BoostEvents
+            .Select(e => (Frame: timing.TickToFrame(e.Tick) + offsetFrames, e.Value))
+            .OrderBy(b => b.Frame)
+            .ToList();
 
         _engine = new PlaytestEngine(
             doc.CurrentTab,
-            doc.Project.CreateTimingEngine(),
+            timing,
             doc.Project.FrzAttempt,
             offsetFrames);
         _engine.Judged += OnJudged;
 
         _pressedKeys = new HashSet<Key>[_template.Lanes.Count];
         for (int i = 0; i < _pressedKeys.Length; i++) _pressedKeys[i] = [];
+        _autoPlayArrowCursor = new int[_template.Lanes.Count];
+        _autoPlayFreezeCursor = new int[_template.Lanes.Count];
         BuildKeyMap();
 
         Title = $"プレイテスト - {doc.Project.ProjectName} [{doc.CurrentTab.DifficultyName}]";
@@ -97,7 +154,20 @@ internal sealed class PlaytestWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
         var root = new DockPanel();
-        var infoText = $"Delete / BackSpace / Esc で終了  |  HS x{_hiSpeed:0.##}  |  Reverse {(_reverse ? "ON" : "OFF")}  |  {_playingWidth:0}x{_playingHeight:0} x{scale:0.##}"
+        var quitKeyNames = new List<string>();
+        if (_quitKeyDelete) quitKeyNames.Add("Delete");
+        if (_quitKeyBackSpace) quitKeyNames.Add("BackSpace");
+        if (_quitKeyEscape) quitKeyNames.Add("Esc");
+        var quitKeyText = quitKeyNames.Count > 0 ? $"{string.Join(" / ", quitKeyNames)} で終了" : "終了キー未設定";
+
+        var speedBoostTags = new List<string>();
+        if (_speedBreaks.Count > 0) speedBoostTags.Add("Speed");
+        if (_boostBreaks.Count > 0) speedBoostTags.Add("Boost");
+
+        var infoText = $"{quitKeyText}  |  HS x{_hiSpeed:0.##}"
+            + (Math.Abs(_baseSpeed - 1.0) > 0.001 ? $" (Δv {_baseSpeed * 100:0}%)" : "")
+            + (speedBoostTags.Count > 0 ? $" [{string.Join("+", speedBoostTags)}]" : "")
+            + $"  |  Reverse {(_reverse ? "ON" : "OFF")}  |  AutoPlay {(_autoPlay ? "ON" : "OFF")}  |  {_playingWidth:0}x{_playingHeight:0} x{scale:0.##}"
             + (_unmappedLabels.Count > 0 ? $"  |  未割当キー: {string.Join(",", _unmappedLabels)}" : "");
         var info = new TextBlock
         {
@@ -128,6 +198,44 @@ internal sealed class PlaytestWindow : Window
         && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && d > 0
             ? d : fallback;
 
+    /// <summary>0や負値も許容するヘッダー取得(2026-07-20、stepY/stepYR用。本家はstepYRに負値を許容する)</summary>
+    private double HeaderDoubleAny(string key, double fallback) =>
+        _doc.Project.ExtraHeaders.TryGetValue(key, out var v)
+        && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)
+            ? d : fallback;
+
+    /// <summary>boost_data相当。指定フレーム(そのノート自身の到達フレーム)時点で有効な固定倍率を返す
+    /// (本家getSpdByFrame準拠。直前のbreakpoint値を使用、該当が無ければ1倍)</summary>
+    private double GetBoostFactor(double frame)
+    {
+        double result = 1.0;
+        foreach (var b in _boostBreaks)
+        {
+            if (b.Frame > frame) break;
+            result = b.Value;
+        }
+        return result;
+    }
+
+    /// <summary>speed_data相当。frame=0から指定フレームまでの累積移動距離(倍率1のノートが進む量)を返す。
+    /// speed_dataは区分定数の倍率(未指定区間は1倍)なので、その積分は区分線形になり解析的に求まる
+    /// (本家はフレーム毎の加算で同じ結果を得ている、13315-13331行目)。</summary>
+    private double CumulativeSpeedDistance(double frame)
+    {
+        double dist = 0;
+        double prevFrame = 0;
+        double currentValue = 1.0;
+        foreach (var b in _speedBreaks)
+        {
+            if (b.Frame >= frame) break;
+            dist += currentValue * (b.Frame - prevFrame);
+            prevFrame = b.Frame;
+            currentValue = b.Value;
+        }
+        dist += currentValue * (frame - prevFrame);
+        return dist;
+    }
+
     private void StartPlayback()
     {
         var path = _doc.Project.AudioFilePath;
@@ -139,6 +247,7 @@ internal sealed class PlaytestWindow : Window
         }
         _player.Open(new Uri(path, UriKind.Absolute));
         _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
+        _player.SpeedRatio = _playbackSpeed; // 2026-07-23: 再生速度スライダー(ピッチ補正は行わない)
         _player.Play();
         _timer.Start();
     }
@@ -146,60 +255,63 @@ internal sealed class PlaytestWindow : Window
     private void Timer_Tick(object? sender, EventArgs e)
     {
         _currentFrame = _player.Position.TotalSeconds * 60.0;
+        if (_autoPlay) AutoPlayAdvance();
         _engine.Advance(_currentFrame);
         _surface.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// オートプレイ(2026-07-20): 全ノートを±0Fジャストで拾う。各レーンの矢印/フリーズをFrame昇順の
+    /// カーソルで管理し、現在フレームに到達した未処理ノートへ「ノート自身のFrame」をそのまま
+    /// PlaytestEngine.KeyDownへ渡す(diffが必ず0になるためイイ判定確定)。フリーズはKeyUpを呼ばず
+    /// 握りっぱなしにする(Advance側の終点到達判定で自動的にキター確定する)。
+    /// </summary>
+    private void AutoPlayAdvance()
+    {
+        for (int lane = 0; lane < _template.Lanes.Count; lane++)
+        {
+            var arrows = _engine.ArrowsOf(lane);
+            while (_autoPlayArrowCursor[lane] < arrows.Count && arrows[_autoPlayArrowCursor[lane]].Frame <= _currentFrame)
+            {
+                _engine.KeyDown(lane, arrows[_autoPlayArrowCursor[lane]].Frame);
+                _autoPlayArrowCursor[lane]++;
+            }
+
+            var freezes = _engine.FreezesOf(lane);
+            while (_autoPlayFreezeCursor[lane] < freezes.Count && freezes[_autoPlayFreezeCursor[lane]].StartFrame <= _currentFrame)
+            {
+                _engine.KeyDown(lane, freezes[_autoPlayFreezeCursor[lane]].StartFrame);
+                _autoPlayFreezeCursor[lane]++;
+            }
+        }
     }
 
     // =====================================================================
     // キー入力
     // =====================================================================
 
-    /// <summary>keyAssignの表示ラベル("←"、"S"、["E","R"]等)を物理キーへ変換して逆引き表を作る</summary>
+    /// <summary>keyAssignの表示ラベル("←"、"S"、["E","R"]等)を物理キーへ変換して逆引き表を作る
+    /// (2026-07-21: 実装はKeyLabelMapperへ抽出・共有化、キーボードモードと重複を排除)</summary>
     private void BuildKeyMap()
     {
-        for (int lane = 0; lane < _template.Lanes.Count; lane++)
-        {
-            foreach (var label in _template.Lanes[lane].KeyAssign)
-            {
-                var keys = KeysForLabel(label);
-                if (keys.Count == 0)
-                {
-                    _unmappedLabels.Add($"{label}(レーン{lane + 1})");
-                    continue;
-                }
-                foreach (var k in keys) _keyToLane[k] = lane;
-            }
-        }
+        _keyToLane.Clear();
+        foreach (var kv in KeyLabelMapper.BuildKeyMap(_template.Lanes.Count, lane => _template.Lanes[lane].KeyAssign, _unmappedLabels))
+            _keyToLane[kv.Key] = kv.Value;
     }
-
-    private static IReadOnlyList<Key> KeysForLabel(string label) => label switch
-    {
-        "←" => [Key.Left],
-        "↓" => [Key.Down],
-        "↑" => [Key.Up],
-        "→" => [Key.Right],
-        "<" => [Key.OemComma],
-        ">" => [Key.OemPeriod],
-        ";" => [Key.OemSemicolon],
-        ":" => [Key.OemQuotes],
-        "@" => [Key.OemOpenBrackets, Key.Oem3], // JIS配列の@(本家keycode BracketLeft由来)
-        "Space" or "SP" or "␣" or " " => [Key.Space],
-        "Enter" => [Key.Enter],
-        _ when label.Length == 1 && label[0] is >= 'A' and <= 'Z' => [(Key)((int)Key.A + (label[0] - 'A'))],
-        _ when label.Length == 1 && label[0] is >= 'a' and <= 'z' => [(Key)((int)Key.A + (char.ToUpperInvariant(label[0]) - 'A'))],
-        _ when label.Length == 1 && label[0] is >= '0' and <= '9' =>
-            [(Key)((int)Key.D0 + (label[0] - '0')), (Key)((int)Key.NumPad0 + (label[0] - '0'))],
-        _ => [],
-    };
 
     private void OnKeyDownInput(object sender, KeyEventArgs e)
     {
-        if (e.Key is Key.Delete or Key.Back or Key.Escape)
+        // 2026-07-20: 中断キーは環境設定で選択したもの(Delete/BackSpace/Escape)のみ有効
+        bool isQuitKey = (e.Key == Key.Delete && _quitKeyDelete)
+            || (e.Key == Key.Back && _quitKeyBackSpace)
+            || (e.Key == Key.Escape && _quitKeyEscape);
+        if (isQuitKey)
         {
             Close(); // 終了(呼び出し元がスクロール復帰を行う)
             e.Handled = true;
             return;
         }
+        if (_autoPlay) return; // オートプレイ中は手動入力を無視(2026-07-20、終了キーのみ上で処理済み)
         if (e.IsRepeat) { e.Handled = true; return; } // キーリピートは無視(ホールド継続)
         if (!_keyToLane.TryGetValue(e.Key, out int lane)) return;
 
@@ -211,6 +323,7 @@ internal sealed class PlaytestWindow : Window
 
     private void OnKeyUpInput(object sender, KeyEventArgs e)
     {
+        if (_autoPlay) return; // 2026-07-20
         if (!_keyToLane.TryGetValue(e.Key, out int lane)) return;
         _pressedKeys[lane].Remove(e.Key);
         if (_pressedKeys[lane].Count == 0) _engine.KeyUp(lane, _currentFrame);
@@ -260,7 +373,8 @@ internal sealed class PlaytestWindow : Window
                 // 2026-07-19: scrollDirectionの定義を「up=上方向スクロール(ステップゾーン上、ノーツは下から上へ)/
                 // down=下方向スクロール(ステップゾーン下)」に統一(ユーザー確定)。従来は逆に解釈していた。
                 bool flipped = (laneDef.ScrollDirection == "down") ^ o._reverse;
-                double stepY = flipped ? h - StepY - ArrowSize / 2 : StepY + ArrowSize / 2;
+                // 2026-07-20: stepY/stepYRヘッダー反映済みの位置を使用(コンストラクタで算出)
+                double stepY = flipped ? o._stepYBottom : o._stepYTop;
                 double dir = flipped ? -1 : 1; // ノートの並ぶ向き(標準=ステップゾーンの下に未来のノート)
 
                 var image = ChartCanvas.GetNoteImage(laneDef.NoteGraphic);
@@ -268,18 +382,21 @@ internal sealed class PlaytestWindow : Window
                 var color = ((SolidColorBrush)brush).Color;
                 var (frzNoteColor, frzBandColor) = ChartCanvas.FrzColors(tab, project, laneDef.ColorGroup, brush);
 
-                // ステップゾーン(枠のみ)
-                dc.DrawRectangle(null, new Pen(Brushes.DimGray, 2),
-                    new Rect(cx - ArrowSize / 2, stepY - ArrowSize / 2, ArrowSize, ArrowSize));
+                // ステップゾーン(2026-07-20: レーンの画像・回転角を使用。色は従来通りDimGrayのtint)
+                DrawNote(dc, image, laneDef, cx, stepY, Colors.DimGray);
 
-                double YOf(double frame) => stepY + (frame - o._currentFrame) * o._hiSpeed * dir;
+                // 2026-07-21: speed_data(現在時刻に効くグローバル倍率、区分線形積分)×boost_data
+                // (そのノート自身の到達フレームで決まる固定倍率)で実際の移動距離を求める
+                double YOf(double frame, double boost) =>
+                    stepY + boost * (o.CumulativeSpeedDistance(frame) - o.CumulativeSpeedDistance(o._currentFrame)) * o._baseScrollSpeed * dir;
                 bool Visible(double y) => y > -ArrowSize && y < h + ArrowSize;
 
                 // フリーズ(帯→端点の順に描画)
                 foreach (var f in o._engine.FreezesOf(i))
                 {
                     if (f.Result == PlayJudge.Kita) continue; // O.K.確定分は消去
-                    double y1 = YOf(f.StartFrame), y2 = YOf(f.EndFrame);
+                    double frzBoost = o.GetBoostFactor(f.StartFrame);
+                    double y1 = YOf(f.StartFrame, frzBoost), y2 = YOf(f.EndFrame, frzBoost);
                     // ホールド中は始点がステップゾーンに吸着し、帯が短くなっていく
                     if (f.Started && f.Result is null) y1 = stepY;
                     if (!Visible(y1) && !Visible(y2) && Math.Sign(y1 - h / 2) == Math.Sign(y2 - h / 2)) continue;
@@ -296,7 +413,7 @@ internal sealed class PlaytestWindow : Window
                 foreach (var a in o._engine.ArrowsOf(i))
                 {
                     if (a.Result is { } r && r != PlayJudge.Uwan) continue;
-                    double y = YOf(a.Frame);
+                    double y = YOf(a.Frame, o.GetBoostFactor(a.Frame));
                     if (!Visible(y)) continue;
                     DrawNote(dc, image, laneDef, cx, y, color);
                 }

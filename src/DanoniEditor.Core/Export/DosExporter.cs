@@ -102,6 +102,8 @@ public sealed class DosExporter
                 throw new InvalidOperationException(
                     $"タブ'{tab.DifficultyName}'のレーン数({tab.Lanes.Count})がテンプレート({template.KeyCount})と一致しません");
 
+            var nColorEntries = new List<(long Frame, string ColorNo, string ColorCode, bool AllFlag)>();
+
             for (int j = 0; j < template.KeyCount; j++)
             {
                 var lane = template.Lanes[j];
@@ -127,10 +129,68 @@ public sealed class DosExporter
                         });
                     AppendParam(sb, $"{frzName}{suffix}_data", string.Join(",", pairs));
                 }
+
+                if (data.ColorOverrides.Count > 0)
+                {
+                    // 2026-07-24: ncolor_data(allFlg無し)は本家仕様上「指定フレーム以降ずっと持続する」
+                    // 永続的な色状態変更であり、1オーバーライド=1行の単純な出力では「着色ノートの後ろに
+                    // 置いた無着色ノートまで意図せず着色される」問題が起きる(ユーザー指摘、2026-07-24)。
+                    // トラック(Arrow=通常ノート、Normal=フリーズ端点、NormalBar=フリーズ帯)ごとに
+                    // tick順で「現在の色状態」との差分がある地点だけncolor_dataを出力する。
+                    // 連続する同色区間は状態が変化しないため自動的に省略され、着色→無着色→着色のような
+                    // 区間には「基本色へ戻す」行が自動的に挿入される。
+                    var overrideByTick = data.ColorOverrides.ToDictionary(c => c.Tick);
+                    string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, lane.ColorGroup);
+
+                    void ScanTrack(IEnumerable<long> ticks, string defaultHex, string targetSuffix,
+                        Func<NColorEntry, string?> pick)
+                    {
+                        string current = defaultHex;
+                        foreach (var tick in ticks.OrderBy(t => t))
+                        {
+                            overrideByTick.TryGetValue(tick, out var e);
+                            string desired = e is not null ? pick(e) ?? defaultHex : defaultHex;
+                            if (string.Equals(desired, current, StringComparison.Ordinal)) continue;
+                            long frame = RoundFrame(engine.TickToFrame(tick) + blankShift);
+                            string colorNo = targetSuffix.Length == 0
+                                ? lane.EngineLaneNum.ToString() : $"{lane.EngineLaneNum}:{targetSuffix}";
+                            // allFlg(即時適用)は基本色への自動復帰(e=null)には適用しない。
+                            // ユーザーが明示的に塗った箇所(eが存在する)でのみ、その時のチェック状態を反映する。
+                            bool allFlag = e?.AllFlag ?? false;
+                            nColorEntries.Add((frame, colorNo, desired, allFlag));
+                            current = desired;
+                        }
+                    }
+
+                    string arrowShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "setShadowColor");
+
+                    if (data.Notes.Count > 0)
+                    {
+                        ScanTrack(data.Notes, arrowDefault, "", e => e.Color);
+                        ScanTrack(data.Notes, arrowShadowDefault, "ArrowShadow", e => e.ShadowColor);
+                    }
+
+                    if (data.Freezes.Count > 0)
+                    {
+                        var (normalDefault, barDefault) =
+                            ColorDefaults.ResolveFrzColorsHex(tab, project, lane.ColorGroup, arrowDefault);
+                        var (hitDefault, hitBarDefault) =
+                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, lane.ColorGroup, normalDefault, barDefault);
+                        string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "frzShadowColor");
+                        var freezeStartTicks = data.Freezes.Select(f => f.StartTick);
+                        ScanTrack(freezeStartTicks, normalDefault, "Normal", e => e.Color);
+                        ScanTrack(freezeStartTicks, barDefault, "NormalBar", e => e.BandColor);
+                        ScanTrack(freezeStartTicks, normalShadowDefault, "NormalShadow", e => e.ShadowColor);
+                        ScanTrack(freezeStartTicks, hitDefault, "Hit", e => e.HitColor);
+                        ScanTrack(freezeStartTicks, hitBarDefault, "HitBar", e => e.HitBarColor);
+                        ScanTrack(freezeStartTicks, normalShadowDefault, "HitShadow", e => e.HitShadowColor);
+                    }
+                }
             }
 
             AppendValueEvents(sb, $"speed{suffix}_data", tab.SpeedEvents, engine, blankShift);
             AppendValueEvents(sb, $"boost{suffix}_data", tab.BoostEvents, engine, blankShift);
+            AppendNColorData(sb, $"ncolor{suffix}_data", nColorEntries);
             sb.AppendLine();
         }
 
@@ -160,6 +220,20 @@ public sealed class DosExporter
         var parts = events
             .OrderBy(e => e.Tick)
             .SelectMany(e => new[] { RoundFrame(engine.TickToFrame(e.Tick) + blankShift).ToString(), Num(e.Value) });
+        AppendParam(sb, name, string.Join(",", parts));
+    }
+
+    /// <summary>ncolor_data出力(仕様: 1エントリ=Frame,ColorNo(:TargetPattern),ColorCode(,allFlg)の
+    /// 3〜4項目CSV。AllFlag=trueの場合のみ4項目目に"all"を付与する、2026-07-24)。Frame昇順に整列する。</summary>
+    private static void AppendNColorData(StringBuilder sb, string name,
+        List<(long Frame, string ColorNo, string ColorCode, bool AllFlag)> entries)
+    {
+        if (entries.Count == 0) return;
+        var parts = entries
+            .OrderBy(e => e.Frame)
+            .SelectMany(e => e.AllFlag
+                ? new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode, "all" }
+                : new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode });
         AppendParam(sb, name, string.Join(",", parts));
     }
 

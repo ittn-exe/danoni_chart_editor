@@ -21,12 +21,57 @@ public partial class MainWindow : Window
     private readonly TemplateRepository _templates;
     private EditorDocument? _document;
     private SmartToolController? _controller;
+    /// <summary>SKB操作モード(キーボード操作、2026-07-21)のコントローラ。ドキュメント切替のたびに
+    /// OpenDocumentで作り直す(内部の同時押し判定/未完了フリーズ状態は一時的なものでよいため)。</summary>
+    private KeyboardModeController? _keyboardMode;
+    /// <summary>キーボードモードON/OFF(Ctrl+,または左パネルのトグルボタン、セッションを跨いで保持)</summary>
+    private bool _keyboardModeActive;
+    /// <summary>色編集モードON/OFF(左パネルのトグルボタン、セッションを跨いで保持、2026-07-23)</summary>
+    private bool _colorEditModeActive;
+    /// <summary>色編集モードの「即時適用(全体色変化)にする」チェック状態(2026-07-24)。
+    /// ColorEditModeEnabled同様、セッションを跨いで保持しアクティブなコントローラへ都度反映する。</summary>
+    private bool _paintAllFlag;
+    /// <summary>色編集モードで塗る色のリスト(右パネル「色編集」タブ、常に1件以上)</summary>
+    private readonly List<string> _nColorColors = ["#ffffff"];
+    /// <summary>色編集タブの各色欄が「透明度を使用する」(色名+透明度指定)モードかどうか
+    /// (2026-07-24)。_nColorColorsと常に同じ長さを保つ。</summary>
+    private readonly List<bool> _nColorUseOpacity = [false];
+    /// <summary>色編集タブの各色欄の透明度値(0-255の文字列、空文字は未指定)。
+    /// _nColorColorsと常に同じ長さを保つ。透明度未使用の欄では無視される。</summary>
+    private readonly List<string> _nColorOpacity = [""];
     private bool _suppressSelectionEvent;
     private bool _suppressPropertyPanelEvents;
     private bool _suppressObjectPanelEvents;
     private ObjectRef? _currentPropertyObject;
     private EditorDocument? _selectionSubscribedDoc;
+    private SmartToolController? _tickSubscribedController;
     private string? _currentFilePath;
+
+    // --- マルチプロジェクトタブ(2026-07-20、TBD#10) ---
+    /// <summary>1プロジェクトタブ分の実行時状態。切替時に_document/_controller/_currentFilePathへ
+    /// 読み書きする(既存コードの大半が_document等のフィールドを直接参照しているため、それらを
+    /// 「アクティブなセッションの写し」として扱う設計。音楽/波形状態はOpenDocument内の
+    /// ResetAudioForDocumentがdoc.Project.AudioFilePathから毎回再構築するため、ここでは保持しない)。</summary>
+    private sealed class ProjectSession
+    {
+        public required EditorDocument Document { get; init; }
+        public required SmartToolController Controller { get; set; }
+        public string? FilePath { get; set; }
+
+        /// <summary>プロジェクトタブの表示ラベル(プロジェクト名、未設定なら"Untitled" + 半角スペース + 未保存マーカー"*")</summary>
+        public string TabLabel
+        {
+            get
+            {
+                var name = string.IsNullOrWhiteSpace(Document.Project.ProjectName) ? "Untitled" : Document.Project.ProjectName;
+                return Document.IsModified ? $"{name} *" : name;
+            }
+        }
+    }
+
+    private readonly List<ProjectSession> _sessions = [];
+    private int _activeSessionIndex = -1;
+    private bool _suppressProjectTabSelectionEvent;
 
     // --- 音楽ファイル再生(目テスト・プレイテスト用) ---
     private readonly MediaPlayer _audioPlayer = new();
@@ -67,6 +112,11 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         _playbackTimer.Tick += PlaybackTimer_Tick;
 
+        // 2026-07-20: D&Dによるファイル読み込み(仕様書TBD#7)。ウィンドウ全体を対象にする。
+        AllowDrop = true;
+        DragEnter += Window_DragEnter;
+        Drop += Window_Drop;
+
         // 2026-07-17f: 上部パネルのカーソル位置表示(tick/frame/秒)。ChartCanvasのOnMouseMoveは
         // キャプチャ中しかControllerへ流さないが、添付ハンドラは常時発火するのでここで拾う。
         Canvas.MouseMove += (_, me) =>
@@ -88,9 +138,29 @@ public partial class MainWindow : Window
         PlaytestHiSpeedCombo.ItemsSource = Enumerable.Range(1, 40).Select(i => i * 0.25).ToList(); // x0.25〜x10(2026-07-19: 0.25刻み化、TBD§1-4の一部)
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestReverseCheck.IsChecked = _appSettings.PlaytestReverse;
+        PlaytestAutoPlayCheck.IsChecked = _appSettings.PlaytestAutoPlay;
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(System.Globalization.CultureInfo.InvariantCulture);
         PlaytestScaleCombo.ItemsSource = PlaytestScaleValues; // ウィンドウサイズ倍率 x0.5〜3(2026-07-17h)
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
+
+        // 2026-07-23: 再生速度(目視テスト・プレイテスト共通、0.1〜2.0・0.1刻み)
+        PlaybackSpeedCombo.ItemsSource = Enumerable.Range(1, 20).Select(i => Math.Round(i * 0.1, 1)).ToList();
+        PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(_appSettings.PlaybackSpeed);
+        _audioPlayer.SpeedRatio = _appSettings.PlaybackSpeed;
+
+        // 2026-07-23: 色編集モード(ncolor_data)の右パネル初期化
+        NColorGradientTypeCombo.ItemsSource = new[] { "単色", "linear-gradient", "radial-gradient", "conic-gradient" };
+        NColorGradientTypeCombo.SelectedIndex = 0;
+        RebuildNColorListPanel();
+        UpdateNColorPreview();
+
+        // 2026-07-24: frzHitColor/ShadowColorサブモードの色欄初期値(既定色は本体の既定塗りつぶし色
+        // #000000に合わせる。Hit/HitBarはNormal/NormalBarと同じ#ffffffを仮の初期値としている)。
+        NColorHitColorBox.Text = "#ffffff";
+        NColorHitBarColorBox.Text = "#ffffff";
+        NColorHitShadowColorBox.Text = "#000000";
+        NColorArrowShadowColorBox.Text = "#000000";
+        NColorNormalShadowColorBox.Text = "#000000";
 
         _initialized = true;
     }
@@ -101,8 +171,14 @@ public partial class MainWindow : Window
         Canvas.ApplyDisplaySettings(_appSettings.ShowNoteImages, _appSettings.ShowHighlightGrid, _appSettings.HighlightLineWidth, color);
         var startColor = (Color)ColorConverter.ConvertFromString(_appSettings.PlaybackStartLineColorHex)!;
         Canvas.ApplyPlaybackStartLineSettings(_appSettings.PlaybackStartLineWidth, startColor);
+        // 2026-07-25b: カーソルライン(マウスホバー中の最寄りスナップ位置)の太さ・色
+        var cursorLineColor = (Color)ColorConverter.ConvertFromString(_appSettings.CursorLineColorHex)!;
+        var cursorHighlightColor = (Color)ColorConverter.ConvertFromString(_appSettings.CursorHighlightColorHex)!;
+        Canvas.ApplyCursorLineSettings(_appSettings.CursorLineWidth, cursorLineColor, _appSettings.CursorHighlightWidth, cursorHighlightColor);
         Canvas.MarkerCommentFull = _appSettings.MarkerCommentFull;   // 2026-07-19b
         Canvas.MarkerCommentHeadChars = Math.Max(1, _appSettings.MarkerCommentHeadChars);
+        Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
+        Canvas.InvalidateVisual();
     }
 
     private void ShowNoteImagesToggle_Changed(object sender, RoutedEventArgs e)
@@ -152,11 +228,13 @@ public partial class MainWindow : Window
         _appSettings.Save(AppPaths.SettingsFilePath);
         ApplyDisplaySettingsToCanvas();
         if (_document is not null) _document.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 2026-07-19b
+        if (_keyboardMode is not null) _keyboardMode.ThresholdMs = _appSettings.SimultaneousPressThresholdMs; // 2026-07-21
 
         // 上部パネルの同項目コントロールへ反映(各Changedハンドラが再保存するが実害なし)
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
         PlaytestReverseCheck.IsChecked = _appSettings.PlaytestReverse;
+        PlaytestAutoPlayCheck.IsChecked = _appSettings.PlaytestAutoPlay;
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
@@ -213,20 +291,35 @@ public partial class MainWindow : Window
             FrzAttempt = _appSettings.DefaultFrzAttempt,
         };
         project.Tabs.Add(DifficultyTab.CreateFor(template, c.DifficultyName));
-        _currentFilePath = null;
-        OpenDocument(new EditorDocument(project, _templates));
+        AddSession(new EditorDocument(project, _templates), null); // 2026-07-20: 新規プロジェクトタブとして追加
+    }
+
+    /// <summary>プロジェクトファイルの既定保存先(仕様書3.1確定: ./projects)を、無ければ作成して返す</summary>
+    private static string EnsureProjectsDir()
+    {
+        Directory.CreateDirectory(AppPaths.ProjectsDir);
+        return AppPaths.ProjectsDir;
     }
 
     private void OpenProject_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog { Filter = "プロジェクトファイル (*.json)|*.json|すべてのファイル (*.*)|*.*" };
+        var dlg = new OpenFileDialog
+        {
+            Filter = "プロジェクトファイル (*.json)|*.json|すべてのファイル (*.*)|*.*",
+            InitialDirectory = EnsureProjectsDir(),
+        };
         if (dlg.ShowDialog(this) != true) return;
+        OpenProjectFile(dlg.FileName);
+    }
 
+    /// <summary>自形式プロジェクト(.json)を開く。OpenProject_ClickとD&D(2026-07-20)の共通処理。
+    /// 丸ごと置き換え("開く"相当、既存プロジェクトへの合成はしない)。</summary>
+    private void OpenProjectFile(string path)
+    {
         try
         {
-            var project = ProjectSerializer.Load(dlg.FileName);
-            _currentFilePath = dlg.FileName;
-            OpenDocument(new EditorDocument(project, _templates));
+            var project = ProjectSerializer.Load(path);
+            AddSession(new EditorDocument(project, _templates), path); // 2026-07-20: 新規プロジェクトタブとして追加
         }
         catch (Exception ex)
         {
@@ -249,6 +342,7 @@ public partial class MainWindow : Window
             {
                 Filter = "プロジェクトファイル (*.json)|*.json",
                 FileName = _document.Project.ProjectName + ".json",
+                InitialDirectory = EnsureProjectsDir(),
             };
             if (dlg.ShowDialog(this) != true) return;
             path = dlg.FileName;
@@ -308,37 +402,67 @@ public partial class MainWindow : Window
     {
         var dlg = new OpenFileDialog { Filter = "FUJIエディタファイル (*.txt)|*.txt|すべてのファイル (*.*)|*.*" };
         if (dlg.ShowDialog(this) != true) return;
-        var fileName = Path.GetFileName(dlg.FileName);
+        ImportFujiFile(dlg.FileName);
+    }
 
-        // 2026-07-17: 「キー種入力や難易度選択の時、自分がどのファイルをインポートしようとしているのか
-        // 忘れてしまう」との要望対応。以降のダイアログにファイル名を表示する。
-        var keyTypeId = SimplePrompt.Ask(this, "キー種の指定",
-            $"インポート中のファイル: {fileName}\n\nこのFUJIファイルのキー種ID(例: 5, 7, 11, 11L, 9A 等)を入力してくださいませ。", "5");
-        if (string.IsNullOrWhiteSpace(keyTypeId)) return;
+    /// <summary>FUJIエディタファイルをインポートする。ImportFuji_ClickとD&D(2026-07-20)の共通処理。
+    /// 2026-07-20: 従来は「キー種を手入力→Import後、同キー種内で難易度候補が複数あれば選択」の
+    /// 二段構えだったが、difData行は自分のキー種を持つ自己完結データなので、Import前に
+    /// FujiImporter.ScanDifDataで全キー種混在のまま先読みし、1件なら自動採用・複数ならこの時点で
+    /// 選択、0件の場合のみ従来通り手入力してもらう形に統合(ユーザー要望)。</summary>
+    private void ImportFujiFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        string text;
+        try { text = File.ReadAllText(path); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var allCandidates = FujiImporter.ScanDifData(text);
+        DifDataCandidate? chosen;
+        bool pickerCancelled = false;
+        string keyTypeId;
+
+        if (allCandidates.Count == 1)
+        {
+            chosen = allCandidates[0];
+            keyTypeId = chosen.KeyTypeId;
+        }
+        else if (allCandidates.Count > 1)
+        {
+            var picked = DifDataPickerDialog.Ask(this, allCandidates, fileName);
+            chosen = picked ?? allCandidates[0]; // キャンセル時は先頭候補のまま(従来の挙動を踏襲)
+            pickerCancelled = picked is null;
+            keyTypeId = chosen.KeyTypeId;
+        }
+        else
+        {
+            // difData自体が無いファイル: 従来通りキー種を手入力してもらう(難易度名は分からないまま)
+            var input = SimplePrompt.Ask(this, "キー種の指定",
+                $"インポート中のファイル: {fileName}\n\nこのFUJIファイルのキー種ID(例: 5, 7, 11, 11L, 9A 等)を入力してくださいませ。", "5");
+            if (string.IsNullOrWhiteSpace(input)) return;
+            chosen = null;
+            keyTypeId = input;
+        }
 
         try
         {
-            var text = File.ReadAllText(dlg.FileName);
             var importer = new FujiImporter(_templates.Get);
             var result = importer.Import(text, keyTypeId);
 
-            // difDataに同一キー種の候補が複数ある場合、どれを使うか選んでもらう(2026-07-16e)。
-            // Import側は暫定的に先頭候補を適用済みなので、選ばれなければそのまま先頭候補が使われる。
-            if (result.DifDataCandidates.Count > 1)
+            if (chosen is not null)
             {
-                var chosen = DifDataPickerDialog.Ask(this, result.DifDataCandidates, fileName);
-                if (chosen is not null)
-                {
-                    result.Tab.DifficultyName = chosen.DifficultyName;
-                    if (chosen.InitialSpeed is { } sp) result.Tab.InitialSpeed = sp;
-                }
-                else
-                {
+                result.Tab.DifficultyName = chosen.DifficultyName;
+                if (chosen.InitialSpeed is { } sp) result.Tab.InitialSpeed = sp;
+                if (pickerCancelled)
                     result.Warnings.Add("難易度候補の選択がキャンセルされたため、暫定値(先頭候補)のままです。手動で確認・修正してくださいませ");
-                }
             }
 
-            var project = GetOrCreateProjectForImport();
+            var project = ChooseImportTargetProject(fileName);
+            if (project is null) return; // インポート先の選択をキャンセル
             var warnings = ProjectOperations.ApplyImport(project, result);
             FinishTabImport(project, warnings);
         }
@@ -352,11 +476,16 @@ public partial class MainWindow : Window
     {
         var dlg = new OpenFileDialog { Filter = "SKBエディタファイル (*.txt;*.json)|*.txt;*.json|すべてのファイル (*.*)|*.*" };
         if (dlg.ShowDialog(this) != true) return;
-        var fileName = Path.GetFileName(dlg.FileName);
+        ImportSkbFile(dlg.FileName);
+    }
 
+    /// <summary>SKBエディタファイルをインポートする。ImportSkb_ClickとD&D(2026-07-20)の共通処理。</summary>
+    private void ImportSkbFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
         try
         {
-            var text = File.ReadAllText(dlg.FileName);
+            var text = File.ReadAllText(path);
             var importer = new SkbImporter(_templates.Get);
             var result = importer.Import(text);
 
@@ -364,7 +493,8 @@ public partial class MainWindow : Window
                 $"インポート中のファイル: {fileName}\n\nSKB形式には難易度名が保存されていないため、手動で入力してくださいませ。", "Normal");
             if (!string.IsNullOrWhiteSpace(name)) result.Tab.DifficultyName = name;
 
-            var project = GetOrCreateProjectForImport();
+            var project = ChooseImportTargetProject(fileName);
+            if (project is null) return; // インポート先の選択をキャンセル
             var warnings = ProjectOperations.ApplyImport(project, result);
             FinishTabImport(project, warnings);
         }
@@ -378,7 +508,12 @@ public partial class MainWindow : Window
     {
         var dlg = new OpenFileDialog { Filter = "dos.txt (*.txt)|*.txt|すべてのファイル (*.*)|*.*" };
         if (dlg.ShowDialog(this) != true) return;
+        ImportDosFile(dlg.FileName);
+    }
 
+    /// <summary>dos.txtをインポートする。ImportDos_ClickとD&D(2026-07-20)の共通処理。</summary>
+    private void ImportDosFile(string path)
+    {
         var autoEstimate = MessageBox.Show(this,
             "タイミング情報(de_*/es_*)が見つからなかった場合、ノートの分布からBPMを自動推定してみますか?\n" +
             "(推定できなければ既定BPM=120・4/4拍子を仮定します)",
@@ -386,15 +521,14 @@ public partial class MainWindow : Window
 
         try
         {
-            var text = File.ReadAllText(dlg.FileName);
+            var text = File.ReadAllText(path);
             var importer = new DosImporter(_templates.Get);
             var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = _appSettings.DefaultBpm }; // 環境設定(仕様書15.2、2026-07-19b)
             var result = importer.Import(text, options);
 
             // dos.txtインポートは単体でプロジェクト全体(タブ複数を含む)を作るため、既存プロジェクトへの
-            // タブ追加ではなく丸ごと置き換え("開く"に近い挙動)。
-            _currentFilePath = null;
-            OpenDocument(new EditorDocument(result.Project, _templates));
+            // タブ追加ではなく新しいプロジェクトタブとして追加する(2026-07-20)。
+            AddSession(new EditorDocument(result.Project, _templates), null);
 
             var warnings = new List<string>(result.Warnings)
             {
@@ -409,29 +543,46 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// FUJI/SKBインポート先のChartProjectを返す。プロジェクトが未作成の場合はここで新規作成する
-    /// (「プロジェクトが無い状態でのインポートは新規作成を兼ねる」というユーザー要望に対応)。
+    /// FUJI/SKBインポート先を選ばせる(2026-07-20: マルチプロジェクトタブ対応)。
+    /// セッションが1つも無ければ問答無用で新規プロジェクト(選択の余地が無いため)。
+    /// それ以外は「現在のプロジェクトに追加」か「新しいプロジェクトとして」かを尋ねる。
+    /// キャンセル時はnullを返す(呼び出し元はインポート自体を中止すること)。
     /// 空のEditorDocumentは作らない(EditorDocumentはタブ0件だと構築時に例外を投げる仕様のため、
     /// 先にProjectOperations.ApplyImportでタブを追加してからEditorDocumentを作る順序を守ること)。
     /// </summary>
-    private ChartProject GetOrCreateProjectForImport() => _document?.Project ?? new ChartProject { ProjectName = "untitled" };
+    private ChartProject? ChooseImportTargetProject(string fileName)
+    {
+        if (_sessions.Count == 0) return new ChartProject { ProjectName = "untitled" };
+
+        var choice = MessageBox.Show(this,
+            $"「{fileName}」を現在のプロジェクトに追加しますか?\n\n" +
+            "「はい」= 現在のプロジェクトに追加\n「いいえ」= 新しいプロジェクトとしてインポート\n「キャンセル」= インポートを中止",
+            "インポート先の選択", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        return choice switch
+        {
+            MessageBoxResult.Yes => _document!.Project,
+            MessageBoxResult.No => new ChartProject { ProjectName = "untitled" },
+            _ => null,
+        };
+    }
 
     /// <summary>
-    /// ApplyImport後の後始末。projectは呼び出し元がGetOrCreateProjectForImport()で取得し、
+    /// ApplyImport後の後始末。projectは呼び出し元がChooseImportTargetProject()で取得し、
     /// 実際にApplyImportへ渡したのと同一の参照でなければならない(取り違えるとインポートしたタブが
-    /// 見えなくなる)。_documentが未作成だった場合はここでEditorDocumentを新規構築し、
-    /// 既存プロジェクトへのインポートだった場合はUndo履歴・選択状態を維持したまま画面だけ更新する。
+    /// 見えなくなる)。projectが現在アクティブなセッションのものと異なる(=新しいプロジェクトとして
+    /// インポートされた)場合はここで新規セッションとして追加し、同一の場合はUndo履歴・選択状態を
+    /// 維持したまま画面だけ更新する。
     /// </summary>
     private void FinishTabImport(ChartProject project, List<string> warnings)
     {
-        if (_document is null)
+        bool isNewProject = _document is null || !ReferenceEquals(_document.Project, project);
+        if (isNewProject)
         {
-            _currentFilePath = null;
-            OpenDocument(new EditorDocument(project, _templates));
+            AddSession(new EditorDocument(project, _templates), null);
         }
         else
         {
-            OpenDocument(_document); // タブ一覧の再読込のみ。Undo履歴・選択状態はそのまま
+            OpenDocument(_document!, _controller); // タブ一覧の再読込のみ。既存コントローラ・選択状態はそのまま
         }
         _document!.CurrentTabIndex = _document.Project.Tabs.Count - 1;
 
@@ -461,17 +612,36 @@ public partial class MainWindow : Window
     // ドキュメントの画面反映
     // =====================================================================
 
-    private void OpenDocument(EditorDocument doc)
+    /// <summary>
+    /// docを画面に反映する。controllerを渡した場合はそれを再利用する(2026-07-20: マルチプロジェクトタブで
+    /// セッション切替時にCurrentTick等のコントローラ状態を保つため)。省略時(新規プロジェクト/インポート等)は
+    /// 新しいコントローラを作る。
+    /// </summary>
+    private void OpenDocument(EditorDocument doc, SmartToolController? controller = null)
     {
         _document = doc;
-        _controller = new SmartToolController(doc);
-        _controller.CurrentTickChanged += () => CurrentTickText.Text = _controller.CurrentTick is { } ct ? FormatTickPos(ct) : "-"; // 2026-07-17f: tick単独→tick/frame/秒の複合表記へ
+        _controller = controller ?? new SmartToolController(doc);
+
+        // CurrentTickChangedの購読はコントローラ単位。セッション切替でコントローラを使い回す場合に
+        // 二重購読(表示更新が積み重なる)しないよう、既に購読済みのコントローラかどうかで判定する。
+        if (!ReferenceEquals(_tickSubscribedController, _controller))
+        {
+            _controller.CurrentTickChanged += () => CurrentTickText.Text = _controller.CurrentTick is { } ct ? FormatTickPos(ct) : "-"; // 2026-07-17f: tick単独→tick/frame/秒の複合表記へ
+            _tickSubscribedController = _controller;
+        }
 
         Canvas.Document = doc;
         Canvas.Controller = _controller;
+        // 2026-07-23: 色編集モードのON/OFF・塗り色はセッションを跨いで保持する仕様のため、
+        // アクティブになったコントローラへ都度反映する(コントローラ自体はセッションごとに使い回される)。
+        // 2026-07-24: サブモード(Normal/FrzHit/Shadow)関連の状態もまとめてPushColorEditStateToControllerへ集約。
+        PushColorEditStateToController();
+        // 2026-07-21: SKB操作モードのコントローラもドキュメントごとに作り直す(同時押し判定・未完了フリーズは
+        // 一時的な状態でよく、セッション間で引き継ぐ必要が無いため)。ON状態自体はセッションを跨いで保持する。
+        _keyboardMode = new KeyboardModeController(doc) { ThresholdMs = _appSettings.SimultaneousPressThresholdMs };
+        if (_keyboardModeActive) _keyboardMode.EnterMode();
         FrameEditToggle.IsChecked = false; // 新ドキュメントは拍情報モードから(仕様書7.6、2026-07-17i)
         doc.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 仕様書14章(2026-07-19b)
-        doc.Changed += UpdateWindowTitle; // タイトルバーの'*'表示(未解決事項§2-6、2026-07-19b)
         UpdateWindowTitle();
 
         ProjectTitleText.Text = $"{doc.Project.ProjectName} ({doc.Project.MusicTitle})";
@@ -483,13 +653,20 @@ public partial class MainWindow : Window
         DifficultyTabControl.SelectedIndex = Math.Min(doc.CurrentTabIndex, doc.Project.Tabs.Count - 1);
         _suppressSelectionEvent = false;
 
-        // 右パネル③(選択中オブジェクトのプロパティ)はDocument.Changedを購読して選択状態を追随する。
-        // 同じdocインスタンスでOpenDocumentが再呼び出しされるケース(インポート後の再読込)があるため、
-        // 重複購読を避けて古いdocからは外す。
+        // 右パネル③(選択中オブジェクトのプロパティ)・タイトルバー・プロジェクトタブラベルはいずれも
+        // Document.Changedを購読して追随する。同じdocインスタンスでOpenDocumentが再呼び出しされる
+        // ケース(インポート後の再読込、セッション切替の往復)があるため、重複購読を避けて古いdocからは外す。
         if (!ReferenceEquals(_selectionSubscribedDoc, doc))
         {
-            if (_selectionSubscribedDoc is not null) _selectionSubscribedDoc.Changed -= RefreshSelectedObjectPanel;
+            if (_selectionSubscribedDoc is not null)
+            {
+                _selectionSubscribedDoc.Changed -= RefreshSelectedObjectPanel;
+                _selectionSubscribedDoc.Changed -= UpdateWindowTitle;
+                _selectionSubscribedDoc.Changed -= RefreshProjectTabBarLabelOnly;
+            }
             doc.Changed += RefreshSelectedObjectPanel;
+            doc.Changed += UpdateWindowTitle;
+            doc.Changed += RefreshProjectTabBarLabelOnly;
             _selectionSubscribedDoc = doc;
         }
 
@@ -499,6 +676,138 @@ public partial class MainWindow : Window
         RefreshSelectedObjectPanel();
         RefreshColorPanel();
         RefreshExtraHeadersPanel();
+    }
+
+    /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
+    /// ProjectSession.TabLabelはDifficultyTab等と同じくINotifyPropertyChanged非対応のため明示リフレッシュ。</summary>
+    private void RefreshProjectTabBarLabelOnly() => ProjectTabControl.Items.Refresh();
+
+    // =====================================================================
+    // マルチプロジェクトタブ(仕様書TBD#10、2026-07-20)
+    // =====================================================================
+
+    /// <summary>新しいプロジェクトをセッションとして追加し、アクティブにする。New/Open/dos.txtインポート/
+    /// 自形式D&D、および「新しいプロジェクトとしてインポート」を選んだFUJI/SKBインポート等、
+    /// 「丸ごと新しいプロジェクト」を作る全ての経路で使う。</summary>
+    private void AddSession(EditorDocument doc, string? filePath)
+    {
+        SyncActiveSessionBeforeSwitch();
+        OpenDocument(doc); // 新規docなのでコントローラも新規生成
+        _currentFilePath = filePath;
+        _sessions.Add(new ProjectSession { Document = doc, Controller = _controller!, FilePath = filePath });
+        _activeSessionIndex = _sessions.Count - 1;
+        RefreshProjectTabBar();
+    }
+
+    /// <summary>アクティブセッションを切り替える直前に、現在表示中の実行時状態(コントローラ・保存パス)を
+    /// 元のセッションへ書き戻す(読み直し時に正しく復元できるように)。セッション未保持時は何もしない。</summary>
+    private void SyncActiveSessionBeforeSwitch()
+    {
+        if (_activeSessionIndex < 0 || _activeSessionIndex >= _sessions.Count) return;
+        var s = _sessions[_activeSessionIndex];
+        if (_controller is not null) s.Controller = _controller;
+        s.FilePath = _currentFilePath;
+    }
+
+    /// <summary>プロジェクトタブの切替本体。切替前に目視テストを止め(セッションを跨いだ再生継続は
+    /// 混乱を招くため強制終了)、現在の実行時状態を元のセッションへ書き戻してから、選択先セッションの
+    /// ドキュメント・コントローラ・保存パスへ差し替える。</summary>
+    private void ActivateSession(int index)
+    {
+        if (index < 0 || index >= _sessions.Count || index == _activeSessionIndex) return;
+        if (_visualTestActive) StopVisualTest(returnToStart: false);
+        SyncActiveSessionBeforeSwitch();
+
+        _activeSessionIndex = index;
+        var s = _sessions[index];
+        _currentFilePath = s.FilePath;
+        OpenDocument(s.Document, s.Controller);
+        RefreshProjectTabBar();
+    }
+
+    /// <summary>プロジェクトタブバー(ItemsSource)を選択位置ごと再構築する</summary>
+    private void RefreshProjectTabBar()
+    {
+        _suppressProjectTabSelectionEvent = true;
+        ProjectTabControl.ItemsSource = null;
+        ProjectTabControl.ItemsSource = _sessions;
+        ProjectTabControl.DisplayMemberPath = nameof(ProjectSession.TabLabel);
+        ProjectTabControl.SelectedIndex = _activeSessionIndex;
+        _suppressProjectTabSelectionEvent = false;
+    }
+
+    private void ProjectTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressProjectTabSelectionEvent) return;
+        if (ProjectTabControl.SelectedIndex < 0) return;
+        ActivateSession(ProjectTabControl.SelectedIndex);
+    }
+
+    /// <summary>「プロジェクトを閉じる」ボタン。未保存なら個別に確認し、最後の1つを閉じた場合は
+    /// 起動直後と同じ「プロジェクト無し」の空状態に戻す(2026-07-20ユーザー指定)。</summary>
+    private void CloseProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeSessionIndex < 0 || _document is null) return;
+
+        if (_document.IsModified)
+        {
+            var name = string.IsNullOrWhiteSpace(_document.Project.ProjectName) ? "Untitled" : _document.Project.ProjectName;
+            var confirm = MessageBox.Show(this, $"「{name}」に未保存の変更がありますわ。閉じてよろしいですか?",
+                "プロジェクトを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes) return;
+        }
+
+        if (_visualTestActive) StopVisualTest(returnToStart: false);
+        _audioPlayer.Stop();
+        _playbackTimer.Stop();
+
+        int closingIndex = _activeSessionIndex;
+        _sessions.RemoveAt(closingIndex);
+
+        if (_sessions.Count == 0)
+        {
+            ResetToEmptyState();
+            return;
+        }
+
+        _activeSessionIndex = Math.Min(closingIndex, _sessions.Count - 1);
+        var s = _sessions[_activeSessionIndex];
+        _currentFilePath = s.FilePath;
+        OpenDocument(s.Document, s.Controller);
+        RefreshProjectTabBar();
+    }
+
+    /// <summary>プロジェクトが1つも無い状態(起動直後と同じ)へ戻す(CloseProject_Clickで最後の
+    /// 1タブを閉じた場合専用)。</summary>
+    private void ResetToEmptyState()
+    {
+        _activeSessionIndex = -1;
+        _document = null;
+        _controller = null;
+        _keyboardMode = null;
+        _currentFilePath = null;
+
+        Canvas.Document = null;
+        Canvas.Controller = null;
+        Canvas.Waveform = null;
+        Canvas.PlaybackTick = null;
+
+        ProjectTitleText.Text = "(プロジェクト未作成)";
+        _suppressSelectionEvent = true;
+        DifficultyTabControl.ItemsSource = null;
+        _suppressSelectionEvent = false;
+
+        AudioFileText.Text = "音楽未読込";
+        AudioFileText.FontStyle = FontStyles.Italic;
+        AudioTimeText.Text = "-";
+        _audioLoaded = false;
+
+        SetColorPanel.Children.Clear();
+        FrzColorPanel.Children.Clear();
+        ExtraHeadersPanel.Children.Clear();
+
+        UpdateWindowTitle();
+        RefreshProjectTabBar();
     }
 
     // =====================================================================
@@ -558,6 +867,126 @@ public partial class MainWindow : Window
         }
     }
 
+    // =====================================================================
+    // D&Dによるファイル読み込み(仕様書TBD#7、2026-07-20)
+    // =====================================================================
+
+    private void Window_DragEnter(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// D&Dされたファイルを中身から自動判別し、対応するインポート/読込処理へ振り分ける。
+    /// 拡張子だけでは判別できない形式(FUJI/SKB/dos.txtの.txt共有、自形式/SKBの.json共有)が
+    /// あるため、DroppedFileClassifierで中身を見て判定する(実データ・公式wikiで確認済みのマーカー)。
+    /// 楽曲ファイル(RawAudio/Base64Music)は「プロジェクトを開いていないと読み込めない」既存仕様
+    /// (LoadAudioFile呼び出し前のnullチェック)があるため、他形式を先に処理してから最後に回す。
+    /// これにより「プロジェクト系ファイル+楽曲ファイル」を一括ドロップした場合、前者で開かれた
+    /// プロジェクトへ後者をそのまま読み込める。判別不能ファイルは個別インポートを促す。
+    /// </summary>
+    private void Window_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        var paths = e.Data.GetData(DataFormats.FileDrop) as string[] ?? [];
+        if (paths.Length == 0) return;
+        e.Handled = true;
+
+        var immediate = new List<(string Path, DroppedFileKind Kind)>();
+        var deferredAudio = new List<(string Path, DroppedFileKind Kind)>();
+        var unknown = new List<string>();
+
+        foreach (var path in paths)
+        {
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(path); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"読み込みに失敗しましたわ: {Path.GetFileName(path)}\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                continue;
+            }
+
+            var kind = DroppedFileClassifier.Classify(Path.GetFileName(path), bytes);
+            switch (kind)
+            {
+                case DroppedFileKind.RawAudio:
+                case DroppedFileKind.Base64Music:
+                    deferredAudio.Add((path, kind));
+                    break;
+                case DroppedFileKind.Unknown:
+                    unknown.Add(Path.GetFileName(path));
+                    break;
+                default:
+                    immediate.Add((path, kind));
+                    break;
+            }
+        }
+
+        foreach (var (path, kind) in immediate)
+        {
+            switch (kind)
+            {
+                case DroppedFileKind.OwnProject: OpenProjectFile(path); break;
+                case DroppedFileKind.Fuji: ImportFujiFile(path); break;
+                case DroppedFileKind.Skb: ImportSkbFile(path); break;
+                case DroppedFileKind.Dos: ImportDosFile(path); break;
+            }
+        }
+
+        if (deferredAudio.Count > 0)
+        {
+            if (_document is null)
+            {
+                var names = string.Join("\n", deferredAudio.Select(a => Path.GetFileName(a.Path)));
+                MessageBox.Show(this,
+                    $"先にプロジェクトを作成/読み込みしてくださいませ。以下の楽曲ファイルは読み込めませんでした:\n{names}",
+                    "音楽ファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else
+            {
+                foreach (var (path, kind) in deferredAudio)
+                {
+                    if (kind == DroppedFileKind.RawAudio) LoadAudioFile(path);
+                    else LoadBase64MusicFile(path);
+                }
+            }
+        }
+
+        if (unknown.Count > 0)
+        {
+            MessageBox.Show(this,
+                $"以下のファイルは形式を判別できませんでしたわ:\n{string.Join("\n", unknown)}\n\n" +
+                "ファイルメニューの個別インポート機能をお使いくださいませ。",
+                "判別できないファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>BASE64エンコードされた楽曲データJS/txt(TBD#6、dos-h0011-musicUrl)をデコードし、
+    /// 一時ファイルへ書き出してから既存のLoadAudioFileへ渡す。元の音声形式はJS側に残らないため、
+    /// デコード後のバイト列をマジックバイトで判定して拡張子を復元する(Base64MusicDecoder参照)。</summary>
+    private void LoadBase64MusicFile(string path)
+    {
+        try
+        {
+            var content = File.ReadAllText(path);
+            var bytes = Core.Audio.Base64MusicDecoder.DecodeToBytes(content);
+            if (bytes is null)
+            {
+                MessageBox.Show(this, $"楽曲データ(BASE64)のデコードに失敗しましたわ: {Path.GetFileName(path)}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            var ext = Core.Audio.Base64MusicDecoder.GuessExtension(bytes);
+            var tempPath = Path.Combine(Path.GetTempPath(), $"danoni_music_{Guid.NewGuid():N}{ext}");
+            File.WriteAllBytes(tempPath, bytes);
+            LoadAudioFile(tempPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"楽曲データ(BASE64)の読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     // 2026-07-17g: Play/Pause/Stopボタンとそのハンドラは撤去。音楽再生はテスト専用のため
     // Space(目視テスト開始/終了)・Ctrl+Space(現在位置で終了)に一本化した。
 
@@ -578,20 +1007,29 @@ public partial class MainWindow : Window
         Canvas.InvalidateVisual();
 
         // 2026-07-17f: 目視テスト中の追従スクロール(未解決事項§2-1、方式はAppSettingsで選択)
+        // 2026-07-22: 譜面ビューReverse時はラインが画面上方向へ進むため、寄せる側の端を入れ替える
+        // (進行方向が逆になる=「自然に画面外へ出る側」が上下逆になるため)。
         if (_visualTestActive && Canvas.PlaybackTick is { } lineTick)
         {
+            bool reverse = _appSettings.ChartViewReverse;
             double lineY = _document.CurrentLayout.TickToY(lineTick);
             double off = ChartScrollViewer.VerticalOffset;
             double vh = ChartScrollViewer.ViewportHeight;
             if (_appSettings.VisualTestFollowMode == "smooth")
             {
-                // (B)スムーズスクロール: ラインを画面上端から35%の固定位置に据えて譜面側を流す
-                ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, lineY - vh * 0.35));
+                // (B)スムーズスクロール: ラインを画面の固定位置(通常=上端から35%、Reverse=下端から35%)に据える
+                double target = reverse ? lineY - vh * 0.65 : lineY - vh * 0.35;
+                ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, target));
             }
-            else if (lineY > off + vh - 8 || lineY < off)
+            else
             {
-                // (A)ページ送り: ラインが画面外へ出た瞬間、ラインが画面上端(+8pxマージン)に来るよう切替
-                ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, lineY - 8));
+                // (A)ページ送り: ラインが画面外へ出た瞬間、寄せる側の端(+8pxマージン)へ切替
+                bool exited = reverse ? (lineY < off + 8 || lineY > off + vh) : (lineY > off + vh - 8 || lineY < off);
+                if (exited)
+                {
+                    double target = reverse ? lineY - vh + 8 : lineY - 8;
+                    ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, target));
+                }
             }
         }
     }
@@ -622,6 +1060,93 @@ public partial class MainWindow : Window
         _document.CurrentTabIndex = Math.Min(idx, tabs.Count - 1);
         _document.Selection.Clear();
         OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+    }
+
+    // =====================================================================
+    // タブのD&D並び替え(仕様書6.1「難易度タブはD&Dで並び替え」/TBD#10、2026-07-20)
+    // ProjectTabControl/DifficultyTabControlの両方で共用。DisplayMemberPath運用のまま
+    // (ItemTemplate等を変更せず)ヒットテストでTabItem・そのIndexFromContainerを求める方式。
+    // 同じ行同士でしかドラッグを開始しないため、行をまたいだ入れ替えは起こらない。
+    // =====================================================================
+
+    private Point _tabDragStartPoint;
+    private int _tabDragSourceIndex = -1;
+    private TabControl? _tabDragControl;
+
+    private static TabItem? FindTabItemAncestor(DependencyObject? source)
+    {
+        while (source is not null and not TabItem)
+            source = VisualTreeHelper.GetParent(source);
+        return source as TabItem;
+    }
+
+    private void TabControl_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var tc = (TabControl)sender;
+        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
+        if (item is null) return;
+        _tabDragStartPoint = e.GetPosition(null);
+        _tabDragSourceIndex = tc.ItemContainerGenerator.IndexFromContainer(item);
+        _tabDragControl = tc;
+    }
+
+    private void TabControl_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!ReferenceEquals(_tabDragControl, sender) || _tabDragSourceIndex < 0 || e.LeftButton != MouseButtonState.Pressed) return;
+
+        var pos = e.GetPosition(null);
+        if (Math.Abs(pos.X - _tabDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(pos.Y - _tabDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+        var tc = (TabControl)sender;
+        int from = _tabDragSourceIndex;
+        _tabDragSourceIndex = -1;
+        _tabDragControl = null;
+        DragDrop.DoDragDrop(tc, from, DragDropEffects.Move);
+    }
+
+    private void TabControl_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// <summary>プロジェクトタブ行内での並び替え。_sessionsを入れ替え、入れ替え後も同じセッションを
+    /// アクティブにする(順番だけ変わり、選択中プロジェクトは変わらない)。</summary>
+    private void ProjectTabControl_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(int))) return;
+        int from = (int)e.Data.GetData(typeof(int));
+        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
+        if (item is null) return;
+        int to = ProjectTabControl.ItemContainerGenerator.IndexFromContainer(item);
+        if (from < 0 || to < 0 || from >= _sessions.Count || to >= _sessions.Count || from == to) return;
+
+        SyncActiveSessionBeforeSwitch(); // 並び替え前に現在の実行時状態を書き戻しておく
+        var moved = _sessions[from];
+        var activeSession = _activeSessionIndex >= 0 ? _sessions[_activeSessionIndex] : null;
+        _sessions.RemoveAt(from);
+        _sessions.Insert(to, moved);
+        if (activeSession is not null) _activeSessionIndex = _sessions.IndexOf(activeSession);
+        RefreshProjectTabBar();
+    }
+
+    /// <summary>難易度タブ行内での並び替え。既存のProjectOperations.MoveTab(1タブ目の色実体入替ルール込み、
+    /// 仕様書6.4.2)をそのまま使う。</summary>
+    private void DifficultyTabControl_Drop(object sender, DragEventArgs e)
+    {
+        if (_document is null || !e.Data.GetDataPresent(typeof(int))) return;
+        int from = (int)e.Data.GetData(typeof(int));
+        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
+        if (item is null) return;
+        int to = DifficultyTabControl.ItemContainerGenerator.IndexFromContainer(item);
+        var tabs = _document.Project.Tabs;
+        if (from < 0 || to < 0 || from >= tabs.Count || to >= tabs.Count || from == to) return;
+
+        ProjectOperations.MoveTab(_document.Project, from, to);
+        _document.CurrentTabIndex = to;
+        _document.NotifyChanged();
+        OpenDocument(_document, _controller);
     }
 
     private void DifficultyTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -687,13 +1212,29 @@ public partial class MainWindow : Window
             BorderBrush = Brushes.Black, BorderThickness = new Thickness(1),
             Background = SafeColorBrush(value),
         };
-        var box = new TextBox { Width = 140, Text = value, IsEnabled = enabled, Tag = tag };
+        var box = new TextBox { Width = 110, Text = value, IsEnabled = enabled, Tag = tag };
         box.TextChanged += (_, _) => swatch.Background = SafeColorBrush(box.Text);
         box.LostFocus += ColorField_LostFocus;
+        box.LostFocus += (_, _) =>
+        {
+            if (!box.IsEnabled) return;
+            ColorHistoryPicker.Record(_appSettings, box.Text);
+            _appSettings.Save(AppPaths.SettingsFilePath);
+        };
 
         row.Children.Add(label);
         row.Children.Add(swatch);
         row.Children.Add(box);
+        if (enabled)
+        {
+            var historyBtn = new Button { Content = "履歴", Width = 36, Margin = new Thickness(4, 0, 0, 0) };
+            historyBtn.Click += (_, _) => ColorHistoryPicker.Show(_appSettings, historyBtn, hex =>
+            {
+                box.Text = hex;
+                ColorField_LostFocus(box, new RoutedEventArgs());
+            });
+            row.Children.Add(historyBtn);
+        }
         parent.Children.Add(row);
     }
 
@@ -1495,6 +2036,43 @@ public partial class MainWindow : Window
         Canvas.InvalidateVisual();
     }
 
+    // --- 2026-07-26: Ctrl+1〜9,0,-,^ グリッド分解能ショートカット ---
+
+    /// <summary>数字キー列の物理キー(Ctrl+1,2,...,9,0,-,^)を0〜11の位置インデックスへ変換する。
+    /// テンキーは対象外(SKBエディタの慣習に合わせ、メイン列のみ)。対応外のキーはnull。</summary>
+    private static int? GridShortcutKeyIndex(Key key) => key switch
+    {
+        Key.D1 => 0,
+        Key.D2 => 1,
+        Key.D3 => 2,
+        Key.D4 => 3,
+        Key.D5 => 4,
+        Key.D6 => 5,
+        Key.D7 => 6,
+        Key.D8 => 7,
+        Key.D9 => 8,
+        Key.D0 => 9,
+        Key.OemMinus => 10, // "-"(JIS/US共通の物理位置)
+        Key.OemPlus => 11,  // "^"(JIS配列で0の右隣。US配列の"="と同じ物理キー、WPFのOem*名はスキャンコード基準)
+        _ => null,
+    };
+
+    /// <summary>環境設定で選んだプリセット(GridShortcutPreset)に従い、指定インデックスに
+    /// 対応する分解能をスナップへ適用する。ショートカットで分解能を選んだ場合はスナップ自体も
+    /// 自動的に有効化する(ユーザーが明示的に分解能を選ぶ操作なので、スナップOFFのままだと
+    /// 意図が反映されず分かりにくいための挙動、2026-07-26設計判断)。</summary>
+    private void ApplyGridShortcut(int index)
+    {
+        if (_document is null) return;
+        var division = GridShortcutPresets.DivisionForIndex(_appSettings.GridShortcutPreset, index);
+        if (division is null) return;
+        _document.Snap.Enabled = true;
+        SnapEnabledCheck.IsChecked = true;
+        _document.Snap.Division = division.Value;
+        SnapDivisionCombo.SelectedItem = division.Value;
+        Canvas.InvalidateVisual();
+    }
+
     // =====================================================================
     // スクロール連動(ChartCanvasの可視範囲カリング用)
     // =====================================================================
@@ -1527,14 +2105,68 @@ public partial class MainWindow : Window
             else if (e.Key == Key.S) { SaveProject_Click(this, new RoutedEventArgs()); e.Handled = true; }
             else if (e.Key == Key.E) { ExportDos_Click(this, new RoutedEventArgs()); e.Handled = true; }
             // --- 2026-07-17f: マウスモードのショートカット追加(Ctrl系) ---
-            else if (e.Key == Key.Home) { ChartScrollViewer.ScrollToVerticalOffset(0); e.Handled = true; } // 譜面先頭へ
+            else if (e.Key == Key.Home)
+            {
+                // 2026-07-22: 譜面先頭(tick0)は通常=上端、Reverse時=下端
+                ChartScrollViewer.ScrollToVerticalOffset(_appSettings.ChartViewReverse ? ChartScrollViewer.ScrollableHeight : 0);
+                e.Handled = true;
+            }
             else if (e.Key == Key.End) { ScrollToLastNote(); e.Handled = true; } // 末尾ノートを画面中央へ
             else if (e.Key == Key.Space && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; } // 現在位置で終了
             else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
+            else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
+            // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
+            else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Left)
+            {
+                _keyboardMode.MoveCursorByMeasure(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -4 : -2);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+            }
+            else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
+            {
+                _keyboardMode.MoveCursorByMeasure(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+            }
+            // --- 2026-07-20: Ctrl+X/C/V(仕様書13章)。Z/Y/S/Eと異なりテキスト入力欄フォーカス中は
+            // 通常のテキストコピペを優先させ、譜面側のクリップボード処理を奪わない(専用ガード)。
+            else if (!textInputFocused && e.Key == Key.X) { if (_controller is not null && _controller.CutSelection()) Canvas.InvalidateVisual(); e.Handled = true; }
+            else if (!textInputFocused && e.Key == Key.C) { if (_controller is not null) _controller.CopySelection(); e.Handled = true; }
+            else if (!textInputFocused && e.Key == Key.V) { if (_controller is not null && _controller.Paste()) Canvas.InvalidateVisual(); e.Handled = true; }
+            // --- 2026-07-21: Ctrl+A(ノート・フリーズ全選択)/Shift+Ctrl+A(環境設定の対象を全選択、仕様書13章TBD) ---
+            else if (!textInputFocused && e.Key == Key.A && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            {
+                var s = _appSettings;
+                var options = new SelectAllOptions(
+                    s.SelectAllTargetNote, s.SelectAllTargetFreeze, s.SelectAllTargetSpeed,
+                    s.SelectAllTargetBoost, s.SelectAllTargetBpm, s.SelectAllTargetTimeSignature, s.SelectAllTargetMarker);
+                if (_controller is not null && _controller.SelectAllTargets(options)) Canvas.InvalidateVisual();
+                e.Handled = true;
+            }
+            else if (!textInputFocused && e.Key == Key.A)
+            {
+                if (_controller is not null && _controller.SelectAllNotes()) Canvas.InvalidateVisual();
+                e.Handled = true;
+            }
+            // --- 2026-07-26: Ctrl+1〜9,0,-,^(数字キー列12個)によるグリッド分解能切替。
+            // SKBエディタのCtrl+1〜7を参考にしたショートカットだが、キー割り当ては環境設定の
+            // GridShortcutPreset(オリジナルセット/SKB拡張セット)で選択する(仕様書TBD、ユーザー指定)。
+            // マウスモード・キーボードモードどちらでも常時有効(SKB本家に合わせ、モードに依存しない)。
+            else if (!textInputFocused && GridShortcutKeyIndex(e.Key) is int gridIdx)
+            {
+                ApplyGridShortcut(gridIdx);
+                e.Handled = true;
+            }
             return;
         }
 
         if (textInputFocused) return;
+
+        // --- 2026-07-21: SKB操作モード(キーボード操作)が有効な間は、カーソル移動キー(↑/↓/Space/B)・
+        // Backspace(カーソル位置削除)・ノート入力キーを、既存のマウスモード単独キーハンドラ
+        // (Space=目視テスト開始/終了、Backspace=再生開始フレームリセット等)より先に処理する
+        // (両モードのキーが同時に反応しないようにするための優先順位付け)。
+        if (_keyboardModeActive && HandleKeyboardModeKey(e)) return;
 
         // --- 2026-07-17f: 修飾なしキー(テキスト入力中は無効) ---
         switch (e.Key)
@@ -1564,6 +2196,483 @@ public partial class MainWindow : Window
                 e.Handled = true; // 再生ボタン等のフォーカス誤発火防止(要望メモ07-15の注意点)
                 break;
         }
+    }
+
+    // =====================================================================
+    // SKB操作モード(キーボード操作、2026-07-21確定仕様)
+    // =====================================================================
+
+    /// <summary>左パネルのトグルボタン(Ctrl+,と同じ動作)</summary>
+    private void ColorEditModeToggle_Click(object sender, RoutedEventArgs e) => ToggleColorEditMode();
+
+    /// <summary>色編集モード(ncolor_data、2026-07-23)のON/OFF切替。ON中はマーカーレーン以外の
+    /// 新規配置・移動・通常削除を一切受け付けなくなる(誤操作防止、SmartToolController側の制御)。</summary>
+    private void ToggleColorEditMode()
+    {
+        _colorEditModeActive = !_colorEditModeActive;
+        ColorEditModeToggle.IsChecked = _colorEditModeActive;
+        PushColorEditStateToController();
+        if (_colorEditModeActive) PropertyTabControl.SelectedItem = ColorEditTabItem;
+        Canvas.InvalidateVisual();
+        StatusText.Text = _colorEditModeActive
+            ? "色編集モード: ON(左クリック=着色/Shift・ホイールクリック=端点+帯同時/右クリック=解除、他の配置・移動は無効)"
+            : "色編集モード: OFF";
+    }
+
+    // =====================================================================
+    // 色編集モード 右パネル(ncolor_data、2026-07-23)
+    // =====================================================================
+
+    private void NColorField_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        RebuildNColorListPanel();
+        UpdateNColorPreview();
+        PushPaintColorToController();
+    }
+
+    private void NColorAddColorButton_Click(object sender, RoutedEventArgs e)
+    {
+        _nColorColors.Add("#ffffff");
+        _nColorUseOpacity.Add(false);
+        _nColorOpacity.Add("");
+        RebuildNColorListPanel();
+        UpdateNColorPreview();
+        PushPaintColorToController();
+    }
+
+    private void NColorBulkFillButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || _controller is null) return;
+        var code = ComposeNColorCode();
+        if (code is null) return;
+        if (_controller.BulkFillSelection(code))
+        {
+            _document.NotifyChanged();
+            Canvas.InvalidateVisual();
+        }
+    }
+
+    private void NColorClearAllButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || _controller is null) return;
+        var result = MessageBox.Show(this, "現在の難易度タブの色指定(ncolor_data)を全て削除しますの。よろしいですか？",
+            "ncolor_dataを全て削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes) return;
+        if (_controller.ClearAllNoteColors())
+        {
+            _document.NotifyChanged();
+            Canvas.InvalidateVisual();
+        }
+    }
+
+    /// <summary>種類(単色/linear/radial/conic)・方向・色リストから、右パネルの色編集タブの
+    /// リスト・表示を再構築する(2026-07-23。2026-07-24: 色名+透明度指定モードに対応)。
+    /// 単色選択時は色を1件に固定し、追加/方向入力を隠す。</summary>
+    private void RebuildNColorListPanel()
+    {
+        bool solid = NColorGradientTypeCombo.SelectedIndex <= 0;
+        bool linear = NColorGradientTypeCombo.SelectedIndex == 1;
+        if (solid && _nColorColors.Count > 1)
+        {
+            _nColorColors.RemoveRange(1, _nColorColors.Count - 1);
+            _nColorUseOpacity.RemoveRange(1, _nColorUseOpacity.Count - 1);
+            _nColorOpacity.RemoveRange(1, _nColorOpacity.Count - 1);
+        }
+
+        NColorListPanel.Children.Clear();
+        for (int i = 0; i < _nColorColors.Count; i++)
+        {
+            int idx = i;
+            var container = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+
+            var opacityCheck = new CheckBox { Content = "透明度を使用する(色名指定)", IsChecked = _nColorUseOpacity[idx], Margin = new Thickness(0, 0, 0, 2) };
+            opacityCheck.Checked += (_, _) => ToggleNColorOpacityMode(idx, true);
+            opacityCheck.Unchecked += (_, _) => ToggleNColorOpacityMode(idx, false);
+            container.Children.Add(opacityCheck);
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var swatch = new Border
+            {
+                Width = 16, Height = 16, Margin = new Thickness(0, 0, 4, 0),
+                BorderBrush = Brushes.Black, BorderThickness = new Thickness(1),
+                Background = NColorSwatchBrush(_nColorColors[idx]),
+            };
+            row.Children.Add(swatch);
+
+            if (_nColorUseOpacity[idx])
+            {
+                var combo = new ComboBox
+                {
+                    Width = 110, IsEditable = true,
+                    ItemsSource = CssColorNames.All.Select(c => c.Name).ToList(),
+                    Text = _nColorColors[idx].Split(';')[0],
+                };
+                void CommitName()
+                {
+                    _nColorColors[idx] = ComposeNameOpacityToken(combo.Text, _nColorOpacity[idx]);
+                    swatch.Background = NColorSwatchBrush(_nColorColors[idx]);
+                    UpdateNColorPreview();
+                    PushPaintColorToController();
+                }
+                combo.LostFocus += (_, _) => CommitName();
+                combo.SelectionChanged += (_, _) => CommitName();
+
+                var pickBtn = new Button { Content = "一覧", Width = 32, Margin = new Thickness(4, 0, 0, 0) };
+                pickBtn.Click += (_, _) => CssColorPicker.Show(pickBtn, name => { combo.Text = name; CommitName(); });
+
+                var opacityLabel = new TextBlock { Text = "不透明度(0-255):", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 4, 0), FontSize = 10 };
+                var opacityBox = new TextBox { Width = 40, Text = _nColorOpacity[idx] };
+                opacityBox.TextChanged += (_, _) =>
+                {
+                    _nColorOpacity[idx] = opacityBox.Text.Trim();
+                    _nColorColors[idx] = ComposeNameOpacityToken(combo.Text, _nColorOpacity[idx]);
+                    swatch.Background = NColorSwatchBrush(_nColorColors[idx]);
+                    UpdateNColorPreview();
+                    PushPaintColorToController();
+                };
+
+                row.Children.Add(combo);
+                row.Children.Add(pickBtn);
+                row.Children.Add(opacityLabel);
+                row.Children.Add(opacityBox);
+            }
+            else
+            {
+                var box = new TextBox { Width = 96, Text = _nColorColors[idx] };
+                box.TextChanged += (_, _) =>
+                {
+                    _nColorColors[idx] = box.Text;
+                    swatch.Background = NColorSwatchBrush(box.Text);
+                    UpdateNColorPreview();
+                    PushPaintColorToController();
+                };
+                box.LostFocus += (_, _) =>
+                {
+                    ColorHistoryPicker.Record(_appSettings, box.Text);
+                    _appSettings.Save(AppPaths.SettingsFilePath);
+                };
+                var historyBtn = new Button { Content = "履歴", Width = 40, Margin = new Thickness(4, 0, 0, 0) };
+                historyBtn.Click += (_, _) => ColorHistoryPicker.Show(_appSettings, historyBtn, hex => box.Text = hex);
+
+                row.Children.Add(box);
+                row.Children.Add(historyBtn);
+            }
+
+            if (!solid && _nColorColors.Count > 1)
+            {
+                var delBtn = new Button { Content = "×", Width = 24, Margin = new Thickness(4, 0, 0, 0) };
+                delBtn.Click += (_, _) =>
+                {
+                    _nColorColors.RemoveAt(idx);
+                    _nColorUseOpacity.RemoveAt(idx);
+                    _nColorOpacity.RemoveAt(idx);
+                    RebuildNColorListPanel();
+                    UpdateNColorPreview();
+                    PushPaintColorToController();
+                };
+                row.Children.Add(delBtn);
+            }
+            container.Children.Add(row);
+            NColorListPanel.Children.Add(container);
+        }
+
+        NColorAddColorButton.Visibility = solid ? Visibility.Collapsed : Visibility.Visible;
+        NColorDirectionLabel.Visibility = linear ? Visibility.Visible : Visibility.Collapsed;
+        NColorDirectionBox.Visibility = linear ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>色名+透明度モードのON/OFF切替(2026-07-24)。切替時に色欄の値を妥当な既定値へ
+    /// 詰め替える(hex⇔色名は自動変換できないため)。</summary>
+    private void ToggleNColorOpacityMode(int idx, bool on)
+    {
+        if (idx >= _nColorUseOpacity.Count) return;
+        _nColorUseOpacity[idx] = on;
+        if (on)
+        {
+            var current = _nColorColors[idx];
+            if (current.StartsWith('#') || current.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                _nColorColors[idx] = CssColorNames.All[0].Name; // 既定色名(aliceblue)
+        }
+        else
+        {
+            _nColorOpacity[idx] = "";
+            if (!_nColorColors[idx].StartsWith('#'))
+                _nColorColors[idx] = "#ffffff";
+        }
+        RebuildNColorListPanel();
+        UpdateNColorPreview();
+        PushPaintColorToController();
+    }
+
+    /// <summary>色名+透明度(0-255)をncolor_data ColorCode欄の書式(色名;透明度)へ組み立てる
+    /// (2026-07-24、透明度未指定なら色名のみ)。</summary>
+    private static string ComposeNameOpacityToken(string name, string opacity)
+    {
+        var trimmedName = name.Trim();
+        if (trimmedName.Length == 0) trimmedName = CssColorNames.All[0].Name;
+        if (opacity.Length == 0) return trimmedName;
+        return int.TryParse(opacity, out var v)
+            ? $"{trimmedName};{Math.Clamp(v, 0, 255)}"
+            : trimmedName;
+    }
+
+    /// <summary>色編集タブのスウォッチ表示用ブラシ解決(2026-07-24)。色名;透明度形式にも対応し、
+    /// 透明度値をアルファ値として反映する。</summary>
+    private static Brush NColorSwatchBrush(string token)
+    {
+        var namePart = token.Split(';')[0];
+        var opacityPart = token.Contains(';') ? token.Split(';', 2)[1] : "";
+        try
+        {
+            var color = (Color)ColorConverter.ConvertFromString(namePart)!;
+            if (int.TryParse(opacityPart, out var v))
+                color.A = (byte)Math.Clamp(v, 0, 255);
+            return new SolidColorBrush(color);
+        }
+        catch { return Brushes.LightGray; }
+    }
+
+    private void UpdateNColorPreview()
+    {
+        var code = ComposeNColorCode();
+        NColorPreviewSwatch.Background = code is null
+            ? Brushes.Transparent
+            : new SolidColorBrush(ChartCanvas.ParseDisplayColor(code, Colors.Magenta));
+    }
+
+    private void PushPaintColorToController()
+    {
+        if (_controller is not null) _controller.PaintColorCode = ComposeNColorCode();
+    }
+
+    /// <summary>「即時適用(全体色変化)にする」チェックボックス(2026-07-24)。</summary>
+    private void NColorAllFlagCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _paintAllFlag = NColorAllFlagCheck.IsChecked == true;
+        if (_controller is not null) _controller.PaintAllFlag = _paintAllFlag;
+    }
+
+    // =====================================================================
+    // 色編集モード サブモード(Normal/FrzHit/Shadow、2026-07-24)
+    // =====================================================================
+
+    /// <summary>右パネルの色編集タブに現在表示されている入力値から、SmartToolControllerが
+    /// 実際に塗りに使う状態を一括で反映する。ColorEditModeEnabled/PaintColorCode/PaintAllFlagに加え、
+    /// SubModeとFrzHit/Shadow系の入力値もまとめて反映する(以前は各フィールドを個別に反映していたが、
+    /// サブモード追加に伴い呼び出し箇所が増えたため1箇所へ集約した)。</summary>
+    private void PushColorEditStateToController()
+    {
+        if (_controller is null) return;
+        _controller.ColorEditModeEnabled = _colorEditModeActive;
+        _controller.PaintColorCode = ComposeNColorCode();
+        _controller.PaintAllFlag = _paintAllFlag;
+        _controller.SubMode = CurrentNColorSubMode();
+        _controller.PaintArrowShadowColor = NColorArrowShadowColorBox.Text;
+        _controller.PaintNormalShadowColor = NColorNormalShadowColorBox.Text;
+        _controller.HitEnabled = NColorHitEnabledCheck.IsChecked == true;
+        _controller.HitBarEnabled = NColorHitBarEnabledCheck.IsChecked == true;
+        _controller.HitShadowEnabled = NColorHitShadowEnabledCheck.IsChecked == true;
+        _controller.PaintHitColor = NColorHitColorBox.Text;
+        _controller.PaintHitBarColor = NColorHitBarColorBox.Text;
+        _controller.PaintHitShadowColor = NColorHitShadowColorBox.Text;
+    }
+
+    private ColorEditSubMode CurrentNColorSubMode() =>
+        NColorSubModeFrzHitRadio.IsChecked == true ? ColorEditSubMode.FrzHit
+        : NColorSubModeShadowRadio.IsChecked == true ? ColorEditSubMode.Shadow
+        : ColorEditSubMode.Normal;
+
+    /// <summary>編集対象(通常色/ヒット時色/塗りつぶし色)のラジオボタン切替。対応するパネルの
+    /// 表示切替とコントローラへの反映に加え、FrzHitサブモード中は譜面ビューの表示色がヒット時色の
+    /// プレビューに変わる(ChartCanvas.DrawNotesAndFreezes参照)ため再描画する。</summary>
+    private void NColorSubMode_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        NColorNormalPanel.Visibility = NColorSubModeNormalRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        NColorFrzHitPanel.Visibility = NColorSubModeFrzHitRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        NColorShadowPanel.Visibility = NColorSubModeShadowRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        PushColorEditStateToController();
+        Canvas.InvalidateVisual();
+    }
+
+    /// <summary>Hit/HitBar/HitShadowの対象チェックボックス変更。3つとも未チェックになった場合、
+    /// クリック/一括塗りつぶしをしても何も適用されない(SmartToolController側で無視される)ため、
+    /// ユーザー確定仕様通り警告ダイアログを出す。</summary>
+    private void NColorHitEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        if (NColorHitEnabledCheck.IsChecked != true && NColorHitBarEnabledCheck.IsChecked != true &&
+            NColorHitShadowEnabledCheck.IsChecked != true)
+        {
+            MessageBox.Show(this,
+                "ヒット時色(端点/帯/塗りつぶし)の対象が1つも選択されていません。このままではクリックや一括塗りつぶしをしても何も適用されません。",
+                "ヒット時色編集", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        PushColorEditStateToController();
+    }
+
+    private void NColorFrzHitField_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        PushColorEditStateToController();
+    }
+
+    private void NColorShadowField_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        PushColorEditStateToController();
+    }
+
+    private void NColorFrzHitBulkFillButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || _controller is null) return;
+        if (_controller.BulkFillFrzHitSelection())
+        {
+            _document.NotifyChanged();
+            Canvas.InvalidateVisual();
+        }
+    }
+
+    private void NColorShadowBulkFillButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || _controller is null) return;
+        if (_controller.BulkFillShadowSelection())
+        {
+            _document.NotifyChanged();
+            Canvas.InvalidateVisual();
+        }
+    }
+
+    private void NColorHitHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        ColorHistoryPicker.Show(_appSettings, NColorHitHistoryButton, hex => { NColorHitColorBox.Text = hex; });
+
+    private void NColorHitBarHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        ColorHistoryPicker.Show(_appSettings, NColorHitBarHistoryButton, hex => { NColorHitBarColorBox.Text = hex; });
+
+    private void NColorHitShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        ColorHistoryPicker.Show(_appSettings, NColorHitShadowHistoryButton, hex => { NColorHitShadowColorBox.Text = hex; });
+
+    private void NColorArrowShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        ColorHistoryPicker.Show(_appSettings, NColorArrowShadowHistoryButton, hex => { NColorArrowShadowColorBox.Text = hex; });
+
+    private void NColorNormalShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        ColorHistoryPicker.Show(_appSettings, NColorNormalShadowHistoryButton, hex => { NColorNormalShadowColorBox.Text = hex; });
+
+    private void NColorHitColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorHitColorBox.Text);
+    private void NColorHitBarColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorHitBarColorBox.Text);
+    private void NColorHitShadowColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorHitShadowColorBox.Text);
+    private void NColorArrowShadowColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorArrowShadowColorBox.Text);
+    private void NColorNormalShadowColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorNormalShadowColorBox.Text);
+
+    private void RecordNColorHistory(string hex)
+    {
+        ColorHistoryPicker.Record(_appSettings, hex);
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>右パネルの種類・方向・色リストから、ncolor_data ColorCode欄の文字列を組み立てる
+    /// (2026-07-23、仕様書dos-c0001-gradation)。有効な色が1つも無ければnull。
+    /// 色が1つしか無い場合はグラデーション種類に関わらず単色として扱う(仕様通り)。</summary>
+    private string? ComposeNColorCode()
+    {
+        var colors = _nColorColors.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        if (colors.Count == 0) return null;
+        if (colors.Count == 1 || NColorGradientTypeCombo.SelectedIndex <= 0) return colors[0];
+
+        string body = string.Join(":", colors);
+        string suffix = NColorGradientTypeCombo.SelectedIndex switch
+        {
+            1 => "linear-gradient",
+            2 => "radial-gradient",
+            3 => "conic-gradient",
+            _ => "linear-gradient",
+        };
+        if (NColorGradientTypeCombo.SelectedIndex == 1 && !string.IsNullOrWhiteSpace(NColorDirectionBox.Text))
+            body = $"{NColorDirectionBox.Text.Trim()}:{body}";
+        return $"{body}@{suffix}";
+    }
+
+    private void KeyboardModeToggle_Click(object sender, RoutedEventArgs e) => ToggleKeyboardMode();
+
+    private void ToggleKeyboardMode()
+    {
+        _keyboardModeActive = !_keyboardModeActive;
+        KeyboardModeToggle.IsChecked = _keyboardModeActive;
+        if (_keyboardModeActive) _keyboardMode?.EnterMode();
+        Canvas.KeyboardModeActive = _keyboardModeActive; // 2026-07-22: レーンラベル2行目表示の切替
+        Canvas.InvalidateVisual();
+        StatusText.Text = _keyboardModeActive
+            ? "キーボードモード: ON(↑=後退/↓=前進、Space=前進/B=後退、←=1小節戻る(小節頭なら1つ前へ)、→=1小節先へ、Ctrl+←/→=2小節、Shift+Ctrl+←/→=4小節、Backspaceでカーソル位置削除。Ctrl+,で解除)"
+            : "キーボードモード: OFF";
+    }
+
+    /// <summary>キーボードモード中のキー入力処理。処理した(=既存のマウスモード単独キーハンドラへ
+    /// 渡してはいけない)場合はtrueを返す。</summary>
+    private bool HandleKeyboardModeKey(KeyEventArgs e)
+    {
+        if (_document is null || _keyboardMode is null) return false;
+
+        switch (e.Key)
+        {
+            // 2026-07-25: ↑/↓は「Left(上に1小節)/Right(下に1小節)」と同じく画面上の見た目方向に
+            // 揃える(tick0が上・末尾が下というTickToYの既定並びが基準。Reverse表示中も含め方向は
+            // 固定)。Space/Bは本家danoni系エディタの慣習(Space=前進、B=後退)としてtick前後方向
+            // そのものを表すため、この2キーは変更しない(以前は↑/Space、↓/Bを同じ扱いにしていたが、
+            // それだと↑キーがtick前進=画面下方向に動いてしまい、上矢印の見た目と逆になっていた)。
+            case Key.Up:
+                _keyboardMode.MoveCursor(forward: false);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Space:
+                _keyboardMode.MoveCursor(forward: true);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Down:
+                _keyboardMode.MoveCursor(forward: true);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.B:
+                _keyboardMode.MoveCursor(forward: false);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Left: // 2026-07-22: 上に1小節移動(修飾なし)。小節途中なら現在の小節頭へ、既に小節頭なら1つ前の小節頭へ
+                _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Right: // 2026-07-21: 下に1小節移動(修飾なし)
+                _keyboardMode.MoveCursorByMeasure(1);
+                Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Back:
+                if (_keyboardMode.DeleteAtCursor()) Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+        }
+
+        // ノート入力キー(テンプレートのKeyboardInputKeysで定義されたレーンのみ反応。
+        // 未設定(空配列)のレーン/テンプレートでは何も起きない。Shift併用でフリーズ開始/完了)。
+        var template = _document.CurrentTemplate;
+        var laneMap = KeyLabelMapper.BuildKeyMap(template.Lanes.Count, l => template.Lanes[l].KeyboardInputKeys);
+        if (laneMap.TryGetValue(e.Key, out int lane))
+        {
+            bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+            bool changed = shift
+                ? _keyboardMode.ToggleFreezeAtCursor(lane, DateTime.UtcNow)
+                : _keyboardMode.ToggleNoteAtCursor(lane, DateTime.UtcNow);
+            if (changed) Canvas.InvalidateVisual();
+            e.Handled = true;
+            return true;
+        }
+
+        return false;
     }
 
     // =====================================================================
@@ -1657,7 +2766,11 @@ public partial class MainWindow : Window
         long startTick = Math.Max(0, (long)Math.Round(engine.FrameToTick(startFrame)));
         var (measure, _) = engine.TickToMeasurePosition(startTick);
         long topTick = engine.MeasureStartTick(Math.Max(0, measure - 1));
-        ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, _document.CurrentLayout.TickToY(topTick)));
+        double y = _document.CurrentLayout.TickToY(topTick);
+        // 2026-07-22: 通常は「表示範囲の一番上」、Reverse時は「表示範囲の一番下」がtopTickに来るようにする
+        // (Reverseでは進行方向が上向きになるため、リード込みの基準を下端に置くのが対称な挙動)。
+        double target = _appSettings.ChartViewReverse ? y - ChartScrollViewer.ViewportHeight : y;
+        ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, target));
     }
 
     // =====================================================================
@@ -1675,9 +2788,22 @@ public partial class MainWindow : Window
     {
         if (!_initialized) return;
         _appSettings.PlaytestReverse = PlaytestReverseCheck.IsChecked == true;
+        _appSettings.PlaytestAutoPlay = PlaytestAutoPlayCheck.IsChecked == true;
         if (PlaytestHiSpeedCombo.SelectedItem is double hs) _appSettings.PlaytestHiSpeed = hs;
         if (PlaytestScaleCombo.SelectedItem is double sc) _appSettings.PlaytestWindowScale = sc;
         _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)</summary>
+    private static double PlaybackSpeedValues_Nearest(double v) => Math.Clamp(Math.Round(v * 10) / 10, 0.1, 2.0);
+
+    private void PlaybackSpeedCombo_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_initialized) return;
+        if (PlaybackSpeedCombo.SelectedItem is not double v) return;
+        _appSettings.PlaybackSpeed = v;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+        _audioPlayer.SpeedRatio = v; // 目視テスト側。プレイテスト側はStartPlaytest時に都度渡す
     }
 
     private void PlaytestOffset_LostFocus(object sender, RoutedEventArgs e)
@@ -1704,20 +2830,44 @@ public partial class MainWindow : Window
     }
 
     /// <summary>未保存の変更がある場合の終了確認(未解決事項§2-6、環境設定でON/OFF可、2026-07-19b)</summary>
+    /// <summary>
+    /// 終了時の未保存確認(2026-07-20: マルチプロジェクトタブ対応、開いている全プロジェクト分をまとめて確認)。
+    /// アクティブなセッションぶんの実行時状態(コントローラ・パス)を先に書き戻してから、
+    /// 全セッションのIsModifiedを走査する(IsModified自体はEditorDocumentが常時保持しているため
+    /// アクティブ/非アクティブに関わらず正しい値が取れるが、パスの書き戻しは保存先解決に必要)。
+    /// </summary>
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         base.OnClosing(e);
-        if (_document?.IsModified != true || !_appSettings.ConfirmUnsavedOnClose) return;
+        if (!_appSettings.ConfirmUnsavedOnClose) return;
 
+        SyncActiveSessionBeforeSwitch();
+        var unsaved = _sessions.Where(s => s.Document.IsModified).ToList();
+        if (unsaved.Count == 0) return;
+
+        var names = string.Join("\n", unsaved.Select(s =>
+            "・" + (string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName)));
         var r = MessageBox.Show(this,
-            "未保存の変更がありますわ。保存してから終了しますか?\n\n「はい」= 保存して終了\n「いいえ」= 保存せず終了\n「キャンセル」= 終了を中止",
+            $"以下のプロジェクトに未保存の変更がありますわ:\n{names}\n\n" +
+            "「はい」= 全て保存してから終了\n「いいえ」= 保存せず終了\n「キャンセル」= 終了を中止",
             "終了の確認", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         if (r == MessageBoxResult.Cancel) { e.Cancel = true; return; }
-        if (r == MessageBoxResult.Yes)
+        if (r != MessageBoxResult.Yes) return;
+
+        // 各セッションを一時的にアクティブ扱いにしてSaveProject_Clickの保存ダイアログ処理を使い回す
+        // (未保存パスのセッションはここでSaveFileDialogが出る)。終了後は元のアクティブ状態へ戻す。
+        var (activeDocBefore, activePathBefore) = (_document, _currentFilePath);
+        foreach (var s in unsaved)
         {
+            _document = s.Document;
+            _currentFilePath = s.FilePath;
             SaveProject_Click(this, new RoutedEventArgs());
-            if (_document.IsModified) e.Cancel = true; // 保存ダイアログをキャンセルした場合は終了も中止
+            s.FilePath = _currentFilePath;
+            if (s.Document.IsModified) e.Cancel = true; // 保存ダイアログのキャンセル等
         }
+        _document = activeDocBefore;
+        _currentFilePath = activePathBefore;
+        UpdateWindowTitle();
     }
 
     private void StartPlaytest()
@@ -1736,7 +2886,12 @@ public partial class MainWindow : Window
             _appSettings.PlaytestHiSpeed,
             _appSettings.PlaytestOffsetFrames,
             _document.Project.PlaybackStartFrame ?? 0,
-            _appSettings.PlaytestWindowScale)
+            _appSettings.PlaytestWindowScale,
+            _appSettings.PlaytestAutoPlay,
+            _appSettings.PlaytestQuitKeyDelete,
+            _appSettings.PlaytestQuitKeyBackSpace,
+            _appSettings.PlaytestQuitKeyEscape,
+            _appSettings.PlaybackSpeed)
         { Owner = this };
         win.ShowDialog();
 

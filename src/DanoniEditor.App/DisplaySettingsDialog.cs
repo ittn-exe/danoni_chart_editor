@@ -44,8 +44,13 @@ internal static class DisplaySettingsDialog
         panel.Children.Add(widthBox);
 
         panel.Children.Add(new TextBlock { Text = "色(6桁カラーコード、例: #FFD400):", Margin = new Thickness(0, 0, 0, 2) });
-        var colorBox = new TextBox { Text = current.HighlightLineColorHex, Margin = new Thickness(0, 0, 0, 4) };
-        panel.Children.Add(colorBox);
+        var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        var colorBox = new TextBox { Text = current.HighlightLineColorHex, Width = 200 };
+        var colorHistoryBtn = new Button { Content = "履歴", Width = 36, Margin = new Thickness(4, 0, 0, 0) };
+        colorHistoryBtn.Click += (_, _) => ColorHistoryPicker.Show(current, colorHistoryBtn, hex => colorBox.Text = hex);
+        colorRow.Children.Add(colorBox);
+        colorRow.Children.Add(colorHistoryBtn);
+        panel.Children.Add(colorRow);
 
         var preview = new Border
         {
