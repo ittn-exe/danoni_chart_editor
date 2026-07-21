@@ -805,6 +805,32 @@ public sealed class ChartCanvas : FrameworkElement
         }
     }
 
+    /// <summary>Windows標準の警告アイコン(黄色三角+!)のWPF用ImageSource(2026-07-26、警告フラグ付き
+    /// オブジェクトのオーバーレイ表示用)。SystemIcons.WarningをHIcon経由で変換し、初回のみ生成して使い回す。</summary>
+    private static ImageSource? _warningIconCache;
+    private static ImageSource WarningIcon
+    {
+        get
+        {
+            if (_warningIconCache is null)
+            {
+                var src = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
+                    System.Drawing.SystemIcons.Warning.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                src.Freeze();
+                _warningIconCache = src;
+            }
+            return _warningIconCache;
+        }
+    }
+
+    /// <summary>警告フラグONのオブジェクトへ、通常描写の上にWindows標準警告アイコンを重ね描きする
+    /// (2026-07-26、ユーザー確定仕様)。ノート中心(cx,y)の右上に重なるよう配置する。</summary>
+    private static void DrawWarningOverlay(DrawingContext dc, double cx, double y, double noteSize)
+    {
+        double size = Math.Max(10, noteSize * 0.55);
+        dc.DrawImage(WarningIcon, new Rect(cx, y - size, size, size));
+    }
+
     private void DrawNotesAndFreezes(DrawingContext dc, ChartLayout layout, DifficultyTab tab, ChartProject project, long tickMin, long tickMax)
     {
         // 強調グリッド用ブラシ(ShowNoteImages=false時のみ使用、レンダー1回につき1個を使い回す)
@@ -827,6 +853,10 @@ public sealed class ChartCanvas : FrameworkElement
             var (frzNoteColor, frzBandColor) = FrzColors(tab, project, laneDef.ColorGroup, brush);
             // 2026-07-23: 色編集モード(ncolor_data)で個別指定された色をtickで引けるようにする。
             var colorOverrides = tab.Lanes[i].ColorOverrides.ToDictionary(c => c.Tick);
+            // 2026-07-26: 警告フラグONのオブジェクト(インポート時丸め処理等)のtick集合(警告アイコン重ね描き用)
+            var warningTicks = tab.Lanes[i].Annotations.Count == 0
+                ? null
+                : tab.Lanes[i].Annotations.Where(a => a.Warning).Select(a => a.Tick).ToHashSet();
 
             // 2026-07-24: frzHitColor編集モード中は、判定中(ヒット時)の色をプレビュー表示する
             // (仕様: 対象色パラメータが変わり、譜面ビュー上のフリーズアローの表示色がヒット時設定の
@@ -836,7 +866,7 @@ public sealed class ChartCanvas : FrameworkElement
             Color frzHitNoteColor = frzNoteColor, frzHitBandColor = frzBandColor;
             if (hitPreview)
             {
-                var (hitHex, hitBarHex) = ColorDefaults.ResolveFrzHitColorsHex(tab, project, laneDef.ColorGroup,
+                var (hitHex, hitBarHex) = ColorDefaults.ResolveFrzHitColorsHex(tab, project,
                     ColorToHex(frzNoteColor), ColorToHex(frzBandColor));
                 frzHitNoteColor = TryParseColor(hitHex, frzNoteColor);
                 frzHitBandColor = TryParseColor(hitBarHex, frzBandColor);
@@ -847,6 +877,14 @@ public sealed class ChartCanvas : FrameworkElement
             // (DosImporter/DosExporterと同じ簡略化、2026-07-24開示済み)。
             Color arrowShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "setShadowColor"), Colors.Black);
             Color normalShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "frzShadowColor"), Colors.Black);
+            // 2026-07-27確定仕様: shadow画像はデフォルトOFF(setShadowColor/frzShadowColor等、色関係の
+            // 指定が実際にある場合のみ利用する)。従来はshadow画像素材(arrowShadow.png等)が存在する限り
+            // 常時描画しており、指定が無いのに既定の黒塗りが表示されてしまっていた。
+            // ここでは「その他ヘッダー」でsetShadowColor/frzShadowColorが明示的に使用設定されているか
+            // (=このレーン・タブ全体の既定として指定あり)を判定し、個別オブジェクトのncolor_data
+            // ShadowColor/HitShadowColor指定(nOver/fOver側で判定)と合わせてOR条件で表示可否を決める。
+            bool arrowShadowHeaderSpecified = HasNonEmptyHeader(project, "setShadowColor");
+            bool normalShadowHeaderSpecified = HasNonEmptyHeader(project, "frzShadowColor");
 
             foreach (var f in tab.Lanes[i].Freezes)
             {
@@ -856,17 +894,21 @@ public sealed class ChartCanvas : FrameworkElement
 
                 colorOverrides.TryGetValue(f.StartTick, out var fOver);
                 Color edgeColor, bandColor, shadowColor;
+                bool showFreezeShadow;
                 if (hitPreview)
                 {
                     edgeColor = fOver?.HitColor is { } hc ? ParseDisplayColor(hc, frzHitNoteColor) : frzHitNoteColor;
                     bandColor = fOver?.HitBarColor is { } hbc ? ParseDisplayColor(hbc, frzHitBandColor) : frzHitBandColor;
                     shadowColor = fOver?.HitShadowColor is { } hsc ? ParseDisplayColor(hsc, normalShadowDefault) : normalShadowDefault;
+                    // 2026-07-27: HitShadowは専用ヘッダーが無いためfrzShadowColorの指定有無で判定する
+                    showFreezeShadow = normalShadowHeaderSpecified || fOver?.HitShadowColor is not null;
                 }
                 else
                 {
                     edgeColor = fOver?.Color is { } ec ? ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
                     bandColor = fOver?.BandColor is { } bc ? ParseDisplayColor(bc, frzBandColor) : frzBandColor;
                     shadowColor = fOver?.ShadowColor is { } sc ? ParseDisplayColor(sc, normalShadowDefault) : normalShadowDefault;
+                    showFreezeShadow = normalShadowHeaderSpecified || fOver?.ShadowColor is not null;
                 }
 
                 // 帯(フリーズ胴体)はfrzColorのスロット[1]("帯(通常)")、またはncolor_data帯指定を使う(仕様書6.4.2)
@@ -880,7 +922,8 @@ public sealed class ChartCanvas : FrameworkElement
                 {
                     // 2026-07-25: 塗りつぶし色の画像(あれば)を本体画像より先に描き、下地として重ねる
                     // (本体側の見た目に合わせ、塗りつぶしを背面レイヤーとして扱う)。
-                    if (shadowImage is not null)
+                    // 2026-07-27: 色関係の指定(frzShadowColor/ncolor_data)が実際にある場合のみ描画する。
+                    if (shadowImage is not null && showFreezeShadow)
                     {
                         DrawNoteImage(dc, shadowImage, laneDef, cx, y1, layout.NoteSize, shadowColor);
                         DrawNoteImage(dc, shadowImage, laneDef, cx, y2, layout.NoteSize, shadowColor);
@@ -904,6 +947,10 @@ public sealed class ChartCanvas : FrameworkElement
                     dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y1 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                     dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y2 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                 }
+
+                // 2026-07-26: 警告フラグON(StartTickで同定)のフリーズは始点側へ警告アイコンを重ねる
+                if (warningTicks is not null && warningTicks.Contains(f.StartTick))
+                    DrawWarningOverlay(dc, cx, y1, layout.NoteSize);
             }
 
             foreach (var t in tab.Lanes[i].Notes)
@@ -913,6 +960,8 @@ public sealed class ChartCanvas : FrameworkElement
                 colorOverrides.TryGetValue(t, out var nOver);
                 var noteColor = nOver?.Color is { } nc ? ParseDisplayColor(nc, ((SolidColorBrush)brush).Color) : ((SolidColorBrush)brush).Color;
                 var noteShadowColor = nOver?.ShadowColor is { } nsc ? ParseDisplayColor(nsc, arrowShadowDefault) : arrowShadowDefault;
+                // 2026-07-27: setShadowColor/ncolor_dataの指定が実際にある場合のみshadow画像を表示する(既定OFF)。
+                bool showNoteShadow = arrowShadowHeaderSpecified || nOver?.ShadowColor is not null;
                 // 2026-07-16j: 独立トグル化。ノート画像(or ベクターフォールバック)と強調グリッドは
                 // 排他ではなく、それぞれのフラグに応じて重ねて描く。
                 if (ShowNoteImages)
@@ -920,7 +969,7 @@ public sealed class ChartCanvas : FrameworkElement
                     if (image is not null)
                     {
                         // 2026-07-25: 塗りつぶし色の画像(あれば)を本体画像より先に描く(フリーズと同じ扱い)。
-                        if (shadowImage is not null)
+                        if (shadowImage is not null && showNoteShadow)
                             DrawNoteImage(dc, shadowImage, laneDef, cx, y, layout.NoteSize, noteShadowColor);
                         // setColor(またはncolor_data指定)の色を乗算着色する(2026-07-16k: 画像表示時もsetColorが反映されない不具合の対応)。
                         DrawNoteImage(dc, image, laneDef, cx, y, layout.NoteSize, noteColor);
@@ -938,6 +987,10 @@ public sealed class ChartCanvas : FrameworkElement
                     dc.DrawRectangle(highlightBrush, null,
                         new Rect(col.X, y - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                 }
+
+                // 2026-07-26: 警告フラグONのノートは通常描写の上に警告アイコンを重ねる
+                if (warningTicks is not null && warningTicks.Contains(t))
+                    DrawWarningOverlay(dc, cx, y, layout.NoteSize);
             }
         }
     }
@@ -963,6 +1016,36 @@ public sealed class ChartCanvas : FrameworkElement
         dc.Pop();
     }
 
+    // =====================================================================
+    // テンプレート編集/マクロ編集ウィンドウ共通のレーンプレビュー描画(2026-07-30)。
+    // 実際の譜面ビュー描画(DrawNoteImage、rotationAngle反映込み)をそのまま再利用し、
+    // 色はcolorGroupに応じて要望の見本色(setColor=#9999ff,#ccffff,#ffffff,#ffff99,#ff9966)を
+    // 循環で割り当てる(実際のsetColor設定とは無関係な、編集時の見分け用サンプル色)。
+    // =====================================================================
+
+    private static readonly Color[] PreviewSampleColors =
+    [
+        (Color)ColorConverter.ConvertFromString("#9999ff")!,
+        (Color)ColorConverter.ConvertFromString("#ccffff")!,
+        (Color)ColorConverter.ConvertFromString("#ffffff")!,
+        (Color)ColorConverter.ConvertFromString("#ffff99")!,
+        (Color)ColorConverter.ConvertFromString("#ff9966")!,
+    ];
+
+    internal static Color PreviewSampleColorForGroup(int colorGroup) =>
+        PreviewSampleColors[((colorGroup % PreviewSampleColors.Length) + PreviewSampleColors.Length) % PreviewSampleColors.Length];
+
+    /// <summary>1レーン分のプレビューアイコンを描く(画像が無ければ塗り矩形にフォールバック)。</summary>
+    internal static void DrawLaneIcon(DrawingContext dc, LaneDef laneDef, double cx, double cy, double size, Color tint)
+    {
+        var image = GetNoteImage(laneDef.NoteGraphic);
+        if (image is not null)
+            DrawNoteImage(dc, image, laneDef, cx, cy, size, tint);
+        else
+            dc.DrawRectangle(Freeze(new SolidColorBrush(tint)), new Pen(Brushes.Gray, 0.5), // 2026-07-30: 背景が黒のため視認性を優先
+                new Rect(cx - size / 2, cy - size / 2, size, size));
+    }
+
     /// <summary>
     /// レーン色。tab自身のSetColorOverrideが無ければ、1タブ目(=共通値の実体、仕様書6.4.2)の値に
     /// フォールバックする(「全ての難易度で共通」チェックON時、②タブのプレビューと表示を一致させるため、
@@ -976,17 +1059,18 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// フリーズの表示色(仕様書6.4.2 frzColor)。1グループにつき4スロット
-    /// [0]始点終点(通常) [1]帯(通常) [2]始点終点(判定中) [3]帯(判定中) を仕様書通りフラットに保持している
-    /// (エディタはプレイ判定を行わないため[2][3]は現状未使用)。tab自身のFrzColorOverrideが無ければ
-    /// 1タブ目(共通値の実体)へ、さらに個々のスロットが空欄ならsetColorの値へ自動補完する
-    /// (仕様書6.4.2の自動補完ルール)。2026-07-16h: 従来はfrzColorが一切参照されずsetColor直流用だった。
+    /// フリーズの表示色(仕様書6.4.2 frzColor)。2026-07-27確定仕様: 色グループ数に関わらず常に4スロット
+    /// [0]始点終点(通常) [1]帯(通常) [2]始点終点(判定中) [3]帯(判定中) の1セットのみ(danoniplus本体の
+    /// 仕様通り。従来の「色グループごとに4スロット」実装は誤りだった)。tab自身のFrzColorOverrideが
+    /// 無ければ1タブ目(共通値の実体)へ、さらに個々のスロットが空欄ならこのレーンのsetColorの値へ
+    /// 自動補完する(仕様書6.4.2の自動補完ルール)。colorGroupはこのレーンのsetColorフォールバック値を
+    /// 求めるためだけに使う(frzColor自体のスロット選択には使わない)。
     /// </summary>
     internal static (Color NoteColor, Color BandColor) FrzColors(DifficultyTab tab, ChartProject project, int colorGroup, Brush setColorBrush) // 2026-07-17g: internal化(同上)
     {
         // 2026-07-24: 既定色解決ロジックはCore側のColorDefaultsへ集約(LaneBrushと同じ理由)。
         var fallback = ((SolidColorBrush)setColorBrush).Color;
-        var (normalHex, barHex) = ColorDefaults.ResolveFrzColorsHex(tab, project, colorGroup,
+        var (normalHex, barHex) = ColorDefaults.ResolveFrzColorsHex(tab, project,
             ColorDefaults.ResolveSetColorHex(tab, project, colorGroup));
         return (TryParseColor(normalHex, fallback), TryParseColor(barHex, fallback));
     }
@@ -996,6 +1080,11 @@ public sealed class ChartCanvas : FrameworkElement
         try { return (Color)ColorConverter.ConvertFromString(hex)!; }
         catch { return fallback; }
     }
+
+    /// <summary>「その他ヘッダー」でheaderKey(setShadowColor/frzShadowColor等)が実際に使用設定されている
+    /// (=空でない値が入っている)かどうか(2026-07-27、shadow画像デフォルトOFF対応)。</summary>
+    private static bool HasNonEmptyHeader(ChartProject project, string headerKey) =>
+        project.ExtraHeaders.TryGetValue(headerKey, out var v) && !string.IsNullOrWhiteSpace(v);
 
     /// <summary>frzHitColorプレビュー用にResolveFrzHitColorsHex(hex文字列ベース)へ渡すためのColor→hex変換
     /// (2026-07-24)。DrawNotesAndFreezesが既に解決済みのColorしか持たないため、Core側のColorDefaultsを

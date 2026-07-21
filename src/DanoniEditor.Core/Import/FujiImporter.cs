@@ -356,6 +356,15 @@ public sealed class FujiImporter
         static bool IsKnownFineChar(char fine) =>
             fine == 'R' || fine == 'S' || LiteralFrameShift(fine) is not null;
 
+        // 2026-07-26: ノート/フリーズ1件の取り込み中に警告(丸め処理等)が発生した場合、そのオブジェクトへ
+        // エラーダイアログと同じ文言のコメント+警告フラグを付与する(warningsリストの増分を利用する)。
+        void AnnotateIfWarned(int laneIdx, long tick, int warnCountBefore)
+        {
+            if (warnings.Count == warnCountBefore) return;
+            var msg = string.Join("\n", warnings.Skip(warnCountBefore));
+            tab.Lanes[laneIdx].Annotations.Add(new NoteAnnotation(tick, msg, Warning: true));
+        }
+
         foreach (var line in scoreLines)
         {
             var colon = line.IndexOf(':');
@@ -406,12 +415,18 @@ public sealed class FujiImporter
 
                     if (fineChar == '0')
                     {
-                        tab.Lanes[laneIdx].Notes.Add(TickOf(measure, pp / 256.0));
+                        int wb0 = warnings.Count;
+                        long noteTick0 = TickOf(measure, pp / 256.0);
+                        tab.Lanes[laneIdx].Notes.Add(noteTick0);
+                        AnnotateIfWarned(laneIdx, noteTick0, wb0);
                         return;
                     }
 
+                    int wb = warnings.Count;
                     double frame = ResolveFineFrame(measure, pp, fineChar);
-                    tab.Lanes[laneIdx].Notes.Add(FrameToMeasureTick(measure, frame));
+                    long noteTick = FrameToMeasureTick(measure, frame);
+                    tab.Lanes[laneIdx].Notes.Add(noteTick);
+                    AnnotateIfWarned(laneIdx, noteTick, wb);
                 }
                 else
                 {
@@ -436,6 +451,7 @@ public sealed class FujiImporter
                         if (!IsKnownFineChar(startFine))
                         { warnings.Add($"小節{measure}: フリーズ始点の不明なfine文字を含むトークン'{token}'を無視"); return; }
 
+                        int wbFrz = warnings.Count; // 始点・終点の丸め警告をまとめてアノテーション化する
                         double startPp = x * 16.0;
                         long startTick = startFine == '0'
                             ? TickOf(measure, startPp / 256.0)
@@ -463,6 +479,7 @@ public sealed class FujiImporter
                         }
 
                         tab.Lanes[laneIdx].Freezes.Add(new FreezeNote(startTick, endTick));
+                        AnnotateIfWarned(laneIdx, startTick, wbFrz); // フリーズはStartTickで同定(ColorOverridesと同規約)
                     }
                     else if (head[1] == '4' && (head[2..] == "00" || head[2..] == "10"))
                     {

@@ -23,5 +23,8 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />
+    <!-- 2026-07-26: 警告アイコン表示(SystemIcons.Warning)用。WPFプロファイルの共有フレームワークに
+         含まれない環境があるため明示参照する -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.7" />
   </ItemGroup>
 </Project>

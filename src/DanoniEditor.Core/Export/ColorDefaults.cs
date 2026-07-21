@@ -28,12 +28,15 @@ public static class ColorDefaults
 
     /// <summary>
     /// フリーズアローの既定色(端点/帯、hex)を解決する(仕様書6.4.2 frzColor)。
+    /// 2026-07-27確定仕様: frzColorはsetColorと異なり色グループ数に関わらず常に4スロット
+    /// ([0]通常端点 [1]通常帯 [2]判定中端点 [3]判定中帯)の1セットのみ(danoniplus本体の仕様通り、
+    /// 従来の「色グループごとに4スロット」実装は誤りだった)。
     /// defaultFrzColorUse=trueの間は本体側の既定フリーズアロー色セットが使われ、frzColorの値自体が
     /// 無視される仕様だが、本エディタは本体既定色セットまでは実装していないためsetColor由来の色へ
     /// フォールバックする(ChartCanvas.FrzColorsと同じ、ユーザー向けに開示済みの簡略化)。
     /// </summary>
     public static (string NormalHex, string BarHex) ResolveFrzColorsHex(
-        DifficultyTab tab, ChartProject project, int colorGroup, string arrowDefaultHex)
+        DifficultyTab tab, ChartProject project, string arrowDefaultHex)
     {
         bool defaultFrzColorUse = project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
         if (defaultFrzColorUse) return (arrowDefaultHex, arrowDefaultHex);
@@ -41,9 +44,8 @@ public static class ColorDefaults
         var frz = tab.FrzColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].FrzColorOverride : null);
         if (frz is null) return (arrowDefaultHex, arrowDefaultHex);
 
-        int baseIdx = colorGroup * 4;
-        string? noteHex = baseIdx < frz.Count ? frz[baseIdx] : null;
-        string? bandHex = baseIdx + 1 < frz.Count ? frz[baseIdx + 1] : null;
+        string? noteHex = frz.Count > 0 ? frz[0] : null;
+        string? bandHex = frz.Count > 1 ? frz[1] : null;
 
         return (
             string.IsNullOrWhiteSpace(noteHex) ? arrowDefaultHex : noteHex!,
@@ -53,19 +55,18 @@ public static class ColorDefaults
 
     /// <summary>
     /// フリーズアローのヒット時(判定中)の既定色(端点/帯、hex)を解決する(2026-07-24、frzHitColor編集
-    /// モード用)。FrzColorOverrideは1グループにつき4スロット([0]通常端点 [1]通常帯 [2]ヒット時端点
-    /// [3]ヒット時帯)を持つ既存仕様(仕様書6.4.2)だが、[2][3]はこれまでプレイ判定を行わないエディタ
-    /// では未使用だった。値が無いスロットは通常時(Normal/NormalBar)の解決値へフォールバックする。
+    /// モード用)。2026-07-27: FrzColorOverrideは常に4スロット([0]通常端点 [1]通常帯 [2]ヒット時端点
+    /// [3]ヒット時帯)の1セットのみ(色グループ数に関わらず、上記ResolveFrzColorsHex参照)。
+    /// 値が無いスロットは通常時(Normal/NormalBar)の解決値へフォールバックする。
     /// </summary>
     public static (string HitHex, string HitBarHex) ResolveFrzHitColorsHex(
-        DifficultyTab tab, ChartProject project, int colorGroup, string normalHex, string normalBarHex)
+        DifficultyTab tab, ChartProject project, string normalHex, string normalBarHex)
     {
         var frz = tab.FrzColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].FrzColorOverride : null);
         if (frz is null) return (normalHex, normalBarHex);
 
-        int baseIdx = colorGroup * 4;
-        string? hitHex = baseIdx + 2 < frz.Count ? frz[baseIdx + 2] : null;
-        string? hitBarHex = baseIdx + 3 < frz.Count ? frz[baseIdx + 3] : null;
+        string? hitHex = frz.Count > 2 ? frz[2] : null;
+        string? hitBarHex = frz.Count > 3 ? frz[3] : null;
 
         return (
             string.IsNullOrWhiteSpace(hitHex) ? normalHex : hitHex!,

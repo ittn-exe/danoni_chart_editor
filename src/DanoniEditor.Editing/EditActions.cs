@@ -32,10 +32,12 @@ public sealed class PlaceNoteAction(int lane, long tick) : IEditAction
 
 /// <summary>通常ノートの削除(仕様書6.3.1: オブジェクト右クリック)。
 /// 2026-07-23: 色編集モードで指定した色(ColorOverrides)も一緒に削除・Undoで復元する
-/// (実体を消したのに色だけ残る=別tickに幽霊の色指定が残る事故を防ぐ)。</summary>
+/// (実体を消したのに色だけ残る=別tickに幽霊の色指定が残る事故を防ぐ)。
+/// 2026-07-26: コメント・警告(Annotations)も同様に一緒に削除・Undo復元する。</summary>
 public sealed class DeleteNoteAction(int lane, long tick) : IEditAction
 {
     private NColorEntry? _removedColor;
+    private NoteAnnotation? _removedAnnotation;
 
     public string Label => "ノート削除";
 
@@ -45,12 +47,16 @@ public sealed class DeleteNoteAction(int lane, long tick) : IEditAction
         var colors = doc.CurrentTab.Lanes[lane].ColorOverrides;
         _removedColor = colors.FirstOrDefault(c => c.Tick == tick);
         if (_removedColor is not null) colors.Remove(_removedColor);
+        var annotations = doc.CurrentTab.Lanes[lane].Annotations;
+        _removedAnnotation = annotations.FirstOrDefault(a => a.Tick == tick);
+        if (_removedAnnotation is not null) annotations.Remove(_removedAnnotation);
     }
 
     public void Undo(EditorDocument doc)
     {
         doc.CurrentTab.Lanes[lane].Notes.Add(tick);
         if (_removedColor is not null) doc.CurrentTab.Lanes[lane].ColorOverrides.Add(_removedColor);
+        if (_removedAnnotation is not null) doc.CurrentTab.Lanes[lane].Annotations.Add(_removedAnnotation);
     }
 }
 
@@ -77,11 +83,13 @@ public sealed class PlaceFreezeAction : IEditAction
 }
 
 /// <summary>フリーズアローの削除(始点tickで同定、仕様書6.3.1)。
-/// 2026-07-23: DeleteNoteActionと同様、ColorOverrides(端点色・帯色)も一緒に削除・Undo復元する。</summary>
+/// 2026-07-23: DeleteNoteActionと同様、ColorOverrides(端点色・帯色)も一緒に削除・Undo復元する。
+/// 2026-07-26: コメント・警告(Annotations)も同様に一緒に削除・Undo復元する。</summary>
 public sealed class DeleteFreezeAction(int lane, long startTick) : IEditAction
 {
     private FreezeNote? _removed;
     private NColorEntry? _removedColor;
+    private NoteAnnotation? _removedAnnotation;
 
     public string Label => "フリーズ削除";
 
@@ -92,12 +100,15 @@ public sealed class DeleteFreezeAction(int lane, long startTick) : IEditAction
         if (_removed is not null) lanes.Freezes.Remove(_removed);
         _removedColor = lanes.ColorOverrides.FirstOrDefault(c => c.Tick == startTick);
         if (_removedColor is not null) lanes.ColorOverrides.Remove(_removedColor);
+        _removedAnnotation = lanes.Annotations.FirstOrDefault(a => a.Tick == startTick);
+        if (_removedAnnotation is not null) lanes.Annotations.Remove(_removedAnnotation);
     }
 
     public void Undo(EditorDocument doc)
     {
         if (_removed is not null) doc.CurrentTab.Lanes[lane].Freezes.Add(_removed);
         if (_removedColor is not null) doc.CurrentTab.Lanes[lane].ColorOverrides.Add(_removedColor);
+        if (_removedAnnotation is not null) doc.CurrentTab.Lanes[lane].Annotations.Add(_removedAnnotation);
     }
 }
 
@@ -123,6 +134,10 @@ public sealed class ResizeFreezeAction : IEditAction
         var lanes = doc.CurrentTab.Lanes[_lane];
         lanes.Freezes.Remove(_oldFreeze);
         lanes.Freezes.Add(_newFreeze);
+        // 2026-07-26: 始点tickが変わる場合、StartTickで同定しているサイドカー(色指定・コメント警告)も
+        // 追随させる(従来は色指定が旧StartTickに取り残される潜在バグがあった)。
+        if (_oldFreeze.StartTick != _newFreeze.StartTick)
+            MoveObjectsAction.MoveSidecarEntriesForResize(doc.CurrentTab, _lane, _oldFreeze.StartTick, _newFreeze.StartTick);
     }
 
     public void Undo(EditorDocument doc)
@@ -130,6 +145,37 @@ public sealed class ResizeFreezeAction : IEditAction
         var lanes = doc.CurrentTab.Lanes[_lane];
         lanes.Freezes.Remove(_newFreeze);
         lanes.Freezes.Add(_oldFreeze);
+        if (_oldFreeze.StartTick != _newFreeze.StartTick)
+            MoveObjectsAction.MoveSidecarEntriesForResize(doc.CurrentTab, _lane, _newFreeze.StartTick, _oldFreeze.StartTick);
+    }
+}
+
+// =====================================================================
+// コメント・警告(Annotations、2026-07-26)
+// =====================================================================
+
+/// <summary>ノート/フリーズのコメント・警告フラグを設定する(2026-07-26、③オブジェクトタブから編集)。
+/// 対象はlane+tick(フリーズはStartTick)で同定。Comment=""かつWarning=falseになった場合は
+/// エントリ自体を削除する(空エントリを残さない規約、ChartProject.NoteAnnotation参照)。</summary>
+public sealed class SetAnnotationAction(int lane, long tick, string comment, bool warning) : IEditAction
+{
+    private NoteAnnotation? _before;
+
+    public string Label => "コメント・警告編集";
+
+    public void Do(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].Annotations;
+        _before = list.FirstOrDefault(a => a.Tick == tick);
+        list.RemoveAll(a => a.Tick == tick);
+        if (comment.Length > 0 || warning) list.Add(new NoteAnnotation(tick, comment, warning));
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].Annotations;
+        list.RemoveAll(a => a.Tick == tick);
+        if (_before is not null) list.Add(_before);
     }
 }
 
@@ -639,7 +685,7 @@ public sealed class MoveObjectsAction : IEditAction
                     int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
                     long newTick = r.Tick + tickDelta;
                     tab.Lanes[newLane].Notes.Add(newTick);
-                    MoveColorEntry(tab, r.Lane, r.Tick, newLane, newTick);
+                    MoveSidecarEntries(tab,r.Lane, r.Tick, newLane, newTick);
                     return new ObjectRef(ObjectKind.Note, newLane, newTick);
                 }
             case ObjectKind.FreezeStart:
@@ -653,7 +699,7 @@ public sealed class MoveObjectsAction : IEditAction
                     int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
                     var moved = new FreezeNote(f.StartTick + tickDelta, f.EndTick + tickDelta);
                     tab.Lanes[newLane].Freezes.Add(moved);
-                    MoveColorEntry(tab, r.Lane, f.StartTick, newLane, moved.StartTick);
+                    MoveSidecarEntries(tab,r.Lane, f.StartTick, newLane, moved.StartTick);
                     return new ObjectRef(ObjectKind.FreezeStart, newLane, moved.StartTick);
                 }
             case ObjectKind.Speed:
@@ -710,7 +756,7 @@ public sealed class MoveObjectsAction : IEditAction
             case ObjectKind.Note:
                 if (!tab.Lanes[from.Lane].Notes.Remove(from.Tick)) return false;
                 tab.Lanes[to.Lane].Notes.Add(to.Tick);
-                MoveColorEntry(tab, from.Lane, from.Tick, to.Lane, to.Tick);
+                MoveSidecarEntries(tab,from.Lane, from.Tick, to.Lane, to.Tick);
                 return true;
             case ObjectKind.FreezeStart:
             case ObjectKind.FreezeEnd:
@@ -722,7 +768,7 @@ public sealed class MoveObjectsAction : IEditAction
                     lane.Freezes.Remove(f);
                     long len = f.EndTick - f.StartTick;
                     tab.Lanes[to.Lane].Freezes.Add(new FreezeNote(to.Tick, to.Tick + len));
-                    MoveColorEntry(tab, from.Lane, from.Tick, to.Lane, to.Tick);
+                    MoveSidecarEntries(tab,from.Lane, from.Tick, to.Lane, to.Tick);
                     return true;
                 }
             case ObjectKind.Speed:
@@ -762,15 +808,29 @@ public sealed class MoveObjectsAction : IEditAction
         }
     }
 
-    /// <summary>色編集モードで指定したColorOverridesエントリを、ノート/フリーズ本体の移動に追随させる
-    /// (2026-07-23)。無ければ何もしない(色未指定のオブジェクトの移動では発生しない)。</summary>
-    private static void MoveColorEntry(DifficultyTab tab, int fromLane, long fromTick, int toLane, long toTick)
+    /// <summary>ResizeFreezeAction用の公開ラッパー(同一レーン内での始点tick変更追随、2026-07-26)</summary>
+    internal static void MoveSidecarEntriesForResize(DifficultyTab tab, int lane, long fromTick, long toTick) =>
+        MoveSidecarEntries(tab, lane, fromTick, lane, toTick);
+
+    /// <summary>ノート/フリーズ本体に付随するサイドカーエントリ(色指定ColorOverrides=2026-07-23、
+    /// コメント・警告Annotations=2026-07-26)を、本体の移動に追随させる。無ければ何もしない。</summary>
+    private static void MoveSidecarEntries(DifficultyTab tab, int fromLane, long fromTick, int toLane, long toTick)
     {
-        var src = tab.Lanes[fromLane].ColorOverrides;
-        var entry = src.FirstOrDefault(c => c.Tick == fromTick);
-        if (entry is null) return;
-        src.Remove(entry);
-        tab.Lanes[toLane].ColorOverrides.Add(entry with { Tick = toTick });
+        var colors = tab.Lanes[fromLane].ColorOverrides;
+        var colorEntry = colors.FirstOrDefault(c => c.Tick == fromTick);
+        if (colorEntry is not null)
+        {
+            colors.Remove(colorEntry);
+            tab.Lanes[toLane].ColorOverrides.Add(colorEntry with { Tick = toTick });
+        }
+
+        var annotations = tab.Lanes[fromLane].Annotations;
+        var annotation = annotations.FirstOrDefault(a => a.Tick == fromTick);
+        if (annotation is not null)
+        {
+            annotations.Remove(annotation);
+            tab.Lanes[toLane].Annotations.Add(annotation with { Tick = toTick });
+        }
     }
 
     private static IEnumerable<ObjectRef> DistinctEntities(IEnumerable<ObjectRef> refs)
@@ -801,5 +861,41 @@ public sealed class CompositeEditAction(IReadOnlyList<IEditAction> actions, stri
     public void Undo(EditorDocument doc)
     {
         for (int i = actions.Count - 1; i >= 0; i--) actions[i].Undo(doc);
+    }
+}
+
+/// <summary>
+/// レーン入替マクロの適用(仕様書11.1、2026-07-30)。現在の難易度タブの全レーンの
+/// ノート配置データ(LaneNotes = Notes/Freezes/ColorOverrides/Annotations一式)を、
+/// 順列配列(laneMapping。インデックス=適用後の位置、値=どのレーン位置のデータを持ってくるか)
+/// に従って一括で入れ替える。レーンの定義(dataName・keyAssign・colorGroup等、テンプレート由来の
+/// 固定情報)は一切変更しない(テンプレート側のLaneDefには触れず、Tabs[].Lanesの並びだけを動かす)。
+/// 適用前に全レーンをスナップショットしてから書き込むため、逐次swapによる参照順序バグが起きない。
+/// </summary>
+public sealed class ApplyLaneSwapMacroAction(IReadOnlyList<int> laneMapping, string macroName) : IEditAction
+{
+    private List<LaneNotes>? _before;
+
+    public string Label => $"マクロ適用: {macroName}";
+
+    public void Do(EditorDocument doc)
+    {
+        var lanes = doc.CurrentTab.Lanes;
+        var snapshot = new List<LaneNotes>(lanes);
+        _before = snapshot;
+        for (int i = 0; i < lanes.Count && i < laneMapping.Count; i++)
+        {
+            int from = laneMapping[i];
+            if (from < 0 || from >= snapshot.Count) continue;
+            lanes[i] = snapshot[from];
+        }
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_before is null) return;
+        var lanes = doc.CurrentTab.Lanes;
+        for (int i = 0; i < lanes.Count && i < _before.Count; i++)
+            lanes[i] = _before[i];
     }
 }

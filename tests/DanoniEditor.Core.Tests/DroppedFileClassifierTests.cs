@@ -27,11 +27,36 @@ public class DroppedFileClassifierTests
         Assert.Equal(DroppedFileKind.Skb, Classify("chart.txt", json)); // SKBは.txt保存の場合もある
     }
 
+    /// <summary>FUJI形式が必ず持つ8セクション全部入りの最小サンプル(2026-07-26仕様)</summary>
+    private const string FujiFullText =
+        "$version=3.050\n$template=7\n$dospath=dos.txt\n$option=0\n" +
+        "$frame=0/0/9600/1,10\n$barcut=\n$score\n0000:0040,\n$header\n|musicTitle=テスト|\n";
+
     [Fact]
     public void FujiText_IsClassified()
     {
-        var text = "$version=3.050\n$frame=0/0/9600/1,10\n$score=\n0000:0040,\n";
-        Assert.Equal(DroppedFileKind.Fuji, Classify("chart.txt", text));
+        // $key=value形式と$key単独行が混在していても8キー揃いで判定される
+        Assert.Equal(DroppedFileKind.Fuji, Classify("chart.txt", FujiFullText));
+    }
+
+    [Fact]
+    public void FujiText_MissingSection_IsNotFuji()
+    {
+        // 2026-07-26仕様: 8キー全部揃いが条件。$frame=があるだけではFUJIとみなさない
+        var text = "$version=3.050\n$frame=0/0/9600/1,10\n$score\n0000:0040,\n";
+        Assert.NotEqual(DroppedFileKind.Fuji, Classify("chart.txt", text));
+    }
+
+    [Fact]
+    public void FujiText_ShiftJisEncoded_IsStillClassified()
+    {
+        // FUJIエディタはShift-JIS保存のため、UTF-8として不正なバイトを含んでいても
+        // バイナリ扱いにせずFUJI判定できること(従来のD&D識別100%失敗の根本原因の回帰テスト)。
+        // 0x93 0xFA等はUTF-8として不正なシーケンス(Shift-JISの日本語を模したもの)。
+        var ascii = Encoding.ASCII.GetBytes(FujiFullText + "|artistName=");
+        byte[] sjisLike = [0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA]; // "日本語"のShift-JISバイト列
+        Assert.Equal(DroppedFileKind.Fuji,
+            DroppedFileClassifier.Classify("chart.txt", [.. ascii, .. sjisLike, (byte)'|', (byte)'\n']));
     }
 
     [Fact]

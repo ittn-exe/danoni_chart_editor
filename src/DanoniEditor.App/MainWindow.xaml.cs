@@ -47,6 +47,10 @@ public partial class MainWindow : Window
     private SmartToolController? _tickSubscribedController;
     private string? _currentFilePath;
 
+    /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-30)。settings.jsonとは独立した
+    /// swap_macro.jsonで管理する(AppPaths.LaneSwapMacroFilePath)。</summary>
+    private readonly List<LaneSwapMacro> _macros;
+
     // --- マルチプロジェクトタブ(2026-07-20、TBD#10) ---
     /// <summary>1プロジェクトタブ分の実行時状態。切替時に_document/_controller/_currentFilePathへ
     /// 読み書きする(既存コードの大半が_document等のフィールドを直接参照しているため、それらを
@@ -84,6 +88,13 @@ public partial class MainWindow : Window
     /// <summary>音楽ファイル読込済みか(2026-07-17g: 再生ボタン撤去に伴いIsEnabledの代わりに保持)</summary>
     private bool _audioLoaded;
 
+    /// <summary>musicURL欄がユーザーにより編集されたか(2026-07-27)。「読込」ボタンの活性化条件の1つ。
+    /// ドキュメント読込・生成のたびにfalseへリセットする(RefreshProjectPropertiesPanel参照)。</summary>
+    private bool _musicUrlDirty;
+
+    /// <summary>音量スライダー/数値入力欄の相互同期中に再帰更新を防ぐガード(2026-07-27)。</summary>
+    private bool _suppressVolumeEvents;
+
     // --- 波形表示(2026-07-18) ---
     private Core.Audio.WaveformPeaks? _waveformPeaks;
     private string? _waveformPath;
@@ -102,10 +113,18 @@ public partial class MainWindow : Window
     /// </summary>
     private bool _initialized;
 
-    public MainWindow()
+    /// <summary>既定コンストラクタ(設定・テンプレートは自前で読み込む)。App.xaml.cs以外から
+    /// 直接生成する場合はこちらを使う。</summary>
+    public MainWindow() : this(null, null) { }
+
+    /// <summary>2026-07-28: スプラッシュウィンドウからの起動用。設定・テンプレートを事前に読み込んで
+    /// 渡せるようにし、App.OnStartup側の進捗表示と実際の読込処理を1:1にする
+    /// (省略時は従来通りここで読み込む)。</summary>
+    public MainWindow(AppSettings? preloadedSettings, TemplateRepository? preloadedTemplates)
     {
         InitializeComponent();
-        _templates = new TemplateRepository(FindTemplateDir());
+        _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
+        _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-30: settings.jsonとは独立したファイル
         SnapDivisionCombo.ItemsSource = SnapService.Divisions;
         SnapDivisionCombo.SelectedItem = 16;
 
@@ -129,7 +148,7 @@ public partial class MainWindow : Window
         // StartNumberドラッグ確定時に右パネルの数値表示を同期する(2026-07-18)
         Canvas.StartNumberChangedByDrag += RefreshProjectPropertiesPanel;
 
-        _appSettings = AppSettings.Load(AppPaths.SettingsFilePath);
+        _appSettings = preloadedSettings ?? AppSettings.Load(AppPaths.SettingsFilePath);
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
         ApplyDisplaySettingsToCanvas();
@@ -148,6 +167,13 @@ public partial class MainWindow : Window
         PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(_appSettings.PlaybackSpeed);
         _audioPlayer.SpeedRatio = _appSettings.PlaybackSpeed;
 
+        // 2026-07-27: 音量(0〜100%、スライダー+数値入力欄を相互同期)
+        _suppressVolumeEvents = true;
+        VolumeSlider.Value = Math.Clamp(_appSettings.PlaybackVolume, 0.0, 1.0) * 100;
+        VolumeBox.Text = Math.Round(VolumeSlider.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _suppressVolumeEvents = false;
+        _audioPlayer.Volume = _appSettings.PlaybackVolume;
+
         // 2026-07-23: 色編集モード(ncolor_data)の右パネル初期化
         NColorGradientTypeCombo.ItemsSource = new[] { "単色", "linear-gradient", "radial-gradient", "conic-gradient" };
         NColorGradientTypeCombo.SelectedIndex = 0;
@@ -161,6 +187,8 @@ public partial class MainWindow : Window
         NColorHitShadowColorBox.Text = "#000000";
         NColorArrowShadowColorBox.Text = "#000000";
         NColorNormalShadowColorBox.Text = "#000000";
+
+        RefreshMacroList(); // 2026-07-30: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
 
         _initialized = true;
     }
@@ -222,7 +250,7 @@ public partial class MainWindow : Window
 
     private void OpenPreferences(int category)
     {
-        var win = new PreferencesWindow(_appSettings, category) { Owner = this };
+        var win = new PreferencesWindow(_appSettings, category, _templates) { Owner = this };
         if (win.ShowDialog() != true || win.Result is null) return;
         _appSettings = win.Result;
         _appSettings.Save(AppPaths.SettingsFilePath);
@@ -238,6 +266,7 @@ public partial class MainWindow : Window
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
+        UpdateMusicUrlLoadButtonState(); // 2026-07-27: 機能ON/OFF切替を「読込」ボタンの活性状態へ即反映
         Canvas.InvalidateVisual();
     }
 
@@ -320,11 +349,68 @@ public partial class MainWindow : Window
         {
             var project = ProjectSerializer.Load(path);
             AddSession(new EditorDocument(project, _templates), path); // 2026-07-20: 新規プロジェクトタブとして追加
+            // 2026-07-27: musicURL設定済みのITTNエディタ形式プロジェクトを開いた際、機能ONなら自動読込を試みる
+            // (ローカルAudioFilePathからの復元(ResetAudioForDocument、AddSession内で実行済み)が
+            // 既に成功している場合はTryLoadMusicFromUrl内の_audioLoadedガードで何もしない)。
+            TryLoadMusicFromUrl(autoTriggered: true);
+            // 2026-07-28: 開いたファイルを「最近開いたファイル」の先頭へ記録する
+            _appSettings.AddRecentFile(path);
+            _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    // =====================================================================
+    // 最近開いたファイル(2026-07-28、ファイル > 最近開いたファイル)
+    // =====================================================================
+
+    /// <summary>サブメニューを開くたびに項目を動的再構築する。存在しなくなったファイルは
+    /// 一覧から取り除いてから表示する(PruneMissingRecentFiles)。空なら「(履歴なし)」のみ表示。</summary>
+    private void RecentFilesMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+    {
+        if (_appSettings.PruneMissingRecentFiles()) _appSettings.Save(AppPaths.SettingsFilePath);
+
+        RecentFilesMenu.Items.Clear();
+        if (_appSettings.RecentFiles.Count == 0)
+        {
+            RecentFilesMenu.Items.Add(new MenuItem { Header = "(履歴なし)", IsEnabled = false });
+            return;
+        }
+
+        int idx = 1;
+        foreach (var path in _appSettings.RecentFiles)
+        {
+            // 表示は「番号 ファイル名」(フルパスはToolTipで確認)。番号は覚えやすさ・Alt+数字選択の慣習に合わせる。
+            var item = new MenuItem { Header = $"_{idx} {Path.GetFileName(path)}", ToolTip = path };
+            item.Click += (_, _) => OpenRecentFile(path);
+            RecentFilesMenu.Items.Add(item);
+            idx++;
+        }
+
+        RecentFilesMenu.Items.Add(new Separator());
+        var clear = new MenuItem { Header = "履歴をクリア" };
+        clear.Click += (_, _) =>
+        {
+            _appSettings.RecentFiles.Clear();
+            _appSettings.Save(AppPaths.SettingsFilePath);
+        };
+        RecentFilesMenu.Items.Add(clear);
+    }
+
+    /// <summary>「最近開いたファイル」の項目クリック。ファイルが既に無い場合は知らせて一覧から除去する。</summary>
+    private void OpenRecentFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            MessageBox.Show(this, $"ファイルが見つかりませんでしたわ:\n{path}", "最近開いたファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _appSettings.RecentFiles.Remove(path);
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            return;
+        }
+        OpenProjectFile(path);
     }
 
     private void SaveProject_Click(object sender, RoutedEventArgs e)
@@ -355,6 +441,9 @@ public partial class MainWindow : Window
             _document.MarkSaved(); // 未保存フラグ解除→タイトルバーの'*'も消える(2026-07-19b)
             UpdateWindowTitle();
             StatusText.Text = $"保存しました: {Path.GetFileName(path)}";
+            // 2026-07-28: 保存先も「最近開いたファイル」の先頭へ記録する(初回保存のパス確定時も含む)
+            _appSettings.AddRecentFile(path);
+            _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
         {
@@ -649,7 +738,7 @@ public partial class MainWindow : Window
         _suppressSelectionEvent = true;
         DifficultyTabControl.ItemsSource = null;
         DifficultyTabControl.ItemsSource = doc.Project.Tabs;
-        DifficultyTabControl.DisplayMemberPath = nameof(DifficultyTab.DifficultyName);
+        DifficultyTabControl.DisplayMemberPath = nameof(DifficultyTab.DisplayLabel);
         DifficultyTabControl.SelectedIndex = Math.Min(doc.CurrentTabIndex, doc.Project.Tabs.Count - 1);
         _suppressSelectionEvent = false;
 
@@ -676,6 +765,7 @@ public partial class MainWindow : Window
         RefreshSelectedObjectPanel();
         RefreshColorPanel();
         RefreshExtraHeadersPanel();
+        RefreshMacroList(); // 2026-07-30: 現在タブのKeyTypeIdに応じて「実行」ボタンの有効/無効が変わるため
     }
 
     /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
@@ -801,6 +891,8 @@ public partial class MainWindow : Window
         AudioFileText.FontStyle = FontStyles.Italic;
         AudioTimeText.Text = "-";
         _audioLoaded = false;
+        _musicUrlDirty = false;
+        MusicUrlLoadButton.IsEnabled = false;
 
         SetColorPanel.Children.Clear();
         FrzColorPanel.Children.Clear();
@@ -808,6 +900,7 @@ public partial class MainWindow : Window
 
         UpdateWindowTitle();
         RefreshProjectTabBar();
+        RefreshMacroList(); // 2026-07-30: ドキュメント無しの間は一覧を空にし「実行」を無効化する
     }
 
     // =====================================================================
@@ -860,11 +953,66 @@ public partial class MainWindow : Window
             AudioFileText.FontStyle = FontStyles.Normal;
             _audioLoaded = true;
             if (WaveformToggle.IsChecked == true) EnsureWaveformDecoded(); // 2026-07-18
+            UpdateMusicUrlLoadButtonState(); // 2026-07-27: 読込完了で「読込」ボタンをグレーアウトする
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"音楽ファイルの読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    // =====================================================================
+    // musicURLからの楽曲取得(2026-07-27確定仕様)。環境設定でON時のみ有効。指定フォルダを
+    // カレントディレクトリとして扱い、そこからProject.MusicUrlのファイル名で楽曲を読み込む。
+    // =====================================================================
+
+    /// <summary>「読込」ボタンの活性状態を更新する。機能OFF・楽曲読込済み・未編集のいずれかでグレーアウト。</summary>
+    private void UpdateMusicUrlLoadButtonState()
+    {
+        MusicUrlLoadButton.IsEnabled =
+            _document is not null && _appSettings.MusicUrlAutoLoadEnabled && !_audioLoaded && _musicUrlDirty;
+    }
+
+    private void MusicUrlLoadButton_Click(object sender, RoutedEventArgs e) => TryLoadMusicFromUrl(autoTriggered: false);
+
+    /// <summary>musicURL機能本体。autoTriggered=true(ITTNプロジェクトファイル読込時の自動読込)の場合は
+    /// 邪魔にならないよう失敗してもダイアログを出さない(ステータスバー表示のみ)。手動("読込"ボタン)の
+    /// 場合は原因をダイアログで知らせる。</summary>
+    private bool TryLoadMusicFromUrl(bool autoTriggered)
+    {
+        if (_document is null) return false;
+        if (!_appSettings.MusicUrlAutoLoadEnabled) return false;
+        if (_audioLoaded) return false; // 既に読込済み(ローカルAudioFilePath復元含む)なら上書きしない
+
+        var baseFolder = _appSettings.MusicUrlBaseFolder;
+        if (string.IsNullOrWhiteSpace(baseFolder) || !Directory.Exists(baseFolder))
+        {
+            if (!autoTriggered)
+                MessageBox.Show(this, "環境設定でmusicURL取得用の楽曲フォルダを指定してくださいまし。",
+                    "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var musicUrl = _document.Project.MusicUrl;
+        if (string.IsNullOrWhiteSpace(musicUrl) || musicUrl == "noname")
+        {
+            if (!autoTriggered)
+                MessageBox.Show(this, "musicURLが未設定ですわ。", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var path = Path.Combine(baseFolder, musicUrl);
+        if (!File.Exists(path))
+        {
+            if (autoTriggered) StatusText.Text = $"musicURLからの自動読込に失敗しましたわ(ファイルが見つかりません: {path})";
+            else MessageBox.Show(this, $"ファイルが見つかりませんでしたわ:\n{path}", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        LoadAudioFile(path);
+        _musicUrlDirty = false;
+        UpdateMusicUrlLoadButtonState();
+        return true;
     }
 
     // =====================================================================
@@ -1158,6 +1306,7 @@ public partial class MainWindow : Window
         Canvas.InvalidateVisual();
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
+        RefreshMacroList(); // 2026-07-30: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
     }
 
     // =====================================================================
@@ -1176,8 +1325,9 @@ public partial class MainWindow : Window
     private static List<string> DefaultSetColors(int groupCount) =>
         Enumerable.Range(0, groupCount).Select(i => DefaultSetColorPalette[i % DefaultSetColorPalette.Length]).ToList();
 
-    private static List<string> DefaultFrzColors(int groupCount) =>
-        Enumerable.Range(0, groupCount * 4).Select(i => DefaultFrzColorSlots[i % 4]).ToList();
+    /// <summary>2026-07-27確定仕様: frzColorは色グループ数に関わらず常に4スロット固定
+    /// (danoniplus本体の仕様通り。従来の「色グループ数×4」は誤りだった)。</summary>
+    private static List<string> DefaultFrzColors() => [.. DefaultFrzColorSlots];
 
     /// <summary>tab.SetColorOverrideをgroupCount件になるよう保証し、そのリスト参照を返す(1タブ目・
     /// 独自上書き中のタブいずれも、このメソッドを通して初めて実データを持つ)。</summary>
@@ -1188,10 +1338,12 @@ public partial class MainWindow : Window
         return tab.SetColorOverride;
     }
 
-    private static List<string> EnsureFrzColors(DifficultyTab tab, int groupCount)
+    /// <summary>tab.FrzColorOverrideを常に4件になるよう保証し、そのリスト参照を返す(2026-07-27:
+    /// 色グループ数に関わらず固定4スロット)。</summary>
+    private static List<string> EnsureFrzColors(DifficultyTab tab)
     {
-        tab.FrzColorOverride ??= DefaultFrzColors(groupCount);
-        while (tab.FrzColorOverride.Count < groupCount * 4) tab.FrzColorOverride.Add("");
+        tab.FrzColorOverride ??= DefaultFrzColors();
+        while (tab.FrzColorOverride.Count < 4) tab.FrzColorOverride.Add("");
         return tab.FrzColorOverride;
     }
 
@@ -1260,7 +1412,8 @@ public partial class MainWindow : Window
 
         bool editable = isFirstTab || !useCommon;
         var setSource = editable && !isFirstTab ? EnsureSetColors(currentTab, groupCount) : EnsureSetColors(tab0, groupCount);
-        var frzSource = editable && !isFirstTab ? EnsureFrzColors(currentTab, groupCount) : EnsureFrzColors(tab0, groupCount);
+        // 2026-07-27: frzColorは色グループ数に関わらず常に4スロット固定の1セットのみ(danoniplus本体の仕様通り)
+        var frzSource = editable && !isFirstTab ? EnsureFrzColors(currentTab) : EnsureFrzColors(tab0);
 
         for (int g = 0; g < groupCount; g++)
             AddColorField(SetColorPanel, $"色グループ{g}", g < setSource.Count ? setSource[g] : "", editable, ("set", g, -1));
@@ -1280,19 +1433,9 @@ public partial class MainWindow : Window
         }
         bool frzEditable = editable && !defaultFrzColorUse;
 
-        for (int g = 0; g < groupCount; g++)
-        {
-            FrzColorPanel.Children.Add(new TextBlock
-            {
-                Text = $"色グループ{g}", FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, g == 0 ? 0 : 8, 0, 2),
-            });
-            for (int s = 0; s < 4; s++)
-            {
-                int idx = g * 4 + s;
-                AddColorField(FrzColorPanel, FrzSlotLabels[s], idx < frzSource.Count ? frzSource[idx] : "", frzEditable, ("frz", g, s));
-            }
-        }
+        // 2026-07-27: frzColorは色グループの概念を持たないため、色グループ見出しなしで4スロットのみ表示する
+        for (int s = 0; s < 4; s++)
+            AddColorField(FrzColorPanel, FrzSlotLabels[s], s < frzSource.Count ? frzSource[s] : "", frzEditable, ("frz", -1, s));
 
         _suppressColorPanelEvents = false;
     }
@@ -1315,10 +1458,10 @@ public partial class MainWindow : Window
         }
         else
         {
-            int idx = group * 4 + slot;
-            if (targetTab.FrzColorOverride is null || idx >= targetTab.FrzColorOverride.Count) return;
-            if (targetTab.FrzColorOverride[idx] == box.Text) return;
-            targetTab.FrzColorOverride[idx] = box.Text;
+            // 2026-07-27: frzColorは色グループを持たない固定4スロットのため、slotがそのままインデックス
+            if (targetTab.FrzColorOverride is null || slot >= targetTab.FrzColorOverride.Count) return;
+            if (targetTab.FrzColorOverride[slot] == box.Text) return;
+            targetTab.FrzColorOverride[slot] = box.Text;
         }
         _document.NotifyChanged();
         Canvas.InvalidateVisual(); // レーン色プレビュー(LaneBrush)へ反映
@@ -1339,7 +1482,7 @@ public partial class MainWindow : Window
         else
         {
             tab.SetColorOverride = [.. EnsureSetColors(tab0, groupCount)];
-            tab.FrzColorOverride = [.. EnsureFrzColors(tab0, groupCount)];
+            tab.FrzColorOverride = [.. EnsureFrzColors(tab0)];
         }
         _document.NotifyChanged();
         RefreshColorPanel();
@@ -1357,24 +1500,42 @@ public partial class MainWindow : Window
         ExtraHeadersPanel.Children.Clear();
         var headers = _document.Project.ExtraHeaders;
 
+        // 2026-07-27: チェックボックスの羅列で視認性が悪いとの要望対応。大項目(Category)ごとに
+        // Expanderで折りたたむ。既定では「そのカテゴリ内に既に設定済みの項目が1つでもあれば展開、
+        // 無ければ折りたたみ」とし、見落とし防止と一覧性のバランスを取る。
         string? lastCategory = null;
+        StackPanel? categoryPanel = null;
+        List<HeaderParamDef>? categoryDefs = null;
+
+        void FlushCategory()
+        {
+            if (lastCategory is null || categoryPanel is null || categoryDefs is null) return;
+            bool hasActiveValue = categoryDefs.Any(d => headers.ContainsKey(d.Name));
+            ExtraHeadersPanel.Children.Add(new Expander
+            {
+                Header = lastCategory,
+                IsExpanded = hasActiveValue,
+                Margin = new Thickness(0, 0, 0, 8),
+                Content = categoryPanel,
+            });
+        }
+
         foreach (var def in ExtraHeaderDefs.All)
         {
             if (def.Category != lastCategory)
             {
-                ExtraHeadersPanel.Children.Add(new TextBlock
-                {
-                    Text = def.Category,
-                    FontWeight = FontWeights.Bold,
-                    Margin = new Thickness(0, lastCategory is null ? 0 : 14, 0, 6),
-                });
+                FlushCategory();
                 lastCategory = def.Category;
+                categoryPanel = new StackPanel { Margin = new Thickness(4, 8, 0, 4) };
+                categoryDefs = [];
             }
-            AddExtraHeaderRow(def, headers);
+            categoryDefs!.Add(def);
+            AddExtraHeaderRow(def, headers, categoryPanel!);
         }
+        FlushCategory();
     }
 
-    private void AddExtraHeaderRow(HeaderParamDef def, Dictionary<string, string> headers)
+    private void AddExtraHeaderRow(HeaderParamDef def, Dictionary<string, string> headers, Panel targetPanel)
     {
         bool hasValue = headers.TryGetValue(def.Name, out var existing);
         string initial = hasValue ? existing! : def.Default;
@@ -1404,7 +1565,7 @@ public partial class MainWindow : Window
             }
 
             row.Children.Add(boolCheck);
-            ExtraHeadersPanel.Children.Add(row);
+            targetPanel.Children.Add(row);
             return;
         }
 
@@ -1497,7 +1658,7 @@ public partial class MainWindow : Window
                 }
         }
 
-        ExtraHeadersPanel.Children.Add(row);
+        targetPanel.Children.Add(row);
     }
 
     // =====================================================================
@@ -1530,6 +1691,11 @@ public partial class MainWindow : Window
 
         UpdateRequiredFieldWarning(MusicTitleBox, MusicTitleWarning);
         UpdateRequiredFieldWarning(DifficultyNameBox, DifficultyNameWarning);
+
+        // 2026-07-27: ドキュメント読込・タブ切替のたびに「読込」ボタンの活性状態をリセットする
+        // (このビューでmusicURLを編集していない状態からスタート)
+        _musicUrlDirty = false;
+        UpdateMusicUrlLoadButtonState();
     }
 
     /// <summary>
@@ -1560,7 +1726,13 @@ public partial class MainWindow : Window
         }
         else if (box == ArtistNameBox) p.ArtistName = box.Text;
         else if (box == ArtistUrlBox) p.ArtistUrl = box.Text;
-        else if (box == MusicUrlBox) p.MusicUrl = box.Text;
+        else if (box == MusicUrlBox)
+        {
+            p.MusicUrl = box.Text;
+            // 2026-07-27: musicURLを編集したら「読込」ボタンを有効化する(機能ON・未読込が前提)
+            _musicUrlDirty = true;
+            UpdateMusicUrlLoadButtonState();
+        }
         else if (box == TuningBox) p.Tuning = box.Text;
         else if (box == DifficultyNameBox)
         {
@@ -1697,12 +1869,26 @@ public partial class MainWindow : Window
         ObjectValueBox.Visibility = Visibility.Collapsed;
         ObjectCommentLabel.Visibility = Visibility.Collapsed;
         ObjectCommentBox.Visibility = Visibility.Collapsed;
+        ObjectWarningCheck.Visibility = Visibility.Collapsed;
+
+        // 2026-07-26: ノート/フリーズのコメント・警告(Annotations、tick=フリーズはStartTickで同定)を
+        // ③タブへ表示する共通処理。マーカーのCommentとは別系統(こちらはlane付きオブジェクト用)。
+        void ShowAnnotationFields()
+        {
+            var a = tab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
+            ObjectCommentLabel.Visibility = Visibility.Visible;
+            ObjectCommentBox.Visibility = Visibility.Visible;
+            ObjectCommentBox.Text = a?.Comment ?? "";
+            ObjectWarningCheck.Visibility = Visibility.Visible;
+            ObjectWarningCheck.IsChecked = a?.Warning ?? false;
+        }
 
         switch (r.Kind)
         {
             case ObjectKind.Note:
                 ObjectKindText.Text = "ノート";
                 ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                ShowAnnotationFields();
                 break;
 
             case ObjectKind.FreezeStart:
@@ -1716,6 +1902,7 @@ public partial class MainWindow : Window
                     ObjectEndFrameLabel.Visibility = Visibility.Visible;
                     ObjectEndFrameBox.Visibility = Visibility.Visible;
                     ObjectEndFrameBox.Text = f is null ? "-" : FormatFrame(engine.TickToFrame(f.EndTick));
+                    ShowAnnotationFields();
                     break;
                 }
 
@@ -1882,16 +2069,44 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>ノート/フリーズかどうか(コメント・警告Annotationsの対象種別、2026-07-26)</summary>
+    private static bool IsAnnotatableKind(ObjectKind kind) =>
+        kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody;
+
     private void ObjectComment_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (_suppressObjectPanelEvents || _document is null) return;
-        if (_currentPropertyObject is not { Kind: ObjectKind.Marker } r) return;
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
 
-        var m = _document.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
-        if (m is null || m.Comment == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
-        _document.Execute(new CompositeEditAction(
-            [new DeleteMarkerAction(r.Tick), new PlaceMarkerAction(r.Tick, ObjectCommentBox.Text)],
-            "マーカーコメント編集"));
+        if (r.Kind == ObjectKind.Marker)
+        {
+            var m = _document.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
+            if (m is null || m.Comment == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
+            _document.Execute(new CompositeEditAction(
+                [new DeleteMarkerAction(r.Tick), new PlaceMarkerAction(r.Tick, ObjectCommentBox.Text)],
+                "マーカーコメント編集"));
+            return;
+        }
+
+        // 2026-07-26: ノート/フリーズのコメント編集(Annotations)
+        if (!IsAnnotatableKind(r.Kind)) return;
+        var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
+        if ((a?.Comment ?? "") == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
+        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, ObjectCommentBox.Text, a?.Warning ?? false));
+        Canvas.InvalidateVisual();
+    }
+
+    /// <summary>警告フラグのON/OFF(2026-07-26)。インポート時に自動ONになったものを、内容確認後に
+    /// ユーザーが手動でOFFにするのが主用途(自動クリアはしない仕様)。手動ONも可能。</summary>
+    private void ObjectWarning_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (!IsAnnotatableKind(r.Kind)) return;
+
+        bool warning = ObjectWarningCheck.IsChecked == true;
+        var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
+        if ((a?.Warning ?? false) == warning) return; // 変更なしならUndo履歴を汚さない
+        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, a?.Comment ?? ObjectCommentBox.Text, warning));
+        Canvas.InvalidateVisual();
     }
 
     /// <summary>波形表示トグル(2026-07-18)。初回ONで音声をバックグラウンドデコードする</summary>
@@ -2116,15 +2331,22 @@ public partial class MainWindow : Window
             else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
             else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
             // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
+            // 2026-07-26: 譜面ビューReverse時は「画面上の見た目方向」を維持するため時間方向を反転する
+            // (←=常に画面上方向、→=常に画面下方向。修飾なし←/→やキーボードモードの全移動キーと同一方針。
+            // HandleKeyboardModeKeyの解説コメント参照)。
             else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Left)
             {
-                _keyboardMode.MoveCursorByMeasure(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -4 : -2);
+                int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
+                _keyboardMode.MoveCursorByMeasure(_appSettings.ChartViewReverse ? amount : -amount);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
             }
             else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
             {
-                _keyboardMode.MoveCursorByMeasure(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2);
+                int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
+                _keyboardMode.MoveCursorByMeasure(_appSettings.ChartViewReverse ? -amount : amount);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
             }
@@ -2264,6 +2486,100 @@ public partial class MainWindow : Window
             _document.NotifyChanged();
             Canvas.InvalidateVisual();
         }
+    }
+
+    // =====================================================================
+    // 右パネル: マクロ(レーン入替マクロ、仕様書11章、2026-07-30)
+    // =====================================================================
+
+    /// <summary>マクロ一覧の表示用ラッパー(「キー種 - マクロ名」形式、テンプレート一覧と同じ書式)</summary>
+    private sealed record MacroListEntry(LaneSwapMacro Macro)
+    {
+        public override string ToString() => $"{Macro.TargetKeyTypeId} - {Macro.MacroName}";
+    }
+
+    private void SaveMacros() => LaneSwapMacroFile.Save(AppPaths.LaneSwapMacroFilePath, _macros);
+
+    /// <summary>右パネルの一覧は「現在開いている難易度タブのキー種に対応するものだけ」表示する
+    /// (2026-07-30要望。タブ切替でキー種が変わればここも切り替わる)。ドキュメント未オープン時は
+    /// キー種を判定できないため空表示にする。</summary>
+    private void RefreshMacroList()
+    {
+        var selectedId = (MacroListBox.SelectedItem as MacroListEntry)?.Macro.MacroId;
+        MacroListBox.Items.Clear();
+
+        string? currentKeyTypeId = _document?.CurrentTab.KeyTypeId;
+        if (currentKeyTypeId is not null)
+        {
+            foreach (var m in _macros
+                         .Where(m => string.Equals(m.TargetKeyTypeId, currentKeyTypeId, StringComparison.OrdinalIgnoreCase))
+                         .OrderBy(m => m.MacroName, StringComparer.OrdinalIgnoreCase))
+                MacroListBox.Items.Add(new MacroListEntry(m));
+        }
+
+        if (selectedId is not null)
+            MacroListBox.SelectedItem = MacroListBox.Items.Cast<MacroListEntry>()
+                .FirstOrDefault(e => e.Macro.MacroId == selectedId);
+        UpdateMacroButtonStates();
+    }
+
+    private void UpdateMacroButtonStates()
+    {
+        bool hasSelection = MacroListBox.SelectedItem is MacroListEntry;
+        MacroEditButton.IsEnabled = hasSelection;
+        MacroDeleteButton.IsEnabled = hasSelection;
+        MacroRunButton.IsEnabled = hasSelection && _document is not null
+            && MacroListBox.SelectedItem is MacroListEntry sel
+            && string.Equals(sel.Macro.TargetKeyTypeId, _document.CurrentTab.KeyTypeId, StringComparison.OrdinalIgnoreCase)
+            && sel.Macro.LaneMapping.Count == _document.CurrentTab.Lanes.Count;
+    }
+
+    private void MacroListBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateMacroButtonStates();
+
+    private void MacroListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e) => MacroEditButton_Click(sender, e);
+
+    private void MacroAddButton_Click(object sender, RoutedEventArgs e)
+    {
+        var existingNames = _macros.Select(m => m.MacroName).ToList();
+        var win = new MacroEditorWindow(_templates, null, existingNames) { Owner = this };
+        if (win.ShowDialog() != true || win.SavedMacro is null) return;
+        _macros.Add(win.SavedMacro);
+        SaveMacros();
+        RefreshMacroList();
+    }
+
+    private void MacroEditButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (MacroListBox.SelectedItem is not MacroListEntry entry) return;
+        var existingNames = _macros
+            .Where(m => m.MacroId != entry.Macro.MacroId)
+            .Select(m => m.MacroName).ToList();
+        var win = new MacroEditorWindow(_templates, entry.Macro, existingNames) { Owner = this };
+        if (win.ShowDialog() != true || win.SavedMacro is null) return;
+        int idx = _macros.FindIndex(m => m.MacroId == entry.Macro.MacroId);
+        if (idx >= 0) _macros[idx] = win.SavedMacro;
+        SaveMacros();
+        RefreshMacroList();
+    }
+
+    private void MacroDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (MacroListBox.SelectedItem is not MacroListEntry entry) return;
+        var confirm = MessageBox.Show(this, $"マクロ '{entry.Macro.MacroName}' を削除しますの。よろしいですか？",
+            "マクロ削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+        _macros.RemoveAll(m => m.MacroId == entry.Macro.MacroId);
+        SaveMacros();
+        RefreshMacroList();
+    }
+
+    /// <summary>マクロ実行(仕様書11.1)。現在の難易度タブへ順列を適用する。1操作としてUndo履歴に積む
+    /// (ユーザー確定仕様、2026-07-30)。</summary>
+    private void MacroRunButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || MacroListBox.SelectedItem is not MacroListEntry entry) return;
+        _document.Execute(new ApplyLaneSwapMacroAction(entry.Macro.LaneMapping, entry.Macro.MacroName));
+        StatusText.Text = $"マクロ実行: {entry.Macro.MacroName}";
     }
 
     /// <summary>種類(単色/linear/radial/conic)・方向・色リストから、右パネルの色編集タブの
@@ -2610,44 +2926,82 @@ public partial class MainWindow : Window
 
     /// <summary>キーボードモード中のキー入力処理。処理した(=既存のマウスモード単独キーハンドラへ
     /// 渡してはいけない)場合はtrueを返す。</summary>
+    /// <summary>キーボードモード中、現在位置ライン(PlaybackStartFrame)が画面外に出た場合、
+    /// tick0側(通常表示=画面上部、Reverse表示=画面下部)から1小節分進んだ位置へラインが来るよう
+    /// スクロールする(2026-07-27確定仕様)。既に画面内に収まっている間は何もしない。
+    /// 1小節分の高さはカーソル位置が属する小節の拍子(SignatureAt)を基準に算出する。</summary>
+    private void ScrollKeyboardCursorIntoView()
+    {
+        if (_document is null || _keyboardMode is null) return;
+        double vh = ChartScrollViewer.ViewportHeight;
+        if (vh <= 0) return; // 未レイアウト(初期化直後等)
+
+        var engine = _document.Project.CreateTimingEngine();
+        long tick = _keyboardMode.CursorTick;
+        var layout = _document.CurrentLayout;
+        double lineY = layout.TickToY(tick);
+
+        double off = ChartScrollViewer.VerticalOffset;
+        if (lineY >= off && lineY <= off + vh) return; // 画面内なら何もしない
+
+        double measurePx = engine.SignatureAt(tick).TicksPerMeasure * layout.PxPerTick;
+        bool reverse = _appSettings.ChartViewReverse;
+        double target = reverse ? lineY - vh + measurePx : lineY - measurePx;
+        double max = Math.Max(0, ChartScrollViewer.ScrollableHeight);
+        ChartScrollViewer.ScrollToVerticalOffset(Math.Clamp(target, 0, max));
+    }
+
     private bool HandleKeyboardModeKey(KeyEventArgs e)
     {
         if (_document is null || _keyboardMode is null) return false;
 
+        // 2026-07-26: 進む・戻る系キーはすべて「画面上の見た目方向」基準に統一する(ユーザー確定仕様)。
+        // 通常表示(tick0が上・末尾が下)では従来通り、Reverse表示中は時間方向を全キー反転して
+        // 見た目方向を維持する。対象は↑/↓/Space/B(グリッド移動)、←/→(1小節移動)、
+        // Ctrl+←/→系(2/4小節移動、MainWindow_PreviewKeyDown側)の全部。
+        // - ↑=常に画面上へ、↓=常に画面下へ。
+        // - Space/Bも見た目方向固定(Space=常に画面下へ、B=常に画面上へ。2026-07-25時点の
+        //   通常表示での挙動を見た目基準として固定)。
+        // - DAW風2段階の「戻る」挙動(小節途中→現在の小節頭、小節頭→1つ前の小節頭)は
+        //   「時間的に戻る側のキー」に付随する(通常時=←、Reverse時=→)。
+        bool rev = _appSettings.ChartViewReverse;
         switch (e.Key)
         {
-            // 2026-07-25: ↑/↓は「Left(上に1小節)/Right(下に1小節)」と同じく画面上の見た目方向に
-            // 揃える(tick0が上・末尾が下というTickToYの既定並びが基準。Reverse表示中も含め方向は
-            // 固定)。Space/Bは本家danoni系エディタの慣習(Space=前進、B=後退)としてtick前後方向
-            // そのものを表すため、この2キーは変更しない(以前は↑/Space、↓/Bを同じ扱いにしていたが、
-            // それだと↑キーがtick前進=画面下方向に動いてしまい、上矢印の見た目と逆になっていた)。
-            case Key.Up:
-                _keyboardMode.MoveCursor(forward: false);
+            case Key.Up: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
+                _keyboardMode.MoveCursor(forward: rev);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
-            case Key.Space:
-                _keyboardMode.MoveCursor(forward: true);
+            case Key.Space: // 画面下へ1グリッド(通常=進む、Reverse=戻る)
+                _keyboardMode.MoveCursor(forward: !rev);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
-            case Key.Down:
-                _keyboardMode.MoveCursor(forward: true);
+            case Key.Down: // 画面下へ1グリッド(通常=進む、Reverse=戻る)
+                _keyboardMode.MoveCursor(forward: !rev);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
-            case Key.B:
-                _keyboardMode.MoveCursor(forward: false);
+            case Key.B: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
+                _keyboardMode.MoveCursor(forward: rev);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
-            case Key.Left: // 2026-07-22: 上に1小節移動(修飾なし)。小節途中なら現在の小節頭へ、既に小節頭なら1つ前の小節頭へ
-                _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+            case Key.Left: // 2026-07-22: 画面上へ1小節移動(修飾なし)。通常=戻る(2段階挙動)、Reverse=進む
+                if (rev) _keyboardMode.MoveCursorByMeasure(1);
+                else _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
-            case Key.Right: // 2026-07-21: 下に1小節移動(修飾なし)
-                _keyboardMode.MoveCursorByMeasure(1);
+            case Key.Right: // 2026-07-21: 画面下へ1小節移動(修飾なし)。通常=進む、Reverse=戻る(2段階挙動)
+                if (rev) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                else _keyboardMode.MoveCursorByMeasure(1);
+                ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
                 return true;
@@ -2667,7 +3021,12 @@ public partial class MainWindow : Window
             bool changed = shift
                 ? _keyboardMode.ToggleFreezeAtCursor(lane, DateTime.UtcNow)
                 : _keyboardMode.ToggleNoteAtCursor(lane, DateTime.UtcNow);
-            if (changed) Canvas.InvalidateVisual();
+            if (changed)
+            {
+                // 2026-07-27: ノート/フリーズ入力でカーソルが進んだ場合も画面外に出うるためスクロール判定
+                ScrollKeyboardCursorIntoView();
+                Canvas.InvalidateVisual();
+            }
             e.Handled = true;
             return true;
         }
@@ -2806,6 +3165,43 @@ public partial class MainWindow : Window
         _audioPlayer.SpeedRatio = v; // 目視テスト側。プレイテスト側はStartPlaytest時に都度渡す
     }
 
+    /// <summary>音量(0〜100%)を確定させる共通処理(2026-07-27)。スライダー・数値入力欄どちらの
+    /// 変更でも呼ばれ、もう片方への反映・MediaPlayer.Volumeへの適用・設定保存をまとめて行う。</summary>
+    private void ApplyVolumePercent(double percent)
+    {
+        percent = Math.Clamp(percent, 0, 100);
+        _suppressVolumeEvents = true;
+        VolumeSlider.Value = percent;
+        VolumeBox.Text = Math.Round(percent).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _suppressVolumeEvents = false;
+
+        double volume = percent / 100.0;
+        _audioPlayer.Volume = volume;
+        _appSettings.PlaybackVolume = volume;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>スライダー操作: 動かすたびに数値入力欄・実際の音量へ即時反映する。</summary>
+    private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_initialized || _suppressVolumeEvents) return;
+        ApplyVolumePercent(e.NewValue);
+    }
+
+    /// <summary>数値入力欄での直接入力を確定する(フォーカスを外した時点で反映)。
+    /// 不正な値ならスライダーの現在値へ戻す。</summary>
+    private void VolumeBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _suppressVolumeEvents) return;
+        if (!double.TryParse(VolumeBox.Text, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v))
+        {
+            VolumeBox.Text = Math.Round(VolumeSlider.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return;
+        }
+        ApplyVolumePercent(v);
+    }
+
     private void PlaytestOffset_LostFocus(object sender, RoutedEventArgs e)
     {
         if (!_initialized) return;
@@ -2891,7 +3287,8 @@ public partial class MainWindow : Window
             _appSettings.PlaytestQuitKeyDelete,
             _appSettings.PlaytestQuitKeyBackSpace,
             _appSettings.PlaytestQuitKeyEscape,
-            _appSettings.PlaybackSpeed)
+            _appSettings.PlaybackSpeed,
+            _appSettings.PlaybackVolume) // 2026-07-21: UIの音量設定をプレイテストにも反映
         { Owner = this };
         win.ShowDialog();
 

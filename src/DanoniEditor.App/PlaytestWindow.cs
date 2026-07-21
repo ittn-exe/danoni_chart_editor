@@ -60,6 +60,7 @@ internal sealed class PlaytestWindow : Window
     private readonly bool _quitKeyBackSpace;
     private readonly bool _quitKeyEscape;
     private readonly double _playbackSpeed;
+    private readonly double _volume;
     private double _currentFrame;
 
     // --- スクロール速度・ステップゾーン位置(2026-07-20、danoniplus本体 js/danoni_main.js準拠) ---
@@ -94,7 +95,7 @@ internal sealed class PlaytestWindow : Window
     private readonly PlaySurface _surface;
 
     public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0, bool autoPlay = false,
-        bool quitKeyDelete = true, bool quitKeyBackSpace = true, bool quitKeyEscape = true, double playbackSpeed = 1.0)
+        bool quitKeyDelete = true, bool quitKeyBackSpace = true, bool quitKeyEscape = true, double playbackSpeed = 1.0, double volume = 1.0)
     {
         _doc = doc;
         _template = doc.CurrentTemplate;
@@ -106,6 +107,7 @@ internal sealed class PlaytestWindow : Window
         _quitKeyBackSpace = quitKeyBackSpace;
         _quitKeyEscape = quitKeyEscape;
         _playbackSpeed = Math.Clamp(playbackSpeed, 0.1, 2.0); // 2026-07-23: 再生速度スライダー
+        _volume = Math.Clamp(volume, 0.0, 1.0); // 2026-07-21: UIの音量設定をプレイテストにも反映
         // 幅: playingWidthヘッダー指定 > 本家autoSpread準拠のキー種別自動決定(2026-07-17h)
         _playingWidth = HeaderDouble("playingWidth", AutoSpreadWidth(_template.KeyTypeId));
         _playingHeight = HeaderDouble("playingHeight", 500);
@@ -248,6 +250,7 @@ internal sealed class PlaytestWindow : Window
         _player.Open(new Uri(path, UriKind.Absolute));
         _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
         _player.SpeedRatio = _playbackSpeed; // 2026-07-23: 再生速度スライダー(ピッチ補正は行わない)
+        _player.Volume = _volume; // 2026-07-21: UIの音量設定をプレイテストにも反映
         _player.Play();
         _timer.Start();
     }

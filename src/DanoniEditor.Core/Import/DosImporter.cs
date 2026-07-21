@@ -187,6 +187,7 @@ public sealed class DosImporter
         long[] musicalGrids = [1680, 840, 560, 420, 336, 280, 240, 210, 168, 140, 120, 105]; // 4,8,12,16,20,24,28,32,40,48,56,64分
         double maxErr = 0;
         int offGridCount = 0;
+        double lastSnapErr = 0; // 直近のSnap呼び出しの誤差(2026-07-26、オブジェクト単位のアノテーション用)
         long Snap(double frame)
         {
             // 2026-07-19f: dos.txtのフレーム値は「内部フレーム+blankFrame」(エクスポート側と対称)。
@@ -204,8 +205,19 @@ public sealed class DosImporter
             }
             double err = Math.Abs(frame - engine.TickToFrame(tick));
             maxErr = Math.Max(maxErr, err);
+            lastSnapErr = err;
             if (err > 0.6) offGridCount++;
             return tick;
+        }
+
+        // 2026-07-26: グリッドから0.6F以上ずれて丸められたオブジェクトへ、集約警告ダイアログと同趣旨の
+        // 文言のコメント+警告フラグを個別に付与する(どのノートが丸められたか後から確認できるように)。
+        static void AnnotateOffGrid(LaneNotes lane, long tick, double err)
+        {
+            if (err <= 0.6) return;
+            lane.Annotations.Add(new NoteAnnotation(tick,
+                $"グリッドから0.6F以上ずれた位置を最近傍tickへ丸めました(誤差{err:F2}F)。" +
+                "BPM/StartNumber設定が実際と異なる可能性があります", Warning: true));
         }
 
         // --- 各タブのデータ読み込み ---
@@ -222,14 +234,25 @@ public sealed class DosImporter
                 var lane = template.Lanes[j];
                 if (p.TryGetValue($"{lane.DataName}{suffix}_data", out var nd) && nd.Length > 0)
                     foreach (var f in DosParamParser.ParseNumberList(nd))
-                        tab.Lanes[j].Notes.Add(Snap(f));
+                    {
+                        long t = Snap(f);
+                        tab.Lanes[j].Notes.Add(t);
+                        AnnotateOffGrid(tab.Lanes[j], t, lastSnapErr);
+                    }
 
                 var frzName = lane.FrzDataNameOverride ?? FrzNameResolver.Resolve(lane.DataName);
                 if (p.TryGetValue($"{frzName}{suffix}_data", out var fd) && fd.Length > 0)
                 {
                     var vals = DosParamParser.ParseNumberList(fd);
                     for (int k = 0; k + 1 < vals.Length; k += 2)
-                        tab.Lanes[j].Freezes.Add(new FreezeNote(Snap(vals[k]), Snap(vals[k + 1])));
+                    {
+                        long s = Snap(vals[k]);
+                        double sErr = lastSnapErr;
+                        long e = Snap(vals[k + 1]);
+                        tab.Lanes[j].Freezes.Add(new FreezeNote(s, e));
+                        // フリーズはStartTickで同定(始点・終点いずれかの丸めで警告、大きい方の誤差を記録)
+                        AnnotateOffGrid(tab.Lanes[j], s, Math.Max(sErr, lastSnapErr));
+                    }
                     if (vals.Length % 2 == 1)
                         warnings.Add($"{frzName}{suffix}_data: 値が奇数個のため末尾を無視しました");
                 }
@@ -462,9 +485,9 @@ public sealed class DosImporter
             {
                 string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, colorGroup);
                 var (normalDefault, barDefault) =
-                    ColorDefaults.ResolveFrzColorsHex(tab, project, colorGroup, arrowDefault);
+                    ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault);
                 var (hitDefault, hitBarDefault) =
-                    ColorDefaults.ResolveFrzHitColorsHex(tab, project, colorGroup, normalDefault, barDefault);
+                    ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault);
                 string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, colorGroup, "frzShadowColor");
 
                 foreach (var f in lane.Freezes)

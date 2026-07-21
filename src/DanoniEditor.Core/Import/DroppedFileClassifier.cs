@@ -9,7 +9,7 @@ public enum DroppedFileKind
 {
     /// <summary>自形式プロジェクトファイル(.json、schemaVersion/project持ち)</summary>
     OwnProject,
-    /// <summary>FUJIエディタファイル(.txt、$frame=を含む)</summary>
+    /// <summary>FUJIエディタファイル(.txt、$セクションキー8種全部揃い。2026-07-26仕様)</summary>
     Fuji,
     /// <summary>SKBエディタファイル(.txt/.json、keyKind/scores/timings持ちのJSON)</summary>
     Skb,
@@ -29,7 +29,9 @@ public enum DroppedFileKind
 /// 中身をスニッフィングして判定する。判定根拠は全て実データ/公式wikiで確認済みの各形式固有マーカー:
 /// - 自形式: JSONで"schemaVersion"+"project"キーを持つ(ProjectSerializerの出力形式)
 /// - SKB: JSONで"keyKind"+"scores"+"timings"キーを持つ(SkbImporterのSkbFile形状)
-/// - FUJI: "$frame="を含む(FujiImporterが必須マーカーとして要求している行)
+/// - FUJI: $セクションキーとして version/template/dospath/option/frame/barcut/score/header の
+///   8つが全部揃っている(2026-07-26確定仕様。従来の「$frame=を含む」単独チェックから変更。
+///   SKBエディタファイルやdos.txtが偶然8つ全部を持つ可能性は理論上あるが、実用上は許容する)
 /// - dos.txt: "|name=value|"形式のパラメータを含む(DosParamParserが読む記法)
 /// - BASE64楽曲JS: "g_musicdata=" 代入を含む(danoniplus wiki dos-h0011-musicUrl記載の
 ///   `function musicInit(){g_musicdata='...'}` 形式。拡張子は.js/.txtいずれもあり得るため中身で判定)
@@ -56,33 +58,51 @@ public static partial class DroppedFileClassifier
 
         if (TryClassifyJson(text, out var jsonKind)) return jsonKind;
 
-        if (text.Contains("$frame=")) return DroppedFileKind.Fuji;
+        if (IsFuji(text)) return DroppedFileKind.Fuji;
 
         if (DosParamRegex().IsMatch(text)) return DroppedFileKind.Dos;
 
         return DroppedFileKind.Unknown;
     }
 
+    /// <summary>FUJIエディタファイル判定(2026-07-26確定仕様)。$で始まる行のセクションキー
+    /// ($key=value形式は=より前、$key単独行はキー全体)を集め、FUJI形式が必ず持つ8キー
+    /// (version/template/dospath/option/frame/barcut/score/header)が全部揃っていればFUJIとみなす。
+    /// キーの切り出し方はFujiImporterのセクション分解と同一ロジック。</summary>
+    private static bool IsFuji(string text)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            if (!line.StartsWith('$')) continue;
+            var eq = line.IndexOf('=');
+            keys.Add(eq > 0 ? line[1..eq] : line[1..]);
+        }
+        string[] required = ["version", "template", "dospath", "option", "frame", "barcut", "score", "header"];
+        return required.All(keys.Contains);
+    }
+
     /// <summary>バイト列を妥当なテキストとしてデコードできるか判定する(音楽ファイル本体等の
-    /// バイナリを誤ってテキスト判定しないためのガード)。不正なUTF-8シーケンス、または
-    /// 制御文字の混入率が高いものはバイナリ扱いにしてfalseを返す。</summary>
+    /// バイナリを誤ってテキスト判定しないためのガード)。
+    /// 2026-07-26: 従来は不正なUTF-8シーケンスで即バイナリ扱いにしていたが、FUJIエディタ等の
+    /// Shift-JIS保存ファイルが全滅する(D&DのFUJI識別が100%失敗していた根本原因)ため、
+    /// 置換文字(U+FFFD)フォールバック付きで寛容にデコードする。判定に使うマーカー類はすべて
+    /// ASCIIなので、日本語部分が化けても識別には影響しない。バイナリ除外は
+    /// 「制御文字+置換文字の混入率」で行う(バイナリはこれらが大量に発生する)。</summary>
     private static bool TryDecodeText(byte[] bytes, out string text)
     {
         text = "";
         if (bytes.Length == 0) return false;
 
-        try
-        {
-            text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
-                .GetString(StripBom(bytes));
-        }
-        catch (DecoderFallbackException)
-        {
-            return false;
-        }
+        text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false)
+            .GetString(StripBom(bytes));
+        if (text.Length == 0) return false;
 
-        int control = text.Count(c => c < 0x20 && c is not ('\t' or '\n' or '\r'));
-        return control <= text.Length / 100 + 1;
+        int suspicious = text.Count(c => c == '�' || (c < 0x20 && c is not ('\t' or '\n' or '\r')));
+        // Shift-JISの日本語はUTF-8として読むと2バイト中1〜2文字が置換文字になりうるため、
+        // 閾値は緩め(30%)にする。真のバイナリ(音声等)は50%超になるのが通例。
+        return suspicious <= text.Length * 3 / 10 + 1;
     }
 
     private static byte[] StripBom(byte[] bytes) =>

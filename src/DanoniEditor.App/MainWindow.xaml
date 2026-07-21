@@ -9,6 +9,11 @@
             <MenuItem Header="ファイル(_F)">
                 <MenuItem Header="新規プロジェクト(_N)" Click="NewProject_Click"/>
                 <MenuItem Header="開く(_O)..." Click="OpenProject_Click"/>
+                <!-- 2026-07-28: 最近開いたファイル(ITTNエディタ形式)。項目はSubmenuOpened時に動的構築。
+                     ダミー子項目は「▶」矢印を出すためのプレースホルダ(空だとWPFが子持ちメニューと認識せず開かない)。 -->
+                <MenuItem x:Name="RecentFilesMenu" Header="最近開いたファイル(_R)" SubmenuOpened="RecentFilesMenu_SubmenuOpened">
+                    <MenuItem Header="(履歴なし)"/>
+                </MenuItem>
                 <MenuItem Header="上書き保存(_S)" InputGestureText="Ctrl+S" Click="SaveProject_Click"/>
                 <Separator/>
                 <MenuItem Header="dos.txtをエクスポート(_E)..." InputGestureText="Ctrl+E" Click="ExportDos_Click"/>
@@ -61,6 +66,13 @@
                          Space(目視テスト開始/終了)・Ctrl+Space(現在位置で終了)のキー操作に一本化する。 -->
                     <TextBlock Text="[Space]目視テスト" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="Gray"/>
                     <TextBlock x:Name="AudioTimeText" Text="-" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <!-- 2026-07-27: 音量設定(スライダー+数値入力欄、相互同期)。値はAppSettingsに永続化 -->
+                    <TextBlock Text="音量:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                    <Slider x:Name="VolumeSlider" Width="90" Minimum="0" Maximum="100" VerticalAlignment="Center"
+                            Margin="0,0,4,0" ValueChanged="VolumeSlider_ValueChanged"/>
+                    <TextBox x:Name="VolumeBox" Width="36" VerticalAlignment="Center" Margin="0,0,2,0"
+                             LostFocus="VolumeBox_LostFocus"/>
+                    <TextBlock Text="%" VerticalAlignment="Center" Margin="0,0,16,0"/>
                     <!-- 2026-07-17g: プレイテスト(Ctrl+P)用設定。値はAppSettingsに永続化 -->
                     <TextBlock Text="プレーテスト:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <CheckBox x:Name="PlaytestReverseCheck" Content="Reverse" VerticalAlignment="Center" Margin="0,0,8,0"
@@ -134,7 +146,12 @@
                             <TextBox x:Name="BlankFrameBox" LostFocus="ProjectNumericField_LostFocus"/>
 
                             <TextBlock Text="musicURL" Margin="0,8,0,2"/>
-                            <TextBox x:Name="MusicUrlBox" TextChanged="ProjectStringField_Changed"/>
+                            <DockPanel LastChildFill="True">
+                                <!-- 2026-07-27: musicURLからの楽曲取得(環境設定でON時のみ有効)。機能OFF時・読込済み時はグレーアウト -->
+                                <Button x:Name="MusicUrlLoadButton" DockPanel.Dock="Right" Content="読込" Width="50" Margin="4,0,0,0"
+                                        Click="MusicUrlLoadButton_Click" IsEnabled="False"/>
+                                <TextBox x:Name="MusicUrlBox" TextChanged="ProjectStringField_Changed"/>
+                            </DockPanel>
 
                             <TextBlock Text="tuning" Margin="0,8,0,2"/>
                             <TextBox x:Name="TuningBox" TextChanged="ProjectStringField_Changed"/>
@@ -200,6 +217,10 @@
                                 <TextBlock x:Name="ObjectCommentLabel" Text="Comment" Margin="0,8,0,2" Visibility="Collapsed"/>
                                 <TextBox x:Name="ObjectCommentBox" AcceptsReturn="True" Height="60" TextWrapping="Wrap"
                                          ScrollViewer.VerticalScrollBarVisibility="Auto" LostFocus="ObjectComment_LostFocus" Visibility="Collapsed"/>
+
+                                <!-- 2026-07-26: ノート/フリーズの警告フラグ(インポート時丸め処理等でON。手動でOFFにするまで残る) -->
+                                <CheckBox x:Name="ObjectWarningCheck" Content="警告(譜面ビューに警告アイコンを表示)" Margin="0,8,0,0" Visibility="Collapsed"
+                                          Checked="ObjectWarning_Changed" Unchecked="ObjectWarning_Changed"/>
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
@@ -305,6 +326,24 @@
                             <Separator Margin="0,4,0,8"/>
                             <Button x:Name="NColorClearAllButton" Content="ncolor_dataを全て削除" Click="NColorClearAllButton_Click" Foreground="DarkRed"/>
                             <TextBlock Text="現在の難易度タブの色指定(ncolor_data)を全て削除します(Ctrl+Zで戻せます)。"
+                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem x:Name="MacroTabItem" Header="マクロ">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="レーン入替マクロ(仕様書11章)。一覧には現在の難易度タブのキー種に対応するマクロのみ表示されます(タブを切り替えると一覧も切り替わります)。"
+                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
+                            <ListBox x:Name="MacroListBox" Height="220" SelectionChanged="MacroListBox_SelectionChanged"
+                                     MouseDoubleClick="MacroListBox_MouseDoubleClick"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button x:Name="MacroAddButton" Content="追加" Width="60" Click="MacroAddButton_Click"/>
+                                <Button x:Name="MacroEditButton" Content="編集" Width="60" Margin="4,0,0,0" IsEnabled="False" Click="MacroEditButton_Click"/>
+                                <Button x:Name="MacroDeleteButton" Content="削除" Width="60" Margin="4,0,0,0" IsEnabled="False" Click="MacroDeleteButton_Click"/>
+                            </StackPanel>
+                            <Button x:Name="MacroRunButton" Content="実行(現在の難易度タブに適用)" Margin="0,8,0,0" IsEnabled="False" Click="MacroRunButton_Click"/>
+                            <TextBlock Text="実行すると、現在の難易度タブの全レーンのノート配置(ノート・フリーズ・ncolor_data・コメント/警告)が、マクロの並び替え内容に従って一括で入れ替わります。レーンの定義(キー割り当て等)自体は変わりません。1操作としてUndo(Ctrl+Z)できます。"
                                        TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ScrollViewer>

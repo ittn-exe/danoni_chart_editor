@@ -173,9 +173,9 @@ public sealed class DosExporter
                     if (data.Freezes.Count > 0)
                     {
                         var (normalDefault, barDefault) =
-                            ColorDefaults.ResolveFrzColorsHex(tab, project, lane.ColorGroup, arrowDefault);
+                            ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault);
                         var (hitDefault, hitBarDefault) =
-                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, lane.ColorGroup, normalDefault, barDefault);
+                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault);
                         string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "frzShadowColor");
                         var freezeStartTicks = data.Freezes.Select(f => f.StartTick);
                         ScanTrack(freezeStartTicks, normalDefault, "Normal", e => e.Color);

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DanoniEditor.Core.Timing;
 
 namespace DanoniEditor.Core.Models;
@@ -59,6 +60,14 @@ public sealed class DifficultyTab
     public string KeyTypeId { get; set; } = "5";
     public double InitialSpeed { get; set; } = 3.5;
 
+    /// <summary>難易度タブ見出し表示用の算出プロパティ(2026-07-21要望)。
+    /// 「キー種k - 難易度名」形式(例: "5k - Normal"、"11Lk - Hard")。
+    /// 難易度名が未設定(空白含む)の場合は"(newdiff)"を表示する。
+    /// プロジェクトファイルには永続化しない(タブ見出し表示専用の派生値のため[JsonIgnore])。</summary>
+    [JsonIgnore]
+    public string DisplayLabel =>
+        $"{KeyTypeId}k - {(string.IsNullOrWhiteSpace(DifficultyName) ? "(newdiff)" : DifficultyName)}";
+
     /// <summary>difDataの4フィールド目以降(ゲージ設定等)をそのまま保持(例: "0,2,25,50")</summary>
     public string? DifDataExtra { get; set; }
 
@@ -104,7 +113,19 @@ public sealed class LaneNotes
     /// フリーズはFreezes中のStartTickで同定する(1レーン内でtickが重複することは無い前提)。
     /// ノート移動・削除の際はこのリストのエントリも追随させる必要がある(EditActions.cs参照)。</summary>
     public List<NColorEntry> ColorOverrides { get; set; } = [];
+
+    /// <summary>ノート/フリーズのコメント・警告フラグ(2026-07-26、ユーザー確定仕様)。同定方法は
+    /// ColorOverridesと同じ(通常ノート=tick、フリーズ=StartTick)。インポート時に丸め処理等を行った
+    /// オブジェクトへ、エラーダイアログと同じ文言のコメント+警告ON(Warning=true)を記録する。
+    /// 警告は編集操作では自動クリアせず、ユーザーがプロパティパネルで手動OFFするまで残す
+    /// (保存・再読込でも維持=シリアライズ対象)。移動・削除の際はColorOverrides同様に追随させる
+    /// (EditActions.cs参照)。譜面ビューではWarning=trueのオブジェクトに警告アイコンを重ね描きする。</summary>
+    public List<NoteAnnotation> Annotations { get; set; } = [];
 }
+
+/// <summary>ノート/フリーズ1件分のコメント・警告(2026-07-26)。Comment=""かつWarning=falseの
+/// エントリはリストから削除してよい(空エントリを残さない規約)。</summary>
+public sealed record NoteAnnotation(long Tick, string Comment, bool Warning);
 
 public sealed record FreezeNote(long StartTick, long EndTick);
 

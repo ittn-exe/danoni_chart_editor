@@ -1,6 +1,7 @@
 <Application x:Class="DanoniEditor.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="MainWindow.xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 2026-07-28: StartupUriを廃止し、App.xaml.csのOnStartupでスプラッシュウィンドウ経由で
+         MainWindowを起動する(起動処理の各段階をプログレスバー+テキストで見せるため)。 -->
     <Application.Resources />
 </Application>

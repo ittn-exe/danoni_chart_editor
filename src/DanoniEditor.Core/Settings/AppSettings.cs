@@ -94,6 +94,10 @@ public sealed class AppSettings
     /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>
     public double PlaybackSpeed { get; set; } = 1.0;
 
+    /// <summary>音楽再生時の音量(2026-07-27)。0.0〜1.0(MediaPlayer.Volumeへそのまま渡す)。
+    /// 上部パネルのスライダー+数値入力欄(0〜100%表示)で変更する。</summary>
+    public double PlaybackVolume { get; set; } = 1.0;
+
     // =====================================================================
     // 新規プロジェクトのheaderデフォルト(仕様書6.4.1/14章 headerDefaults、2026-07-19b)。
     // 「個人の制作スタイルで固定したい」項目のデフォルト上書き。musicURLは対象外(常に都度入力)。
@@ -124,6 +128,37 @@ public sealed class AppSettings
 
     /// <summary>未保存の変更があるままエディタを閉じる時に確認ダイアログを出すか(未解決事項§2-6)</summary>
     public bool ConfirmUnsavedOnClose { get; set; } = true;
+
+    // =====================================================================
+    // 最近開いたファイル(2026-07-28、ファイル>最近開いたファイル)
+    // =====================================================================
+
+    /// <summary>最近開いた(自形式)プロジェクトファイルの絶対パス一覧(新しい順)。
+    /// RecentFilesLimit件を超える分はAddRecentFile側で切り詰める。</summary>
+    public List<string> RecentFiles { get; set; } = [];
+
+    /// <summary>「最近開いたファイル」の保持件数上限(既定10件、環境設定で変更可)。</summary>
+    public int RecentFilesLimit { get; set; } = 10;
+
+    /// <summary>最近開いたファイル一覧の先頭へpathを追加する(既存の同一パスは重複排除して先頭へ移動、
+    /// 大文字小文字を区別しないパス比較。フルパス化してから比較・格納する)。RecentFilesLimitを
+    /// 超えた分は切り詰める。呼び出し元でSave()すること。</summary>
+    public void AddRecentFile(string path)
+    {
+        var full = Path.GetFullPath(path);
+        RecentFiles.RemoveAll(p => string.Equals(Path.GetFullPath(p), full, StringComparison.OrdinalIgnoreCase));
+        RecentFiles.Insert(0, full);
+        int limit = Math.Max(1, RecentFilesLimit);
+        if (RecentFiles.Count > limit) RecentFiles.RemoveRange(limit, RecentFiles.Count - limit);
+    }
+
+    /// <summary>存在しなくなったパスを一覧から取り除く(メニュー表示直前の整理用)。変化があればtrue。</summary>
+    public bool PruneMissingRecentFiles()
+    {
+        int before = RecentFiles.Count;
+        RecentFiles.RemoveAll(p => !File.Exists(p));
+        return RecentFiles.Count != before;
+    }
 
     // =====================================================================
     // SKB操作モード(キーボード操作、2026-07-21確定仕様)
@@ -162,6 +197,19 @@ public sealed class AppSettings
     public int MarkerCommentHeadChars { get; set; } = 4;
 
     // =====================================================================
+    // musicURLからの楽曲取得(2026-07-27確定仕様)。指定フォルダをカレントディレクトリとして扱い、
+    // その中からProject.MusicUrlで指定されたファイル名の楽曲を読み込めるようにする機能。
+    // 既定OFF(意図しない自動読込・意図しないフォルダ露出を避けるため)。
+    // =====================================================================
+
+    /// <summary>musicURLからの楽曲自動取得機能をONにするか(既定false)</summary>
+    public bool MusicUrlAutoLoadEnabled { get; set; } = false;
+
+    /// <summary>musicURL取得のカレントディレクトリとして扱うフォルダ(絶対パス)。
+    /// MusicUrlAutoLoadEnabled=trueの間のみ使用する。</summary>
+    public string MusicUrlBaseFolder { get; set; } = "";
+
+    // =====================================================================
     // 色履歴(仕様書6.4.2/14章 colorHistory、2026-07-19b)
     // ※履歴の記録・呼び出しUI(カラーピッカー連携)は今後の実装。上限と保存領域を先に用意する。
     // =====================================================================
@@ -172,11 +220,15 @@ public sealed class AppSettings
     /// <summary>色コード使用履歴(新しい順)</summary>
     public List<string> ColorHistory { get; set; } = [];
 
-    /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistoryのみ参照型のため個別に複製する</summary>
+    // 2026-07-30: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した
+    // swap_macro.json(同じ./settingsフォルダ内)で管理する。LaneSwapMacroFile.Load/Save参照。
+
+    /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistory/RecentFilesは参照型のため個別に複製する</summary>
     public AppSettings Clone()
     {
         var c = (AppSettings)MemberwiseClone();
         c.ColorHistory = [.. ColorHistory];
+        c.RecentFiles = [.. RecentFiles];
         return c;
     }
 

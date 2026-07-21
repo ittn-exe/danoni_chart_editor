@@ -47,9 +47,10 @@ public sealed class KeyboardModeController
         _doc.NotifyChanged(markModified: false);
     }
 
-    /// <summary>カーソルを1グリッド分移動する(2026-07-25: Space=forward:true、B=forward:false、
-    /// ↑=forward:false、↓=forward:true。↑/↓はLeft/Rightと同じく画面上の見た目方向(tick0が上・
-    /// 末尾が下という既定並び)に合わせるためSpace/Bとは逆になる。呼び出し元(MainWindow)参照)。
+    /// <summary>カーソルを1グリッド分移動する(forward=trueで時間前進)。
+    /// 2026-07-26: キー→時間方向のマッピングは呼び出し元(MainWindow)が譜面ビューのReverse設定を
+    /// 参照して「画面上の見た目方向」基準で決定する(通常表示: ↑/B=forward:false、↓/Space=forward:true、
+    /// Reverse表示: 全キー反転)。本メソッド自体は時間方向のみを扱いReverseを関知しない。
     /// ユーザーによる明示的な移動のため、同時押し判定の直前入力記録はリセットする。</summary>
     public void MoveCursor(bool forward)
     {

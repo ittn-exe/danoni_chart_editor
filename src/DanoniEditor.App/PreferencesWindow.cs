@@ -1,8 +1,11 @@
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Settings;
+using Microsoft.Win32;
 
 namespace DanoniEditor.App;
 
@@ -65,6 +68,7 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _undoSize = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly CheckBox _confirmUnsaved = new() { Content = "未保存の変更がある時、終了前に確認する" };
     private readonly TextBox _colorHistLimit = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _recentFilesLimit = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 譜面ビューReverse(2026-07-22、環境設定のみで切替) ---
     private readonly CheckBox _chartViewReverse = new() { Content = "譜面ビューをReverse表示する(tick0を下端・末尾を上端にする)" };
@@ -75,6 +79,11 @@ internal sealed class PreferencesWindow : Window
     // --- グリッド分解能ショートカット(Ctrl+1〜9,0,-,^、2026-07-26) ---
     private readonly ComboBox _gridShortcutPreset = new() { Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
 
+    // --- musicURLからの楽曲取得(2026-07-27) ---
+    private readonly CheckBox _musicUrlEnabled = new() { Content = "musicURLから楽曲を取得できるようにする" };
+    private readonly TextBox _musicUrlFolder = new() { Width = 300, HorizontalAlignment = HorizontalAlignment.Left, IsReadOnly = true };
+    private readonly Button _musicUrlBrowse = new() { Content = "参照...", Width = 70, Margin = new Thickness(4, 0, 0, 0) };
+
     // --- 全選択(Shift+Ctrl+A)の対象(2026-07-21) ---
     private readonly CheckBox _selAllNote = new() { Content = "ノート" };
     private readonly CheckBox _selAllFreeze = new() { Content = "フリーズアロー" };
@@ -84,11 +93,18 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _selAllTimeSig = new() { Content = "拍子変化" };
     private readonly CheckBox _selAllMarker = new() { Content = "マーカー" };
 
+    // --- テンプレート(temp_*.json、2026-07-29) ---
+    private readonly ListBox _templateList = new() { Margin = new Thickness(0, 0, 0, 8), Height = 260 };
+    private readonly Button _templateEditButton = new() { Content = "編集", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsEnabled = false };
+    private readonly Button _templateNewButton = new() { Content = "新規作成", Width = 90 };
+    private readonly TemplateRepository? _templates;
+
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
 
-    public PreferencesWindow(AppSettings current, int initialCategory = 0)
+    public PreferencesWindow(AppSettings current, int initialCategory = 0, TemplateRepository? templates = null)
     {
         _work = current.Clone();
+        _templates = templates;
 
         Title = "環境設定";
         Width = 560;
@@ -105,8 +121,10 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("新規プロジェクト");
         categories.Items.Add("編集・保存");
         categories.Items.Add("キーボードモード");
+        categories.Items.Add("musicURL取得");
+        categories.Items.Add("テンプレート");
 
-        var panels = new[] { BuildDisplayPanel(), BuildVisualTestPanel(), BuildPlaytestPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildVisualTestPanel(), BuildPlaytestPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -341,6 +359,17 @@ internal sealed class PreferencesWindow : Window
             Margin = new Thickness(0, 4, 0, 0),
         });
 
+        p.Children.Add(Label("最近開いたファイル(2026-07-28)", section: true));
+        p.Children.Add(Label("履歴の保持件数(デフォルト10):"));
+        p.Children.Add(_recentFilesLimit);
+        p.Children.Add(new TextBlock
+        {
+            Text = "ファイル > 最近開いたファイルに表示する件数の上限ですわ。減らすと超過分は次回保存時に切り詰められますの。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+
         p.Children.Add(Label("全選択(Shift+Ctrl+A)の対象", section: true));
         foreach (var cb in new[] { _selAllNote, _selAllFreeze, _selAllSpeed, _selAllBoost, _selAllBpm, _selAllTimeSig, _selAllMarker })
             cb.Margin = new Thickness(0, 0, 0, 2);
@@ -396,6 +425,106 @@ internal sealed class PreferencesWindow : Window
         return p;
     }
 
+    private UIElement BuildMusicUrlPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("musicURLからの楽曲取得(2026-07-27)", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "ONにすると、下記フォルダを「カレントディレクトリ」として扱い、プロジェクトのmusicURLで" +
+                   "指定されたファイル名の楽曲をそこから読み込めるようになりますの。①タブのmusicURL欄の横に" +
+                   "「読込」ボタンが現れ、musicURLを編集すると押せるようになりますわ。" +
+                   "musicURL設定済みのプロジェクトファイルを開いた時は自動で読み込みますの。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+        _musicUrlEnabled.Margin = new Thickness(0, 0, 0, 8);
+        _musicUrlEnabled.Checked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = true;
+        _musicUrlEnabled.Unchecked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = false;
+        p.Children.Add(_musicUrlEnabled);
+
+        p.Children.Add(Label("楽曲フォルダ:"));
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left };
+        row.Children.Add(_musicUrlFolder);
+        _musicUrlBrowse.Click += (_, _) =>
+        {
+            var dlg = new OpenFolderDialog { Title = "楽曲フォルダを選択" };
+            if (!string.IsNullOrWhiteSpace(_musicUrlFolder.Text)) dlg.InitialDirectory = _musicUrlFolder.Text;
+            if (dlg.ShowDialog(this) == true) _musicUrlFolder.Text = dlg.FolderName;
+        };
+        row.Children.Add(_musicUrlBrowse);
+        p.Children.Add(row);
+        return p;
+    }
+
+    /// <summary>一覧行の表示用(2026-07-29要望: 「キー種 - ファイル名」形式)</summary>
+    private sealed record TemplateListEntry(string KeyTypeId, string FileName, string Path)
+    {
+        public override string ToString() => $"{KeyTypeId} - {FileName}";
+    }
+
+    private UIElement BuildTemplatePanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("キー種テンプレート(temp_*.json)", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "./templateフォルダのテンプレート一覧ですわ。「編集」で選択中のファイルを、" +
+                   "「新規作成」で新しいキー種テンプレートを専用ウィンドウで作成・編集できますの。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+        p.Children.Add(_templateList);
+        _templateList.SelectionChanged += (_, _) => _templateEditButton.IsEnabled = _templateList.SelectedItem is not null;
+        _templateList.MouseDoubleClick += (_, _) =>
+        {
+            if (_templateList.SelectedItem is TemplateListEntry entry) OpenTemplateEditor(entry.Path);
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        _templateEditButton.Click += (_, _) =>
+        {
+            if (_templateList.SelectedItem is TemplateListEntry entry) OpenTemplateEditor(entry.Path);
+        };
+        _templateNewButton.Click += (_, _) => OpenTemplateEditor(null);
+        row.Children.Add(_templateEditButton);
+        row.Children.Add(_templateNewButton);
+        p.Children.Add(row);
+
+        RefreshTemplateList();
+        return p;
+    }
+
+    private void RefreshTemplateList()
+    {
+        _templateList.Items.Clear();
+        var dir = AppPaths.FindAssetDir("template");
+        if (dir is null) return;
+        foreach (var path in Directory.EnumerateFiles(dir, "temp_*.json").OrderBy(p => System.IO.Path.GetFileName(p), StringComparer.OrdinalIgnoreCase))
+        {
+            string keyTypeId;
+            try { keyTypeId = KeyTemplate.Load(path).KeyTypeId; }
+            catch { keyTypeId = "?"; }
+            _templateList.Items.Add(new TemplateListEntry(keyTypeId, System.IO.Path.GetFileName(path), path));
+        }
+    }
+
+    private void OpenTemplateEditor(string? path)
+    {
+        var dir = AppPaths.FindAssetDir("template");
+        if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+        var win = new TemplateEditorWindow(dir, path) { Owner = this };
+        if (win.ShowDialog() != true) return;
+
+        // 2026-07-29: 実行中のTemplateRepositoryキャッシュを破棄し、次回参照時にディスクの最新内容を
+        // 再読込させる(編集直後にプロジェクトを新規作成/開いても古い内容のままになるのを防ぐ)。
+        if (win.OriginalKeyTypeId is { } oldId) _templates?.Invalidate(oldId);
+        if (win.SavedKeyTypeId is { } newId) _templates?.Invalidate(newId);
+        RefreshTemplateList();
+    }
+
     private void LoadFrom(AppSettings s)
     {
         _showImages.IsChecked = s.ShowNoteImages;
@@ -432,6 +561,7 @@ internal sealed class PreferencesWindow : Window
         _undoSize.Text = s.UndoHistorySize.ToString(CultureInfo.InvariantCulture);
         _confirmUnsaved.IsChecked = s.ConfirmUnsavedOnClose;
         _colorHistLimit.Text = s.ColorHistoryLimit.ToString(CultureInfo.InvariantCulture);
+        _recentFilesLimit.Text = s.RecentFilesLimit.ToString(CultureInfo.InvariantCulture);
         _selAllNote.IsChecked = s.SelectAllTargetNote;
         _selAllFreeze.IsChecked = s.SelectAllTargetFreeze;
         _selAllSpeed.IsChecked = s.SelectAllTargetSpeed;
@@ -441,6 +571,9 @@ internal sealed class PreferencesWindow : Window
         _selAllMarker.IsChecked = s.SelectAllTargetMarker;
         _kbdThreshold.Text = s.SimultaneousPressThresholdMs.ToString(CultureInfo.InvariantCulture);
         _gridShortcutPreset.SelectedIndex = s.GridShortcutPreset == GridShortcutPresets.SkbExtended ? 1 : 0;
+        _musicUrlEnabled.IsChecked = s.MusicUrlAutoLoadEnabled;
+        _musicUrlFolder.Text = s.MusicUrlBaseFolder;
+        _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = s.MusicUrlAutoLoadEnabled;
     }
 
     private bool TryCommit()
@@ -482,8 +615,12 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "Undo履歴件数は1以上の整数で入力してくださいまし"; return false; }
         if (!int.TryParse(_colorHistLimit.Text, out var colorLimit) || colorLimit < 1)
         { _error.Text = "色履歴の上限件数は1以上の整数で入力してくださいまし"; return false; }
+        if (!int.TryParse(_recentFilesLimit.Text, out var recentLimit) || recentLimit < 1)
+        { _error.Text = "最近開いたファイルの保持件数は1以上の整数で入力してくださいまし"; return false; }
         if (!TryPositive(_kbdThreshold.Text, out var kbdThreshold))
         { _error.Text = "同時押し判定の閾値は正の数値で入力してくださいまし"; return false; }
+        if (_musicUrlEnabled.IsChecked == true && string.IsNullOrWhiteSpace(_musicUrlFolder.Text))
+        { _error.Text = "musicURLからの楽曲取得をONにする場合、楽曲フォルダを指定してくださいまし"; return false; }
 
         _work.ShowNoteImages = _showImages.IsChecked == true;
         _work.ShowHighlightGrid = _showGrid.IsChecked == true;
@@ -514,6 +651,8 @@ internal sealed class PreferencesWindow : Window
         _work.UndoHistorySize = undoSize;
         _work.ConfirmUnsavedOnClose = _confirmUnsaved.IsChecked == true;
         _work.ColorHistoryLimit = colorLimit;
+        _work.RecentFilesLimit = recentLimit;
+        if (_work.RecentFiles.Count > recentLimit) _work.RecentFiles.RemoveRange(recentLimit, _work.RecentFiles.Count - recentLimit);
         _work.SelectAllTargetNote = _selAllNote.IsChecked == true;
         _work.SelectAllTargetFreeze = _selAllFreeze.IsChecked == true;
         _work.SelectAllTargetSpeed = _selAllSpeed.IsChecked == true;
@@ -525,6 +664,8 @@ internal sealed class PreferencesWindow : Window
         _work.GridShortcutPreset = _gridShortcutPreset.SelectedIndex == 1
             ? GridShortcutPresets.SkbExtended
             : GridShortcutPresets.Original;
+        _work.MusicUrlAutoLoadEnabled = _musicUrlEnabled.IsChecked == true;
+        _work.MusicUrlBaseFolder = _musicUrlFolder.Text;
         Result = _work;
         return true;
     }
