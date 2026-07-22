@@ -89,6 +89,8 @@ public sealed class DosExporter
         foreach (var (key, value) in project.ExtraHeaders)
             AppendParam(sb, key, value);
 
+        AppendGaugeHeaders(sb, project);
+
         sb.AppendLine();
 
         // --- 譜面本体(タブごと。サフィックス: 先頭=無し、2番目以降=2,3...) ---
@@ -239,4 +241,49 @@ public sealed class DosExporter
 
     private static void AppendParam(StringBuilder sb, string name, string value)
         => sb.AppendLine($"|{name}={value}|");
+
+    /// <summary>customGauge{N}/gaugeXXX{N}の出力(2026-08-01、GaugeEditorWindow)。
+    /// GaugeRawOverrideText(直接入力モード)に空白以外の内容があれば、その内容を
+    /// そのまま出力し、GaugeParams/DifficultyTab.GaugeによるUI組み立てロジックは完全に無視する
+    /// (ユーザー確定仕様: 直接入力が常にUI設定より優先)。</summary>
+    private static void AppendGaugeHeaders(StringBuilder sb, ChartProject project)
+    {
+        if (!string.IsNullOrWhiteSpace(project.GaugeRawOverrideText))
+        {
+            foreach (var rawLine in project.GaugeRawOverrideText.Replace("\r\n", "\n").Split('\n'))
+            {
+                if (rawLine.Length > 0) sb.AppendLine(rawLine);
+            }
+            return;
+        }
+
+        for (int i = 0; i < project.Tabs.Count; i++)
+        {
+            var gauge = project.Tabs[i].Gauge;
+            if (gauge is null) continue;
+            var suffix = i == 0 ? "" : (i + 1).ToString();
+
+            if (!string.IsNullOrEmpty(gauge.InheritKeyword))
+            {
+                AppendParam(sb, $"customGauge{suffix}", gauge.InheritKeyword);
+            }
+            else if (gauge.Entries.Count > 0)
+            {
+                var value = string.Join(",", gauge.Entries.Select(e =>
+                {
+                    var varFlag = e.IsVariable ? "V" : "F";
+                    return string.IsNullOrEmpty(e.DisplayName)
+                        ? $"{e.Name}::{varFlag}"
+                        : $"{e.Name}::{varFlag}::{e.DisplayName}";
+                }));
+                AppendParam(sb, $"customGauge{suffix}", value);
+            }
+        }
+
+        foreach (var (name, paramSet) in project.GaugeParams)
+        {
+            if (paramSet.PerTabCsv.All(string.IsNullOrEmpty)) continue;
+            AppendParam(sb, $"gauge{name}", string.Join("$", paramSet.PerTabCsv));
+        }
+    }
 }

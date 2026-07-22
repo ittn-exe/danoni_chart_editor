@@ -29,6 +29,9 @@ internal sealed class MacroEditorWindow : Window
     private readonly LaneRowPanel _mappedRow = new(draggable: true);
 
     private KeyTemplate? _currentTemplate;
+    private string? _lastConfirmedKeyTypeId; // 2026-07-31: キー種変更確認ダイアログ用(直前に実際に適用されていたキー種)
+    private bool _suppressKeyTypeConfirm; // 初期構築中: SelectionChangedは発火してよいが確認ダイアログは出さない
+    private bool _suppressKeyTypeChangeEntirely; // キャンセル時の選択巻き戻し用: SelectionChangedの処理自体を丸ごとスキップする
 
     /// <summary>保存に成功した場合の結果(呼び出し元がAppSettings.Macrosへ反映する用)</summary>
     public LaneSwapMacro? SavedMacro { get; private set; }
@@ -48,7 +51,7 @@ internal sealed class MacroEditorWindow : Window
         WindowStyle = WindowStyle.ToolWindow;
 
         foreach (var id in templates.ListKeyTypeIds()) _keyTypeCombo.Items.Add(id);
-        _keyTypeCombo.SelectionChanged += (_, _) => LoadTemplateForSelection(resetMapping: true);
+        _keyTypeCombo.SelectionChanged += KeyTypeCombo_SelectionChanged;
 
         var root = new DockPanel();
 
@@ -101,16 +104,51 @@ internal sealed class MacroEditorWindow : Window
 
         Content = root;
 
+        _suppressKeyTypeConfirm = true; // 初期選択時は確認ダイアログを出さない
         if (existing is not null)
         {
             _macroNameBox.Text = existing.MacroName;
-            _keyTypeCombo.SelectedItem = existing.TargetKeyTypeId; // SelectionChangedでresetMapping:trueが一旦走る
+            _keyTypeCombo.SelectedItem = existing.TargetKeyTypeId; // SelectionChangedが一旦走る(確認抑制中)
             LoadTemplateForSelection(resetMapping: false, presetMapping: existing.LaneMapping); // ここで正しい並びに上書き
         }
         else if (_keyTypeCombo.Items.Count > 0)
         {
             _keyTypeCombo.SelectedIndex = 0;
         }
+        _lastConfirmedKeyTypeId = _keyTypeCombo.SelectedItem as string;
+        _suppressKeyTypeConfirm = false;
+    }
+
+    /// <summary>
+    /// 対象キー種コンボの変更ハンドラ(2026-07-31)。変更すると下段プレビューの入れ替え内容が
+    /// 無条件にリセットされてしまう事故を防ぐため、既にレーン構成が読み込まれている状態からの
+    /// 変更時は確認ダイアログを出す。キャンセルした場合は選択を直前のキー種へ戻すが、この巻き戻し
+    /// 自体は「キー種変更」ではなく単なる取り消しなので、_suppressKeyTypeChangeEntirelyを立てて
+    /// LoadTemplateForSelectionすら呼ばないようにする(呼んでしまうと、まだ何も変更していない
+    /// 現在の入れ替え内容をresetMapping:trueで誤ってリセットしてしまうため)。
+    /// </summary>
+    private void KeyTypeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressKeyTypeChangeEntirely) return;
+        if (_suppressKeyTypeConfirm) { LoadTemplateForSelection(resetMapping: true); return; }
+
+        var newKeyTypeId = _keyTypeCombo.SelectedItem as string;
+        if (_currentTemplate is not null && !string.Equals(newKeyTypeId, _lastConfirmedKeyTypeId, StringComparison.Ordinal))
+        {
+            var confirm = MessageBox.Show(this,
+                "対象キー種を変更すると、入れ替え後プレビューの内容がリセットされますの。よろしいですか?",
+                "キー種の変更", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                _suppressKeyTypeChangeEntirely = true;
+                _keyTypeCombo.SelectedItem = _lastConfirmedKeyTypeId;
+                _suppressKeyTypeChangeEntirely = false;
+                return;
+            }
+        }
+
+        LoadTemplateForSelection(resetMapping: true);
+        _lastConfirmedKeyTypeId = newKeyTypeId;
     }
 
     private UIElement BuildLeftPanel()

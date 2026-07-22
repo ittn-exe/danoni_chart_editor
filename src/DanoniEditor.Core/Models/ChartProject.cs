@@ -49,6 +49,21 @@ public sealed class ChartProject
     /// <summary>難易度タブ(並び順=出力順=サフィックス採番順)</summary>
     public List<DifficultyTab> Tabs { get; set; } = [];
 
+    /// <summary>customGauge/gaugeXXX機能(2026-08-01、GaugeEditorWindow)。
+    /// ゲージ名別パラメータ(border/recovery/damage/initLife)はプロジェクト全体で共有し、
+    /// キー=ゲージ名(例: "Original", "Heavy", ユーザー定義名等)。
+    /// 個々のGaugeParamSet.PerTabCsvは「難易度タブ数」分の要素を持ち、各要素は
+    /// "ノルマ(またはx固定),回復,ダメージ,初期ライフ" のCSV文字列(未設定タブは空文字列とし、
+    /// 出力時にgaugeXXXの$結合へそのまま渡す。本体側がgauges[j] || gauges[0]で
+    /// 先頭タブへ自動フォールバックするため、空要素のままで問題ない)。</summary>
+    public Dictionary<string, GaugeParamSet> GaugeParams { get; set; } = [];
+
+    /// <summary>「直接入力モード」(2026-08-01、ユーザー確定仕様)。空でなければ、ゲージ関連ヘッダー
+    /// (customGauge系・gaugeXXX系)の出力はこのテキストの内容(dos.txtにそのまま書き込む前提の
+    /// 生テキスト、複数行可)で完全に置き換えられ、GaugeParams/DifficultyTab.Gaugeによる
+    /// UI構築ロジックは無視される(過去資産からのコピペ用途、プロジェクト全体で1つ)。</summary>
+    public string? GaugeRawOverrideText { get; set; }
+
     public TimingEngine CreateTimingEngine() =>
         new(StartNumber, BpmEvents, TimeSignatures);
 }
@@ -85,6 +100,10 @@ public sealed class DifficultyTab
 
     /// <summary>難易度個別のfrzColor上書き(null=曲共通を使用)</summary>
     public List<string>? FrzColorOverride { get; set; }
+
+    /// <summary>customGauge{N}(仕様dos-h0053、2026-08-01)。null=このタブはゲージ名リストを
+    /// 指定しない(customGauge{N}ヘッダー自体を出力しない=本体の既定ゲージが使われる)。</summary>
+    public GaugeConfig? Gauge { get; set; }
 
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
@@ -149,3 +168,29 @@ public sealed record Marker(long Tick, string Comment);
 /// 通常ノートには存在しない。</summary>
 public sealed record NColorEntry(long Tick, string? Color, string? BandColor, bool AllFlag = false,
     string? ShadowColor = null, string? HitColor = null, string? HitBarColor = null, string? HitShadowColor = null);
+
+/// <summary>難易度タブ1件分のcustomGauge{N}設定(2026-08-01、仕様dos-h0053)。
+/// InheritKeywordが設定されていれば継承キーワード(survival/border/customDefault)そのものを
+/// customGauge{N}の値として出力し、Entriesは無視する。InheritKeywordがnullの場合のみ
+/// Entriesの明示リストを出力する(両方null/空の場合はこのタブのcustomGauge{N}自体を出力しない)。</summary>
+public sealed class GaugeConfig
+{
+    /// <summary>"survival" / "border" / "customDefault" のいずれか、または未使用ならnull</summary>
+    public string? InheritKeyword { get; set; }
+
+    /// <summary>明示的なゲージ名リスト(InheritKeywordがnullの場合のみ使用)</summary>
+    public List<GaugeListEntry> Entries { get; set; } = [];
+}
+
+/// <summary>customGauge{N}の明示リスト1項目分(name::F|V(::displayName)?)。</summary>
+public sealed record GaugeListEntry(string Name, bool IsVariable, string? DisplayName = null);
+
+/// <summary>gauge{ゲージ名}{N}(仕様dos-h0022)。プロジェクト全体でゲージ名ごとに1つ持つ。
+/// PerTabCsvの要素数は難易度タブ数と一致させる想定(GaugeEditorWindow側で維持管理)。</summary>
+public sealed class GaugeParamSet
+{
+    /// <summary>タブごとの"ノルマ(またはx),回復,ダメージ,初期ライフ"のCSV文字列。
+    /// 空文字列のタブは出力時そのまま空セグメントとして$結合し、本体側のgauges[j] || gauges[0]
+    /// フォールバックに委ねる(先頭タブと同じ値が使われる)。</summary>
+    public List<string> PerTabCsv { get; set; } = [];
+}

@@ -31,6 +31,7 @@
             <!-- 2026-07-19: 設定メニュー(環境設定ウィンドウ、仕様書14章) -->
             <MenuItem Header="設定(_S)">
                 <MenuItem Header="環境設定(_P)..." Click="OpenPreferences_Click"/>
+                <MenuItem Header="ゲージ設定(_G)..." Click="OpenGaugeEditor_Click"/>
             </MenuItem>
         </Menu>
         <Border DockPanel.Dock="Top" Height="80" Background="#F0F0F0">

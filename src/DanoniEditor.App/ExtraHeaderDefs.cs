@@ -48,7 +48,8 @@ internal static class ExtraHeaderDefs
         new("customFont", HeaderParamType.Text, "設定時の初期設定"),
         new("displayChainOFF", HeaderParamType.Raw, "設定時の初期設定"),
         new("keyGroupOrder", HeaderParamType.Raw, "設定時の初期設定"),
-        new("customGauge", HeaderParamType.Raw, "設定時の初期設定"),
+        // customGauge/customGauge{N}/gaugeXXX{N}: 2026-08-01よりGaugeEditorWindow(専用ウィンドウ、
+        // 設定メニューから起動)へ移行済み。ここでのRaw型汎用UIからは除外(DosExporter.AppendGaugeHeaders参照)。
         // colorDataType: 廃止機能のためUIには含めない(仕様書6.4.4)
 
         // --- プレイ時の初期設定 ---

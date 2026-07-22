@@ -248,6 +248,19 @@ public partial class MainWindow : Window
     /// <summary>上部パネルの「表示設定...」ボタン(従来動作互換: 表示カテゴリを開く)</summary>
     private void DisplaySettings_Click(object sender, RoutedEventArgs e) => OpenPreferences(0);
 
+    /// <summary>「設定」メニュー→「ゲージ設定...」(2026-08-01、customGauge/gaugeXXX専用ウィンドウ)</summary>
+    private void OpenGaugeEditor_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var win = new GaugeEditorWindow(_document.Project) { Owner = this };
+        if (win.ShowDialog() == true && win.Saved)
+            _document.NotifyChanged();
+    }
+
     private void OpenPreferences(int category)
     {
         var win = new PreferencesWindow(_appSettings, category, _templates) { Owner = this };
@@ -1845,7 +1858,8 @@ public partial class MainWindow : Window
             ObjectMultiSelectText.Text = $"{sel.Count}個のオブジェクトを選択中(複数選択時は個別編集非対応。移動・削除はキャンバス上の操作をご利用くださいませ)";
             ObjectMultiSelectText.Visibility = Visibility.Visible;
             ObjectDetailPanel.Visibility = Visibility.Collapsed;
-            AutoSwitchToObjectTab();
+            // 2026-07-31: 複数選択時は右パネルを自動切替しない(単体オブジェクトクリック時のみ切替える方針)。
+            // 複数選択のたびに③タブへ切り替わるのが煩わしいというフィードバックへの対応。
             return;
         }
 

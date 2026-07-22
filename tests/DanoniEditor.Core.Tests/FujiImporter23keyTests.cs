@@ -124,10 +124,18 @@ public class FujiImporter23keyTests
     }
 
     [Fact]
-    public void FineT_And_FineX_AreFlatThreeFrameShifts()
+    public void FineT_And_FineX_AreAlwaysPlusMinusEightRegardlessOfAlignment()
     {
-        // T=常に+3フレーム、X=常に−3フレーム(2026-07-25新規判明)。
-        // 'E00T'(PP=0xE0=224pp、基準84f) → 87f → 174tick。'D00X'(PP=208pp、基準78f) → 75f → 150tick。
+        // 2026-07-31: ユーザー提供test23key_v2.txt/test23key_v2_dos.txtの実測値(oni_dataの
+        // 通常ノート4点+sright系フリーズ終点2点、計6点)により、旧実装の「固定+3/−3フレーム」説は
+        // 誤りだったと判明。正しくはpp自体に常に+8/−8(=256/32)する式で、実測値と厳密一致した。
+        // 当初はS/Wと同様「32刻みなら+8、それ以外は+0」というアライメント依存式を疑ったが、
+        // これはフリーズ終点tail解析の別バグ(10進dをhexで誤読)と混同した誤った暫定結論であり、
+        // 両バグ修正後に再検証した結果、アライメントに関係なく常に+8/−8が正しいと判明した。
+        // 'E00T'(PP=0xE0、pos=224、224%32==0): adjustedPp=224+8=232 → 87f → 174tick。
+        // 'D00X'(PP=0xD0、pos=208、208%32==16): adjustedPp=208−8=200 → 75f → 150tick
+        //   (アライメントに関わらず常に−8となるため、旧「固定−3」式の75f→150tickと結果的に
+        //   一致するケース)。
         var r = Import("0000:E00T,D00X,");
         var notes = r.Tab.Lanes[LaneIdx("aleft")].Notes;
         Assert.Contains(174 * T, notes);
@@ -140,8 +148,9 @@ public class FujiImporter23keyTests
         // 旧実装はQQQQを無条件に16進として解釈しており、末尾がfine文字(非16進)のトークンは
         // FormatExceptionで例外送出→呼び出し元のtry/catchで「解釈できないトークン」警告に
         // まるごと化けてフリーズが始点・終点とも消えていた(2026-07-25回帰テスト)。
-        // '0800-003T': 始点=pp0/fine0→0f→0tick。終点=残り3桁'003'をd=3とみなしpp=48、
-        // fine='T'→基準18f+3f=21f→42tick。
+        // '0800-003T': 始点=pp0/fine0→0f→0tick。終点pp=始点pp(0)+d(3)×16=48
+        // (2026-07-31: 絶対位置ではなく始点からの長さと訂正)。fine='T'は常に+8のため
+        // 終点pp=48+8=56→21f→42tick。
         var r = Import("0000:0800-003T,");
         var freezes = r.Tab.Lanes[LaneIdx("aleft")].Freezes;
         var f = Assert.Single(freezes);
@@ -151,19 +160,81 @@ public class FujiImporter23keyTests
     }
 
     [Fact]
-    public void FreezeEnd_RSuffixAndSSuffixTail_CurrentlyShareSameGridFormula()
+    public void FreezeEnd_RUsesTwelveGrid_SUsesTwentyFourGrid()
     {
-        // フリーズ終点のRは実例2件のみでR式(12分)/S式(24分)が数値上一致する位置しかなく、
-        // 現状はS式(24分グリッド)を暫定適用している(未確定事項、docs参照)。この挙動を
-        // 固定するための回帰テスト: 'aleft'(digit0)側はS、'left'(digit4)側はRだが、
-        // どちらもpp=48→終点20f→40tickという同一結果になることを確認する。
+        // 2026-07-31: ユーザー提供の公式フォーマット文書で「E(終点)はC(位置/始点)と同一体系」と
+        // 明記されたため、終点のRも位置・始点と同じ12分グリッド式を使うと確定した(旧実装は
+        // 実例不足によりS式(24分グリッド)へ暫定的に揃えていたが、これは誤りだった)。
+        // 'aleft'(digit0)側はS→pp=48→終点20f→40tick(従来通り変化なし)。
+        // 'left'(digit4)側はR→pp=48→12分グリッド式で終点16f→32tick(Sとは異なる値になる)。
         var r = Import("0000:0800-003S,0840-003R,");
         var aleftFreeze = Assert.Single(r.Tab.Lanes[LaneIdx("aleft")].Freezes);
         var leftFreeze = Assert.Single(r.Tab.Lanes[LaneIdx("left")].Freezes);
         Assert.Equal(0 * T, aleftFreeze.StartTick);
         Assert.Equal(40 * T, aleftFreeze.EndTick);
         Assert.Equal(0 * T, leftFreeze.StartTick);
-        Assert.Equal(40 * T, leftFreeze.EndTick);
+        Assert.Equal(32 * T, leftFreeze.EndTick);
+    }
+
+    [Fact]
+    public void FineW_IsTwentyFourGridSubtraction_NewlyAccepted()
+    {
+        // 2026-07-31: 公式フォーマット文書で新規判明した'W'='[24]-'(Sの符号反転)。
+        // '600W'(PP=0x60=96pp、96%32==0のため32/3を減算) → 96−32/3=85.333pp
+        // → 85.333/256×mlen相当で64tick。旧実装では未対応のfine文字として警告付きで
+        // 無視されていたが、新実装では警告なしで解釈される。
+        var r = Import("0000:600W,");
+        var notes = r.Tab.Lanes[LaneIdx("aleft")].Notes;
+        Assert.Contains(64 * T, notes);
+        Assert.Empty(r.Warnings.Where(w => w.Contains("不明") || w.Contains("解釈できない")));
+    }
+
+    [Fact]
+    public void FreezeEnd_FineTailDuration_IsAdditiveToStartPosition_NotAbsolute()
+    {
+        // 2026-07-31: ユーザー提供test23key.txtで実際にFUJIエディタ自身が「ノート間で追い越しが
+        // 発生しています」エラーを出した箇所とは別に、同ファイルの'4920-003R'相当のトークン
+        // (始点P=4≠0でfine文字tailを使うフリーズ)を実測値(sfrzRight_data=...,714,725,...)と
+        // 突き合わせたところ、旧実装(終点pp=d×16を絶対位置として解釈)は始点(pp=64)より終点
+        // (pp=48)の方が前に来る不正な結果を返しており、これが原本のバグだと判明した。
+        // 正しくは終点pp=始点pp+d×16=64+48=112(始点からの長さとして加算)。
+        // 'sright'(fujiLaneNum=2+16=18)で検証: head='4920'(P=4,M=9,D=2,F=0)→始点pp=64→48tick。
+        // tail='003R'→d=3→終点pp=64+48=112→Rの12分グリッド式で106.667pp→80tick。
+        // 終点(80tick)が始点(48tick)より後になることを確認する
+        // (旧実装では終点pp=48(絶対値)のままR式適用→約53tickとなり始点48tickより僅かに前後が
+        // 怪しくなる上、より極端な例(実ファイルのP=8,12ケース)では明確に始点より前へ逆転していた)。
+        var r = Import("0000:4920-003R,");
+        var freeze = Assert.Single(r.Tab.Lanes[LaneIdx("sright")].Freezes);
+        Assert.True(freeze.EndTick > freeze.StartTick,
+            $"フリーズ終点({freeze.EndTick})は始点({freeze.StartTick})より後でなければならない");
+    }
+
+    [Fact]
+    public void FreezeEnd_TailPrefixIsAlwaysParsedAsDecimal_NeverHex()
+    {
+        // 2026-07-31: 公式文書の「D(3桁)は10進数値」という明記、およびtest23key_v2.txtの
+        // 全16件フリーズペアとの突き合わせにより、旧実装の「QQQQ全体が16進として解釈できれば
+        // hexのdurとして使い、0x100以上は−0x60補正」という独自ルールは誤りだったと確定した。
+        // この補正式は先頭3桁が"01Y"型の値でしか偶然成立せず(例: "0120"→補正後192、10進
+        // モデルでも192で一致)、それ以外の値では大きくずれる(例: 先頭3桁"099"は
+        // 16進153・10進99で大きく異なる)。
+        // '0800-0993': 始点pp=0(始点tick=0)。終点はd=099(10進で99)+fine='3'(+3フレーム)。
+        // 10進モデルではendpp=99×16=1584が基準となり、旧実装の16進+補正モデル
+        // (基準pp=0x099×16=2448、補正後2352)とは大きく異なる基準位置になるため、
+        // 終点tickも大きく異なる値になるはずである(具体的な数値は実測未検証だが、
+        // 「16進として解釈されていない」ことを、基準pp=1584相当のtick範囲に収まっているかで
+        // 検証する)。
+        var r = Import("0000:0800-0993,");
+        var freeze = Assert.Single(r.Tab.Lanes[LaneIdx("aleft")].Freezes);
+        Assert.True(freeze.EndTick > freeze.StartTick,
+            $"フリーズ終点({freeze.EndTick})は始点({freeze.StartTick})より後でなければならない");
+        // 10進モデル(pp基準1584、mlen=96/measureのテスト環境)ではtickは概ね
+        // 1584/256*4*TicksPerBeatのオーダーになる。16進モデル(基準2448)ならその1.5倍超になり、
+        // 明確に区別できる。
+        double decimalOrderTick = 1584.0 / 256.0 * (4.0 * DanoniEditor.Core.Timing.TimingEngine.TicksPerBeat);
+        Assert.True(freeze.EndTick < decimalOrderTick * 1.2,
+            $"終点tick({freeze.EndTick})が10進モデル想定域({decimalOrderTick})を大きく超えており、旧hex解釈に戻っていないか確認が必要");
+        Assert.Equal(0 * T, freeze.StartTick);
     }
 
     [Fact]

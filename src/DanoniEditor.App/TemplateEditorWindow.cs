@@ -35,6 +35,7 @@ internal sealed class TemplateEditorWindow : Window
 
     private readonly TabControl _laneTabs = new();
     private readonly PreviewStripElement _previewStrip;
+    private readonly StackPanel _fujiLaneNumStrip = new() { Orientation = Orientation.Horizontal };
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
     private readonly Button _removeLaneButton = new() { Content = "レーン削除", Width = 90, IsEnabled = false };
 
@@ -99,12 +100,26 @@ internal sealed class TemplateEditorWindow : Window
         DockPanel.SetDock(errBorder, Dock.Bottom);
         root.Children.Add(errBorder);
 
+        // 2026-07-31: プレビュー帯の下にfujiLaneNum入力欄の帯を追加(要望)。同じScrollViewerに
+        // 縦に並べて入れることで、横スクロールが両者で常に同期する。
+        var previewAndFujiPanel = new StackPanel { Orientation = Orientation.Vertical };
+        previewAndFujiPanel.Children.Add(_previewStrip);
+        var fujiLabel = new TextBlock
+        {
+            Text = "fujiLaneNum(空欄可、未指定時はdisplayOrderを使用):",
+            Foreground = Brushes.LightGray,
+            FontSize = 10,
+            Margin = new Thickness(4, 2, 0, 2),
+        };
+        previewAndFujiPanel.Children.Add(fujiLabel);
+        previewAndFujiPanel.Children.Add(_fujiLaneNumStrip);
+
         var previewScroll = new ScrollViewer
         {
-            Content = _previewStrip,
+            Content = previewAndFujiPanel,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Height = 84,
+            Height = 130,
             Background = Brushes.Black, // 2026-07-30: 明るい色見本(#ccffff/#ffffff等)の視認性対応
         };
         var previewBorder = new Border
@@ -203,8 +218,9 @@ internal sealed class TemplateEditorWindow : Window
     // =====================================================================
 
     /// <summary>LaneDefの手編集用ミュータブルコピー。数値項目も文字列のまま保持し、保存時にまとめて検証する
-    /// (入力中の一時的な不正値でエラーダイアログが出ないようにするため)。fujiLaneNumはUIを持たない
-    /// (2026-07-29要望の入力欄一覧に含まれていないため)が、既存値は保存時にそのまま引き継ぐ。</summary>
+    /// (入力中の一時的な不正値でエラーダイアログが出ないようにするため)。fujiLaneNumは
+    /// プレビュー帯の下の専用欄で編集する(2026-07-31、レーンタブ本体の入力欄一覧には含めない)。
+    /// 空欄は「未指定(displayOrderを使う)」を表す。</summary>
     private sealed class LaneEditVM
     {
         public string LaneId = "";
@@ -218,7 +234,7 @@ internal sealed class TemplateEditorWindow : Window
         public string NoteGraphic = "arrow";
         public string RotationAngle = "0";
         public string EngineLaneNum = "0";
-        public int? FujiLaneNum;
+        public string FujiLaneNumText = "";
     }
 
     private static LaneEditVM FromLaneDef(LaneDef d) => new()
@@ -234,7 +250,7 @@ internal sealed class TemplateEditorWindow : Window
         NoteGraphic = d.NoteGraphic,
         RotationAngle = d.RotationAngle.ToString(CultureInfo.InvariantCulture),
         EngineLaneNum = d.EngineLaneNum.ToString(CultureInfo.InvariantCulture),
-        FujiLaneNum = d.FujiLaneNum,
+        FujiLaneNumText = d.FujiLaneNum?.ToString(CultureInfo.InvariantCulture) ?? "",
     };
 
     private static string HeaderText(LaneEditVM vm) => string.IsNullOrWhiteSpace(vm.LaneId) ? "(無名)" : vm.LaneId;
@@ -366,6 +382,33 @@ internal sealed class TemplateEditorWindow : Window
     {
         _previewStrip.InvalidateMeasure();
         _previewStrip.InvalidateVisual();
+        RefreshFujiLaneNumStrip();
+    }
+
+    /// <summary>
+    /// プレビュー帯の下のfujiLaneNum入力欄を、現在のタブ順で再構築する(2026-07-31)。
+    /// 各TextBoxはタブのLaneEditVMを直接クロージャで捕まえているため、D&Dでタブの並びが
+    /// 変わっても値そのものはレーンに紐付いたまま移動する(値を並び替える処理は不要で、
+    /// 単に表示順を作り直すだけでよい)。
+    /// </summary>
+    private void RefreshFujiLaneNumStrip()
+    {
+        _fujiLaneNumStrip.Children.Clear();
+        const double cellWidth = 64;
+        foreach (TabItem item in _laneTabs.Items)
+        {
+            var vm = (LaneEditVM)item.Tag!;
+            var box = new TextBox
+            {
+                Width = cellWidth - 8,
+                Margin = new Thickness(4, 0, 4, 4),
+                Text = vm.FujiLaneNumText,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                ToolTip = $"{HeaderText(vm)} のfujiLaneNum(空欄=displayOrderを使用)",
+            };
+            box.TextChanged += (_, _) => vm.FujiLaneNumText = box.Text;
+            _fujiLaneNumStrip.Children.Add(box);
+        }
     }
 
     /// <summary>
@@ -471,6 +514,13 @@ internal sealed class TemplateEditorWindow : Window
         { error = $"'{laneLabel}': rotationAngleは数値で入力してくださいまし"; return false; }
         if (!int.TryParse(vm.EngineLaneNum, NumberStyles.Integer, CultureInfo.InvariantCulture, out var engineLaneNum))
         { error = $"'{laneLabel}': engineLaneNumは整数で入力してくださいまし"; return false; }
+        int? fujiLaneNum = null;
+        if (!string.IsNullOrWhiteSpace(vm.FujiLaneNumText))
+        {
+            if (!int.TryParse(vm.FujiLaneNumText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedFuji))
+            { error = $"'{laneLabel}': fujiLaneNumは整数で入力するか、空欄にしてくださいまし"; return false; }
+            fujiLaneNum = parsedFuji;
+        }
 
         lane = new LaneDef
         {
@@ -486,7 +536,7 @@ internal sealed class TemplateEditorWindow : Window
             NoteGraphic = vm.NoteGraphic,
             RotationAngle = rot,
             EngineLaneNum = engineLaneNum,
-            FujiLaneNum = vm.FujiLaneNum,
+            FujiLaneNum = fujiLaneNum,
         };
         error = null;
         return true;

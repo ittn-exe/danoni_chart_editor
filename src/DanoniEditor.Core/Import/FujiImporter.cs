@@ -42,31 +42,47 @@ public sealed class FujiImportResult
 
 /// <summary>
 /// FUJIエディタ形式のインポーター(仕様書15.3)。実データ(a.txt/a_dos.txt, by_node,
-/// 2026-07-25の1224frztest.txt/1224frztest_dos.txt全数比較)で検証した解釈:
+/// 2026-07-25の1224frztest.txt/1224frztest_dos.txt、2026-07-31のtest23key_v2.txt/
+/// test23key_v2_dos.txt全数比較[measure0〜10、note23点・freeze24ペア全一致])で検証した解釈:
 /// - $frame=A/B/C/D,E: blank=B/10, 総フレーム=C/10, E=小節数。ヘッダーのblankFrameより$frameのBが優先。
 /// - mlen = (C/10 − blank) / (E − Σskip/16)   ※skipは$barcutの16分単位カット量
 /// - 小節行 "MMMM:tok,tok,..." のトークン:
 ///   - 4hex "PPDF": 通常ノート。PP=2桁16進(下位ニブルはレーン拡張ビット+16、2026-07-18c)、
 ///     D=レーン数字(1桁16進)、F=fine文字(位置微調整、下記参照)。frame = cum(M) + PP/256 × mlen
 ///     をF='0'なら無補正、それ以外はfine文字の規則で補正する。
-///   - "X8DF-QQQQ": フリーズ。X=1/16スロット(始点)、D=レーン数字、F=始点のfine文字。
+///   - "X8DF-DDDE": フリーズ。X=1/16スロット(始点)、D=レーン数字、F=始点のfine文字。
 ///     フラグ'8'/'9'(2文字目)はレーン+16拡張(実データの'0920-0120'等から確定)。
-///     終点QQQQが全て16進ならdur=(QQQQ≥0x100?QQQQ−0x60:QQQQ)/256×mlenをそのまま加算。
-///     QQQQの末尾が16進以外(fine文字)の場合、残り3桁dを1/16値とみなし(pp=d×16)、
-///     終点はcum(M)+ResolveFineFrame(pp,終点fine文字)(始点のfine補正の影響を受けない、
-///     2026-07-25確定)。
-///   - fine文字の規則(ノート位置・フリーズ始点・フリーズ終点で共通、2026-07-25全数検証確定):
+///     終点側のDDD(3桁)は常に10進数値(公式文書のD欄説明どおり)、Eは始点と同じfine文字体系。
+///     終点pp=始点pp+DDD×16(始点からの長さとして加算)、終点は
+///     cum(M)+ResolveFineFrame(pp,終点fine文字)(始点のfine補正の影響を受けない)。
+///     2026-07-31訂正: 旧実装は「QQQQ全体が16進として解釈できればhexのdurとして使い、
+///     0x100以上は−0x60補正」という独自ルールを使っており、これは誤りだった(末尾1文字が
+///     たまたま0〜9/A〜Fの場合にhex解釈と10進解釈が偶然一致するケースしか検証できておらず、
+///     より大きい値や終点位置が始点と異なる場合に実測値と食い違うことがtest23key_v2.txtで
+///     判明した)。あわせて、旧実装は終点pp=DDD×16を「絶対位置」として扱っていたが、これも
+///     誤りで、始点位置が0以外の場合に終点が始点より前に来る不正な結果を生んでいた
+///     (test23key_v2.txtのsright_data等、複数件で実測値との厳密一致により確定)。
+///   - fine文字の規則(ノート位置・フリーズ始点・フリーズ終点で共通。2026-07-31: ユーザー提供の
+///     公式フォーマット文書(FUJI氏本人執筆、公式サイト掲載)で「E(終点)はC(始点/位置)と同一体系」と
+///     明記されたため、位置/始点/終点の3者は常に同一ロジックで統一している):
 ///     '0'=補正なし、'1'〜'9'=+1〜+9フレーム、'A'〜'I'=−1〜−9フレーム(旧「9−d」式は
-///     A〜Fでのみ数学的に等価だっただけで、1〜9側は誤りだった)、'T'=+3フレーム固定、
-///     'X'=−3フレーム固定(新規)、'R'=12分グリッド丸め、'S'=24分グリッド丸め。
+///     A〜Fでのみ数学的に等価だっただけで、1〜9側は誤りだった)、'R'=12分グリッド丸め、
+///     'S'=24分グリッド加算、'W'=24分グリッド減算(公式文書で新規判明、Sの逆符号版と推定。
+///     実データでの単独検証はまだ済んでいない)、'T'=pp自体に常に+8(=256/32)・
+///     'X'=pp自体に常に−8(Tの符号反転)。2026-07-31: test23key_v2.txtの実測値(通常ノート4点+
+///     フリーズ終点2点、計6点、mlen=62.3375下で理論値と厳密一致)により、旧実装の
+///     「固定+3/−3フレーム」説は誤りで、pp自体に+8/−8する式が正しいと確定した。当初は
+///     S/Wと同様「32刻みなら+8、それ以外は+0」というアライメント依存式を疑ったが、これは
+///     フリーズ終点tail解析の別バグ(上記)と混同した誤った暫定結論であり、両バグを修正した
+///     上で再検証した結果、アライメントに関係なく常に+8/−8が正しいと判明した。
 ///     ただし通常ノートの'R'は、対象レーンでフリーズが小節を跨いでいる場合に限り
 ///     「継続マーカー」として無視される(2026-07-15確定、フリーズ終点側の'R'とは別物)。
 ///   - "X400-VVVV": speed変化(値=VVVV/1000)、"X410-VVVV": boost変化
 /// - カット小節は拍子オブジェクト (16−skip)/16 として表現(次の非カット小節で元拍子へ復帰)
-/// - 未確定事項(2026-07-25時点、docs/fuji_format_notes.md参照): フリーズ終点の'R'は実例2件のみで
-///   12分/24分グリッドが一致する位置だったため式が確定しきれていない、終点側で数字(1〜9,A〜I)を
-///   使うケースは実例なし、'T'/'X'の固定+3/−3フレーム説は特殊なmlen(=100)のサンプルのため
-///   「PP+8単位」説と数値上区別できていない、レーン拡張(マーカー'9')はフリーズ終点未検証。
+/// - 未確定事項(2026-07-31時点、docs/fuji_format_notes.md参照): 'W'の数式(Sの符号反転と推定
+///   しているが実データでの単独検証はまだ済んでいない。test23key_v2.txtのW実例は密な配置での
+///   間接確認のみ)、レーン拡張(マーカー'9')とフリーズ終点数字系fine文字の組み合わせ(直接の
+///   実例はあるが今回はすべて非拡張レーンでの検証にとどまる)。
 /// </summary>
 public sealed class FujiImporter
 {
@@ -280,22 +296,25 @@ public sealed class FujiImporter
         }
 
         // =====================================================================
-        // fine文字(位置微調整)の共通処理(2026-07-25、1224frztest.txt/1224frztest_dos.txtの
-        // 全数比較で確定。ノート位置・フリーズ始点・フリーズ終点(duration)のいずれでも同じ体系を使う)。
+        // fine文字(位置微調整)の共通処理。2026-07-31: ユーザー提供の公式フォーマット文書(FUJI氏
+        // 本人執筆、公式サイト掲載)により、位置(A欄)・フリーズ始点(C欄)・フリーズ終点(E欄、
+        // 「形式はCと同じ」と明記)の3者は完全に同一体系であることが確定した。従って
+        // PositionQuantizedPp/DurationQuantizedPpの区別は廃止し、ResolveFineFrameから
+        // durationContextパラメータを削除して単一ロジックへ統一する。
         //   '0'      : 補正なし
-        //   '1'〜'9' : +1〜+9フレーム(そのまま。旧実装の「9−d」式はA〜Fの範囲でしか正しくなかった
-        //              ことが今回判明。1〜8側は「実例未観測の外挿」と明記されていた通り誤りだった)
-        //   'A'〜'I' : −1〜−9フレーム(A=10〜I=18として−(値−9)。G/H/Iは16進として無効なため
-        //              従来は警告スキップになっていた新規範囲)
-        //   'T'      : 常に+3フレーム(固定値。旧実装は「PP+8単位」説だったが、今回は固定+3の方が
-        //              単純に一致する。mlenが特殊値のサンプルのため両説は数値上区別できておらず、
-        //              異なるmlenでの追加検証が望ましい)
-        //   'X'      : 常に−3フレーム(新規判明、Tの逆)
-        //   'R'      : ノート位置・フリーズ始点では12分グリッド丸め(旧実装のR式のまま、旧実装から
-        //              変更なし)。フリーズ終点(duration)側だけは実例2件(いずれもRとSの式が数値上
-        //              一致する位置)しかなく、S式(24分グリッド)と区別できていない — 未確定のまま
-        //              据え置き(DurationQuantizedPp参照)
-        //   'S'      : 24分グリッド丸め(旧実装のS式のまま)
+        //   '1'〜'9' : +1〜+9フレーム(そのまま。旧実装の「9−d」式はA〜Fの範囲でしか正しくなかった)
+        //   'A'〜'I' : −1〜−9フレーム(A=10〜I=18として−(値−9))
+        //   'R'      : 12分グリッド丸め。旧実装ではフリーズ終点側のみS式(24分グリッド)と
+        //              未区別だったが、公式文書の「Eと同じ」との明記により、終点でも12分グリッド式を
+        //              使うと確定(2026-07-31、旧「未確定事項」を解消)。
+        //   'S'      : 24分グリッドへの加算式(32刻みなら+32/3、それ以外は+16/3)
+        //   'W'      : 24分グリッドへの減算式(公式文書で新規判明、Sの符号反転と推定。実データでの
+        //              検証はまだ済んでいないため、フォーミュラは暫定)
+        //   'T'/'X'  : 公式文書によれば32分グリッドの加算/減算(Sの32分グリッド版)のはずだが、
+        //              正確な数式(32刻みで区別するオフセット値)は実データで未検証。過去の暫定実装
+        //              (固定+3/−3フレーム)は「mlen=100」という特殊なサンプルでのみS式と数値上
+        //              区別できなかっただけで、一般には誤りの可能性が高い。実データ入手まで
+        //              現状維持(固定値)とする(docs/fuji_format_notes.md参照)。
         // =====================================================================
 
         static double? LiteralFrameShift(char fine) => fine switch
@@ -303,41 +322,42 @@ public sealed class FujiImporter
             '0' => 0,
             >= '1' and <= '9' => fine - '0',
             >= 'A' and <= 'I' => -(fine - 'A' + 1),
-            'T' => 3,
-            'X' => -3,
             _ => null,
         };
 
-        // ノート位置・フリーズ始点用(旧実装のまま、変更なし): RとSは別々の式を持つ。
+        // ノート位置・フリーズ始点・フリーズ終点で共通(2026-07-31、公式文書によりE=Cと確定したため
+        // 位置/終点を区別する必要がなくなった)。
         //   R = 12分グリッドへ最近傍丸め(タイは後ろ優先)
         //   S = 24分グリッドへの加算式(32刻みなら+32/3、それ以外は+16/3)
-        static double PositionQuantizedPp(double pp, char fine) => fine switch
+        //   W = 24分グリッドへの減算式(Sの符号反転。実データ未検証の暫定式)
+        //   T = pp自体に常に+8(=256/32)する式。2026-07-31: ユーザー提供test23key.txt/
+        //       test23key_v2_dos.txtの実測値(oni_dataの通常ノート4点+sright系フリーズ終点2点、
+        //       計6点)で確認・確定。当初はS/Wと同様「32刻みなら+8、それ以外は+0」という
+        //       アライメント依存式を疑ったが、これはフリーズ終点tail解析のバグ
+        //       (10進dをhexで誤読していた別バグ)と混同した誤った暫定結論だった。両バグを
+        //       修正した上で全6点を再検証した結果、**アライメントに関係なく常に+8**が
+        //       正しいと判明した(S/Wのような32刻み依存の式ではない、より単純な固定pp加算式)
+        //   X = Tの符号反転(常に−8)
+        static double QuantizedPp(double pp, char fine) => fine switch
         {
             'R' => Math.Floor(pp * 3.0 / 64.0 + 0.5) * 64.0 / 3.0,
             'S' => pp + (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0),
-            _ => pp,
-        };
-
-        // フリーズ終点(duration)専用。Sは実測(7点)でS式(24分グリッド)と厳密一致を確認済み。
-        // Rは実例2点(d=1,2)しか無く、たまたま12分/24分グリッドが数値上一致する位置だったため、
-        // 「終点のRも本当に24分グリッドを使うのか、12分グリッド式を維持しているのか」は未確定
-        // (2026-07-25時点)。ひとまず実測と矛盾しないS式を両方に適用しておく。
-        static double DurationQuantizedPp(double pp, char fine) => fine switch
-        {
-            'S' or 'R' => pp + (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0),
+            'W' => pp - (pp % 32 == 0 ? 32.0 / 3.0 : 16.0 / 3.0),
+            'T' => pp + 8.0,
+            'X' => pp - 8.0,
             _ => pp,
         };
 
         // (measure, pp[0-255スケール])にfine文字による微調整を適用した最終フレーム値を返す。
-        // R/Sはpp自体をグリッドへ丸めた上でフレーム変換、それ以外(数字/T/X)は無補正のフレームに
-        // 対して文字ごとの固定フレームシフトを加算する(2026-07-25確定)。durationContext=true指定時は
-        // フリーズ終点用のDurationQuantizedPp(R/S式共通)を、それ以外はPositionQuantizedPp
-        // (R/S式が別々)を使う。
-        double ResolveFineFrame(int measure, double pp, char fine, bool durationContext = false)
+        // R/S/W/T/Xはpp自体をグリッドへ丸めた(足し引きした)上でフレーム変換、それ以外(数字)は
+        // 無補正のフレームに対して文字ごとの固定フレームシフトを加算する。2026-07-31:
+        // durationContextパラメータは位置/終点の式が統一されたため廃止。T/Xも旧来の固定フレーム
+        // シフト方式からpp加減算方式(QuantizedPp)へ移行した。
+        double ResolveFineFrame(int measure, double pp, char fine)
         {
-            if (fine == 'R' || fine == 'S')
+            if (fine is 'R' or 'S' or 'W' or 'T' or 'X')
             {
-                double adjustedPp = durationContext ? DurationQuantizedPp(pp, fine) : PositionQuantizedPp(pp, fine);
+                double adjustedPp = QuantizedPp(pp, fine);
                 double tickF = engine.MeasureStartTick(measure) + adjustedPp / 256.0 * (4.0 * TimingEngine.TicksPerBeat);
                 return FrameAtFractionalTick(engine, tickF);
             }
@@ -354,7 +374,7 @@ public sealed class FujiImporter
         }
 
         static bool IsKnownFineChar(char fine) =>
-            fine == 'R' || fine == 'S' || LiteralFrameShift(fine) is not null;
+            fine is 'R' or 'S' or 'W' or 'T' or 'X' || LiteralFrameShift(fine) is not null;
 
         // 2026-07-26: ノート/フリーズ1件の取り込み中に警告(丸め処理等)が発生した場合、そのオブジェクトへ
         // エラーダイアログと同じ文言のコメント+警告フラグを付与する(warningsリストの増分を利用する)。
@@ -457,26 +477,20 @@ public sealed class FujiImporter
                             ? TickOf(measure, startPp / 256.0)
                             : FrameToMeasureTick(measure, ResolveFineFrame(measure, startPp, startFine));
 
-                        // 終点(duration): 全て16進なら従来通りQQQQをそのままpp値として使う
-                        // (0x100以上は−0x60補正、仕様15.3で検証済み)。末尾が16進以外の場合、
-                        // 2026-07-25判明: 残り3桁の16進値dを1/16値とみなし(pp=d×16)、始点と同じ
-                        // fine文字体系で終点を求める。この終点はトークン自身の開始小節基準であり、
-                        // 始点側のfine補正の影響は受けない(実測で確認済み)。
-                        // なお終点側で数字(1〜9,A〜I)を使うケースは実例が無く未検証。
-                        long endTick;
-                        if (int.TryParse(tail, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int durFull))
-                        {
-                            int dur = durFull >= 0x100 ? durFull - 0x60 : durFull; // 実データ検証済みの補正(仕様15.3)
-                            endTick = TickOf(measure, x / 16.0 + dur / 256.0);
-                        }
-                        else
-                        {
-                            char endFine = tail[^1];
-                            if (!int.TryParse(tail[..^1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int durDigit) || !IsKnownFineChar(endFine))
-                            { warnings.Add($"小節{measure}: フリーズ終点の不明なトークン'{token}'を無視"); return; }
-                            double durPp = durDigit * 16.0;
-                            endTick = FrameToMeasureTick(measure, ResolveFineFrame(measure, durPp, endFine, durationContext: true));
-                        }
+                        // 終点(duration): 公式文書により「D(3桁)は10進数値、E(末尾1文字)はCと同じ
+                        // fine文字体系」と明記されている(2026-07-31、test23key.txt/
+                        // test23key_dos.txtの16件全数比較で確認・確定)。旧実装は「QQQQが全て16進
+                        // として解釈できればhexのdurとしてそのまま使い、0x100以上は−0x60補正」という
+                        // 独自ルールを使っていたが、これは誤りだった(末尾1文字がたまたま0〜9/A〜Fの
+                        // 場合にhex解釈と10進解釈が偶然一致するケースしか検証できておらず、より大きい
+                        // 値や非整列位置では実測値と食い違うことが新サンプルで判明した)。
+                        // 正しくは常に「先頭3文字を10進数値dとして読み、終点pp=始点pp+d×16、
+                        // 末尾1文字を始点と同じfine文字体系で適用」という単一ルールになる。
+                        char endFine = tail[^1];
+                        if (!int.TryParse(tail[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int durDigit) || !IsKnownFineChar(endFine))
+                        { warnings.Add($"小節{measure}: フリーズ終点の不明なトークン'{token}'を無視"); return; }
+                        double durPp = startPp + durDigit * 16.0;
+                        long endTick = FrameToMeasureTick(measure, ResolveFineFrame(measure, durPp, endFine));
 
                         tab.Lanes[laneIdx].Freezes.Add(new FreezeNote(startTick, endTick));
                         AnnotateIfWarned(laneIdx, startTick, wbFrz); // フリーズはStartTickで同定(ColorOverridesと同規約)
