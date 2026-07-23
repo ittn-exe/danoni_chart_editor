@@ -26,6 +26,7 @@ internal sealed class PreferencesWindow : Window
     // --- 表示 ---
     private readonly CheckBox _showImages = new() { Content = "ノート画像を表示する" };
     private readonly CheckBox _showGrid = new() { Content = "強調グリッド(横棒)を表示する" };
+    private readonly CheckBox _excludeFreezeEndHighlight = new() { Content = "フリーズアロー終点を強調グリッドの対象から除外する" };
     private readonly TextBox _gridWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _gridColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _gridPreview = MakePreview();
@@ -51,6 +52,8 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _ptQuitDelete = new() { Content = "Delete" };
     private readonly CheckBox _ptQuitBackSpace = new() { Content = "BackSpace" };
     private readonly CheckBox _ptQuitEscape = new() { Content = "Escape" };
+    // --- プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応) ---
+    private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
 
     // --- マーカー表示(表示カテゴリ内) ---
     private readonly RadioButton _markerFull = new() { Content = "全文表示", GroupName = "marker" };
@@ -193,8 +196,18 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("ノート表示", section: true));
         _showImages.Margin = new Thickness(0, 0, 0, 4);
         _showGrid.Margin = new Thickness(0, 0, 0, 4);
+        _excludeFreezeEndHighlight.Margin = new Thickness(16, 0, 0, 4); // 強調グリッドの子項目として少し字下げ
         p.Children.Add(_showImages);
         p.Children.Add(_showGrid);
+        p.Children.Add(_excludeFreezeEndHighlight);
+        p.Children.Add(new TextBlock
+        {
+            Text = "フリーズが密集した際に終点の横棒が見づらいという指摘への対応ですわ(既定OFF=従来通り表示)。",
+            Foreground = Brushes.Gray,
+            FontSize = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(16, 0, 0, 4),
+        });
         p.Children.Add(Label("強調グリッドの太さ(px):"));
         p.Children.Add(_gridWidth);
         p.Children.Add(Label("強調グリッドの色(#RRGGBB):"));
@@ -312,6 +325,30 @@ internal sealed class PreferencesWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0),
         });
+
+        p.Children.Add(Label("キー種ごとのReverse既定値(2026-08-02要望対応)", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "難易度タブを切り替えた際、そのキー種に応じて上部パネルの「プレーテスト:Reverse」の" +
+                   "チェック状態を自動的に変更しますの。ここに無いキー種はOFF(通常)扱いですわ。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 6),
+        });
+        _ptReverseByKeyType.Clear();
+        if (_templates is null)
+        {
+            p.Children.Add(new TextBlock { Text = "(テンプレート一覧を取得できませんでした)", Foreground = Brushes.Gray, FontStyle = FontStyles.Italic });
+        }
+        else
+        {
+            foreach (var keyTypeId in _templates.ListKeyTypeIds())
+            {
+                var cb = new CheckBox { Content = $"{keyTypeId}k", Margin = new Thickness(0, 0, 0, 2) };
+                _ptReverseByKeyType[keyTypeId] = cb;
+                p.Children.Add(cb);
+            }
+        }
         return p;
     }
 
@@ -529,6 +566,7 @@ internal sealed class PreferencesWindow : Window
     {
         _showImages.IsChecked = s.ShowNoteImages;
         _showGrid.IsChecked = s.ShowHighlightGrid;
+        _excludeFreezeEndHighlight.IsChecked = s.ExcludeFreezeEndFromHighlight;
         _gridWidth.Text = s.HighlightLineWidth.ToString(CultureInfo.InvariantCulture);
         _gridColor.Text = s.HighlightLineColorHex;
         _gridPreview.Background = SafeBrush(s.HighlightLineColorHex);
@@ -549,6 +587,8 @@ internal sealed class PreferencesWindow : Window
         _ptQuitDelete.IsChecked = s.PlaytestQuitKeyDelete;
         _ptQuitBackSpace.IsChecked = s.PlaytestQuitKeyBackSpace;
         _ptQuitEscape.IsChecked = s.PlaytestQuitKeyEscape;
+        foreach (var (keyTypeId, cb) in _ptReverseByKeyType)
+            cb.IsChecked = s.PlaytestReverseByKeyType.TryGetValue(keyTypeId, out var rev) && rev;
         _markerFull.IsChecked = s.MarkerCommentFull;
         _markerHead.IsChecked = !s.MarkerCommentFull;
         _markerHeadChars.Text = s.MarkerCommentHeadChars.ToString(CultureInfo.InvariantCulture);
@@ -624,6 +664,7 @@ internal sealed class PreferencesWindow : Window
 
         _work.ShowNoteImages = _showImages.IsChecked == true;
         _work.ShowHighlightGrid = _showGrid.IsChecked == true;
+        _work.ExcludeFreezeEndFromHighlight = _excludeFreezeEndHighlight.IsChecked == true;
         _work.HighlightLineWidth = gw;
         _work.HighlightLineColorHex = _gridColor.Text;
         _work.PlaybackStartLineWidth = sw;
@@ -640,6 +681,7 @@ internal sealed class PreferencesWindow : Window
         _work.PlaytestQuitKeyDelete = _ptQuitDelete.IsChecked == true;
         _work.PlaytestQuitKeyBackSpace = _ptQuitBackSpace.IsChecked == true;
         _work.PlaytestQuitKeyEscape = _ptQuitEscape.IsChecked == true;
+        _work.PlaytestReverseByKeyType = _ptReverseByKeyType.ToDictionary(kv => kv.Key, kv => kv.Value.IsChecked == true);
         _work.MarkerCommentFull = _markerFull.IsChecked == true;
         _work.MarkerCommentHeadChars = headChars;
         _work.ChartViewReverse = _chartViewReverse.IsChecked == true;

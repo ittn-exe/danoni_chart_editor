@@ -453,4 +453,176 @@ public class DosNColorDataTests
         Assert.All(back.Project.Tabs[0].Lanes, l => Assert.Empty(l.ColorOverrides));
         Assert.Contains(back.Warnings, w => w.Contains("ncolor_data"));
     }
+
+    // --- 2026-07-23(TBD 3): 範囲/スラッシュ複数/all/グループ記法 ---
+
+    private static string LaneDataName(int laneIdx) => TestFixtures.Repository().Get("5").Lanes[laneIdx].DataName;
+
+    /// <summary>engineLaneNum 0〜3(レーン0〜3)に1件ずつノートを置いたdifDataを組み立てる</summary>
+    private static string NotesForLanes0To3() =>
+        string.Join("\n", Enumerable.Range(0, 4).Select(i => $"|{LaneDataName(i)}_data=48|"));
+
+    [Fact]
+    public void Import_RangeColorNo_AppliesToLanesInRange_ExcludesOutOfRangeLane()
+    {
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData + "\n" + NotesForLanes0To3() +
+                   "\n|ncolor_data=0,0...3,#123456|\n" +
+                   "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+        var tab = back.Project.Tabs[0];
+
+        for (int i = 0; i < 4; i++)
+        {
+            var entry = Assert.Single(tab.Lanes[i].ColorOverrides);
+            Assert.Equal("#123456", entry.Color);
+        }
+        Assert.Empty(tab.Lanes[4].ColorOverrides); // engineLaneNum=4は範囲(0...3)外
+        Assert.DoesNotContain(back.Warnings, w => w.Contains("ncolor_data"));
+    }
+
+    [Fact]
+    public void Import_SlashColorNo_AppliesToListedLanesOnly()
+    {
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData + "\n" + NotesForLanes0To3() +
+                   "\n|ncolor_data=0,0/2,#123456|\n" +
+                   "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+        var tab = back.Project.Tabs[0];
+
+        Assert.Single(tab.Lanes[0].ColorOverrides);
+        Assert.Empty(tab.Lanes[1].ColorOverrides);
+        Assert.Single(tab.Lanes[2].ColorOverrides);
+        Assert.Empty(tab.Lanes[3].ColorOverrides);
+        Assert.DoesNotContain(back.Warnings, w => w.Contains("ncolor_data"));
+    }
+
+    [Fact]
+    public void Import_AllColorNo_AppliesToEveryLane()
+    {
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData + "\n" + NotesForLanes0To3() +
+                   $"\n|{LaneDataName(4)}_data=48|" +
+                   "\n|ncolor_data=0,all,#123456|\n" +
+                   "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+        var tab = back.Project.Tabs[0];
+
+        Assert.All(tab.Lanes, l => Assert.Single(l.ColorOverrides));
+        Assert.DoesNotContain(back.Warnings, w => w.Contains("ncolor_data"));
+    }
+
+    [Fact]
+    public void Import_GroupG0ColorNo_IsEquivalentToAll()
+    {
+        // 2026-07-23: 通常譜面(トランスキー以外)ではキーグループは常に0のみ(dos-h0092-keyGroupOrder仕様)
+        // のため、g0はallと同じく「テンプレート全レーン」を意味する
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData + "\n" + NotesForLanes0To3() +
+                   $"\n|{LaneDataName(4)}_data=48|" +
+                   "\n|ncolor_data=0,g0,#123456|\n" +
+                   "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+        var tab = back.Project.Tabs[0];
+
+        Assert.All(tab.Lanes, l => Assert.Single(l.ColorOverrides));
+        Assert.DoesNotContain(back.Warnings, w => w.Contains("ncolor_data"));
+    }
+
+    [Fact]
+    public void Import_GroupG1ColorNo_MatchesNoLanes_WithoutWarning()
+    {
+        // 2026-07-23: g1〜g9はトランスキー専用のキーグループ記法で、通常譜面では常に0件。
+        // トランスキー自体が対象外のため、意図的に無警告(スキップ扱いにしない)。
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData + "\n" + NotesForLanes0To3() +
+                   "\n|ncolor_data=0,g1,#123456|\n" +
+                   "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+
+        Assert.All(back.Project.Tabs[0].Lanes, l => Assert.Empty(l.ColorOverrides));
+        Assert.DoesNotContain(back.Warnings, w => w.Contains("ncolor_data")); // 無警告(範囲/グループ従来型の警告とは異なる)
+    }
+
+    [Fact]
+    public void Export_ContiguousLanesSameColorSameFrame_CompressesToRange()
+    {
+        var project = NewProject();
+        for (int i = 0; i <= 3; i++)
+        {
+            project.Tabs[0].Lanes[i].Notes.Add(48 * T);
+            project.Tabs[0].Lanes[i].ColorOverrides.Add(new NColorEntry(48 * T, "#123456", null));
+        }
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project);
+
+        Assert.Contains("0...3,#123456", text);
+    }
+
+    [Fact]
+    public void Export_NonContiguousLanesSameColorSameFrame_CompressesToSlash()
+    {
+        var project = NewProject();
+        foreach (var i in new[] { 0, 2 })
+        {
+            project.Tabs[0].Lanes[i].Notes.Add(48 * T);
+            project.Tabs[0].Lanes[i].ColorOverrides.Add(new NColorEntry(48 * T, "#123456", null));
+        }
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project);
+
+        Assert.Contains("0/2,#123456", text);
+    }
+
+    [Fact]
+    public void Export_AllLanesSameColorSameFrame_CompressesToAll()
+    {
+        var project = NewProject();
+        for (int i = 0; i < 5; i++)
+        {
+            project.Tabs[0].Lanes[i].Notes.Add(48 * T);
+            project.Tabs[0].Lanes[i].ColorOverrides.Add(new NColorEntry(48 * T, "#123456", null));
+        }
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project);
+
+        Assert.Contains("all,#123456", text);
+    }
+
+    [Fact]
+    public void RoundTrip_CompressedRangeExport_ReimportsToSameLaneColors()
+    {
+        // 圧縮出力(0...3)がインポート側で正しく展開され、各レーンへ同じ色が復元されることを確認
+        var project = NewProject();
+        for (int i = 0; i <= 3; i++)
+        {
+            project.Tabs[0].Lanes[i].Notes.Add(48 * T);
+            project.Tabs[0].Lanes[i].ColorOverrides.Add(new NColorEntry(48 * T, "#123456", null));
+        }
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project, includeEditorMetadata: true);
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+
+        for (int i = 0; i <= 3; i++)
+        {
+            var entry = Assert.Single(back.Project.Tabs[0].Lanes[i].ColorOverrides);
+            Assert.Equal("#123456", entry.Color);
+        }
+        Assert.Empty(back.Project.Tabs[0].Lanes[4].ColorOverrides);
+    }
 }

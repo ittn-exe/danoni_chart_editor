@@ -9,16 +9,18 @@ public class ChartLayoutTests
     private static ChartLayout NewLayout() => new(TestFixtures.Repository().Get("5"));
 
     [Fact]
-    public void Columns_AreOrdered_MarkerMeasureLanesSpeedBoostBpm()
+    public void Columns_AreOrdered_TimeInfoMarkerMeasureLanesSpeedBoostBpm()
     {
         var layout = NewLayout();
         var kinds = layout.Columns.Select(c => c.Kind).ToArray();
-        Assert.Equal(ColumnKind.Marker, kinds[0]);
-        Assert.Equal(ColumnKind.Measure, kinds[1]);
-        for (int i = 0; i < 5; i++) Assert.Equal(ColumnKind.Note, kinds[2 + i]);
-        Assert.Equal(ColumnKind.Speed, kinds[7]);
-        Assert.Equal(ColumnKind.Boost, kinds[8]);
-        Assert.Equal(ColumnKind.Bpm, kinds[9]);
+        // 2026-07-23: 時間情報表示レーン(TBD 1-1)をマーカーレーンの左側に追加
+        Assert.Equal(ColumnKind.TimeInfo, kinds[0]);
+        Assert.Equal(ColumnKind.Marker, kinds[1]);
+        Assert.Equal(ColumnKind.Measure, kinds[2]);
+        for (int i = 0; i < 5; i++) Assert.Equal(ColumnKind.Note, kinds[3 + i]);
+        Assert.Equal(ColumnKind.Speed, kinds[8]);
+        Assert.Equal(ColumnKind.Boost, kinds[9]);
+        Assert.Equal(ColumnKind.Bpm, kinds[10]);
     }
 
     [Fact]

@@ -20,6 +20,15 @@ public class DroppedFileClassifierTests
     }
 
     [Fact]
+    public void OwnTabExportJson_IsClassified_NotAsOwnProject()
+    {
+        // 2026-07-23、TBD 5: "tabExport"キーを持つ場合はOwnProjectではなくOwnTabExportとして判定される
+        // (両方とも"schemaVersion"+"project"を持つため、tabExportの有無で区別する)
+        var json = """{"schemaVersion":2,"tabExport":true,"project":{"projectName":"test"}}""";
+        Assert.Equal(DroppedFileKind.OwnTabExport, Classify("diff.json", json));
+    }
+
+    [Fact]
     public void SkbJson_IsClassified_EvenWithTxtExtension()
     {
         var json = """{"keyKind":"7","scores":[],"blankFrame":0,"timings":[],"scoreNumber":1}""";

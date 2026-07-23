@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using DanoniEditor.Core.Analysis;
 using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Import;
 using DanoniEditor.Core.Models;
@@ -151,6 +152,7 @@ public partial class MainWindow : Window
         _appSettings = preloadedSettings ?? AppSettings.Load(AppPaths.SettingsFilePath);
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
+        NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-08-01
         ApplyDisplaySettingsToCanvas();
 
         // 2026-07-17g: プレイテスト設定(Reverse/ハイスピ/調整オフセット)の初期化
@@ -196,7 +198,7 @@ public partial class MainWindow : Window
     private void ApplyDisplaySettingsToCanvas()
     {
         var color = (Color)ColorConverter.ConvertFromString(_appSettings.HighlightLineColorHex)!;
-        Canvas.ApplyDisplaySettings(_appSettings.ShowNoteImages, _appSettings.ShowHighlightGrid, _appSettings.HighlightLineWidth, color);
+        Canvas.ApplyDisplaySettings(_appSettings.ShowNoteImages, _appSettings.ShowHighlightGrid, _appSettings.HighlightLineWidth, color, _appSettings.ExcludeFreezeEndFromHighlight);
         var startColor = (Color)ColorConverter.ConvertFromString(_appSettings.PlaybackStartLineColorHex)!;
         Canvas.ApplyPlaybackStartLineSettings(_appSettings.PlaybackStartLineWidth, startColor);
         // 2026-07-25b: カーソルライン(マウスホバー中の最寄りスナップ位置)の太さ・色
@@ -206,6 +208,7 @@ public partial class MainWindow : Window
         Canvas.MarkerCommentFull = _appSettings.MarkerCommentFull;   // 2026-07-19b
         Canvas.MarkerCommentHeadChars = Math.Max(1, _appSettings.MarkerCommentHeadChars);
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
+        Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-08-01
         Canvas.InvalidateVisual();
     }
 
@@ -213,6 +216,15 @@ public partial class MainWindow : Window
     {
         if (!_initialized) return; // XAML初期値設定によるInitializeComponent中の発火を無視(上記コメント参照)
         EnforceAndApplyDisplayToggles();
+    }
+
+    /// <summary>「ノート数表示」トグル(2026-08-01)。他のトグルとの排他制約は無いため単純に反映するのみ。</summary>
+    private void NoteCountToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _appSettings.ShowLaneNoteCount = NoteCountToggle.IsChecked == true;
+        ApplyDisplaySettingsToCanvas();
+        _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
     private void ShowHighlightGridToggle_Changed(object sender, RoutedEventArgs e)
@@ -259,6 +271,25 @@ public partial class MainWindow : Window
         var win = new GaugeEditorWindow(_document.Project) { Owner = this };
         if (win.ShowDialog() == true && win.Saved)
             _document.NotifyChanged();
+    }
+
+    /// <summary>歌詞レーンの管理ウィンドウを開く(2026-07-23、TBD 4)。モードレスなので開いたまま
+    /// 譜面ビューでの歌詞エントリ配置・編集ができる。レーン追加/削除のたびに譜面ビューを再描画する。</summary>
+    private WordLaneManagerWindow? _wordLaneManagerWindow;
+    private void OpenWordLaneManager_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (_wordLaneManagerWindow is { IsLoaded: true })
+        {
+            _wordLaneManagerWindow.Activate();
+            return;
+        }
+        _wordLaneManagerWindow = new WordLaneManagerWindow(_document, () => Canvas.InvalidateVisual()) { Owner = this };
+        _wordLaneManagerWindow.Show();
     }
 
     private void OpenPreferences(int category)
@@ -361,6 +392,10 @@ public partial class MainWindow : Window
         try
         {
             var project = ProjectSerializer.Load(path);
+            // 2026-08-03: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
+            // 表示する仕様のため、開いた時点の実際のファイル名で同期する(ファイルがリネームされていた
+            // 場合や、保存時ProjectName同期が無かった旧バージョンで保存されたファイルにも対応)。
+            project.ProjectName = Path.GetFileNameWithoutExtension(path);
             AddSession(new EditorDocument(project, _templates), path); // 2026-07-20: 新規プロジェクトタブとして追加
             // 2026-07-27: musicURL設定済みのITTNエディタ形式プロジェクトを開いた際、機能ONなら自動読込を試みる
             // (ローカルAudioFilePathからの復元(ResetAudioForDocument、AddSession内で実行済み)が
@@ -449,10 +484,17 @@ public partial class MainWindow : Window
 
         try
         {
+            // 2026-08-03: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
+            // 表示する仕様のため、保存確定時にProject.ProjectNameを実際の保存先ファイル名へ同期する
+            // (従来はNewProject_Click等で設定した"untitled"のまま更新されず、保存後も表示が
+            // 変わらない不具合になっていた)。
+            _document.Project.ProjectName = Path.GetFileNameWithoutExtension(path);
             ProjectSerializer.Save(_document.Project, path);
             _currentFilePath = path;
             _document.MarkSaved(); // 未保存フラグ解除→タイトルバーの'*'も消える(2026-07-19b)
             UpdateWindowTitle();
+            RefreshProjectTabBarLabelOnly(); // プロジェクトタブの表示名も同期
+            ProjectTitleText.Text = $"{_document.Project.ProjectName} ({_document.Project.MusicTitle})";
             StatusText.Text = $"保存しました: {Path.GetFileName(path)}";
             // 2026-07-28: 保存先も「最近開いたファイル」の先頭へ記録する(初回保存のパス確定時も含む)
             _appSettings.AddRecentFile(path);
@@ -488,6 +530,35 @@ public partial class MainWindow : Window
             var exporter = new DosExporter(_templates.Get);
             var text = exporter.Export(_document.Project, includeEditorMetadata: true);
             File.WriteAllText(dlg.FileName, text);
+            StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>合作用途(2026-07-23、TBD 5): カレント難易度タブ1つだけをITTNエディタ形式のタブファイルとして
+    /// 書き出す。合作相手は「ITTNエディタのタブファイルをインポート」/D&Dで自分のプロジェクトへタブ追加できる。</summary>
+    private void ExportCurrentTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var tab = _document.CurrentTab;
+        var dlg = new SaveFileDialog
+        {
+            Filter = "ITTNエディタ タブファイル (*.json)|*.json",
+            FileName = $"{_document.Project.ProjectName}_{tab.DifficultyName}.json",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            ProjectSerializer.SaveTabExport(_document.Project, tab, dlg.FileName);
             StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
         }
         catch (Exception ex)
@@ -641,6 +712,34 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, $"dos.txtインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ImportTabExport_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Filter = "ITTNエディタ タブファイル (*.json)|*.json|すべてのファイル (*.*)|*.*" };
+        if (dlg.ShowDialog(this) != true) return;
+        ImportTabExportFile(dlg.FileName);
+    }
+
+    /// <summary>ITTNエディタ形式のタブファイル(合作用、2026-07-23、TBD 5)をインポートする。
+    /// ImportTabExport_ClickとD&Dの共通処理。FUJI/SKBインポートと同じくChooseImportTargetProject/
+    /// FinishTabImportを流用する(現在のプロジェクトへ追加/新規プロジェクトとして/キャンセルを選べる)。</summary>
+    private void ImportTabExportFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        try
+        {
+            var result = ProjectSerializer.LoadTabExport(path);
+
+            var project = ChooseImportTargetProject(fileName);
+            if (project is null) return; // インポート先の選択をキャンセル
+            var warnings = ProjectOperations.ApplyImport(project, result);
+            FinishTabImport(project, warnings);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"タブファイルのインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1089,6 +1188,7 @@ public partial class MainWindow : Window
             switch (kind)
             {
                 case DroppedFileKind.OwnProject: OpenProjectFile(path); break;
+                case DroppedFileKind.OwnTabExport: ImportTabExportFile(path); break;
                 case DroppedFileKind.Fuji: ImportFujiFile(path); break;
                 case DroppedFileKind.Skb: ImportSkbFile(path); break;
                 case DroppedFileKind.Dos: ImportDosFile(path); break;
@@ -1201,6 +1301,24 @@ public partial class MainWindow : Window
 
     /// <summary>選択中の難易度タブを閉じる(2026-07-17: 「タブを閉じるができない」要望対応)。
     /// 最低1タブは残す(0件になるとCurrentTab等が参照できなくなるため)。</summary>
+    /// <summary>「新規譜面を追加」ボタン(2026-08-02要望対応)。新規プロジェクト作成時と同じダイアログ
+    /// (NewProjectDialog)を再利用し、キー種・難易度名を指定してカレントプロジェクトへタブを追加する。
+    /// BPMはプロジェクト全体で共通の値のためダイアログ上の入力は使用しない(タブ追加では変更しない)。</summary>
+    private void AddDifficultyTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        var choice = NewProjectDialog.Ask(this, _templates, _appSettings.DefaultBpm);
+        if (choice is not { } c) return;
+
+        var template = _templates.Get(c.KeyTypeId);
+        var newTab = DifficultyTab.CreateFor(template, c.DifficultyName);
+        _document.Project.Tabs.Add(newTab);
+        _document.CurrentTabIndex = _document.Project.Tabs.Count - 1;
+        _document.Selection.Clear();
+        OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+        _document.NotifyChanged();
+    }
+
     private void CloseCurrentTab_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null) return;
@@ -1320,6 +1438,12 @@ public partial class MainWindow : Window
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
         RefreshMacroList(); // 2026-07-30: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
+
+        // 2026-08-02: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
+        // カテゴリのキー種別一覧で設定した値。一覧に無いキー種はOFF扱い)。PlaytestReverseCheck.IsChecked代入は
+        // PlaytestSetting_Changed経由でAppSettings.PlaytestReverseへも反映・保存される。
+        bool reverseDefault = _appSettings.PlaytestReverseByKeyType.TryGetValue(_document.CurrentTab.KeyTypeId, out var rev) && rev;
+        PlaytestReverseCheck.IsChecked = reverseDefault;
     }
 
     // =====================================================================
@@ -1379,6 +1503,7 @@ public partial class MainWindow : Window
         };
         var box = new TextBox { Width = 110, Text = value, IsEnabled = enabled, Tag = tag };
         box.TextChanged += (_, _) => swatch.Background = SafeColorBrush(box.Text);
+        box.PreviewKeyDown += CommitOnEnter_PreviewKeyDown;
         box.LostFocus += ColorField_LostFocus;
         box.LostFocus += (_, _) =>
         {
@@ -1622,6 +1747,7 @@ public partial class MainWindow : Window
                     };
                     var box = new TextBox { Width = 120, Text = initial, IsEnabled = hasValue };
                     box.TextChanged += (_, _) => swatch.Background = SafeColorBrush(box.Text);
+                    box.PreviewKeyDown += CommitOnEnter_PreviewKeyDown;
                     box.LostFocus += (_, _) =>
                     {
                         if (useCheck.IsChecked != true) return;
@@ -1648,6 +1774,7 @@ public partial class MainWindow : Window
             default: // Number / Text / Raw
                 {
                     var box = new TextBox { Width = def.Type == HeaderParamType.Raw ? 220 : 140, Text = initial, IsEnabled = hasValue };
+                    box.PreviewKeyDown += CommitOnEnter_PreviewKeyDown;
                     box.LostFocus += (_, _) =>
                     {
                         if (useCheck.IsChecked != true) return;
@@ -1678,6 +1805,28 @@ public partial class MainWindow : Window
     // 右パネル①: プロジェクトのプロパティ(仕様書6.4.1)
     // =====================================================================
 
+    /// <summary>ダンおに本体の「レベル計算ツール++」アルゴリズム(danoni_main.jsのcalcLevelを移植した
+    /// DifficultyLevelCalculator、2026-08-01)で現在タブのツール値(難易度、参考値)を算出する。
+    /// フレーム値は本体の実データと同じ整数フレームに丸めてから渡す(TicksPerBeat等tick単位のままでは
+    /// 「10フレーム未満」等の閾値判定が本体と一致しなくなるため)。</summary>
+    private string CalculateToolValueLabel(DifficultyTab tab)
+    {
+        if (_document is null) return "-";
+        var engine = _document.Project.CreateTimingEngine();
+        long ToFrame(long tick) => (long)Math.Round(engine.TickToFrame(tick), MidpointRounding.AwayFromZero);
+
+        var arrowFramesPerLane = tab.Lanes
+            .Select(lane => (IReadOnlyList<long>)lane.Notes.Select(ToFrame).ToList())
+            .ToList();
+        var freezeFramesPerLane = tab.Lanes
+            .Select(lane => (IReadOnlyList<(long Start, long End)>)lane.Freezes
+                .Select(f => (ToFrame(f.StartTick), ToFrame(f.EndTick))).ToList())
+            .ToList();
+
+        var result = DifficultyLevelCalculator.Calculate(arrowFramesPerLane, freezeFramesPerLane);
+        return result.Tool;
+    }
+
     /// <summary>現在のProject/CurrentTabの値をプロパティパネルへ反映する(ドキュメント読込・タブ切替時)。</summary>
     private void RefreshProjectPropertiesPanel()
     {
@@ -1699,6 +1848,7 @@ public partial class MainWindow : Window
         var tab = _document.CurrentTab;
         DifficultyNameBox.Text = tab.DifficultyName;
         InitialSpeedBox.Text = tab.InitialSpeed.ToString(CultureInfo.InvariantCulture);
+        ToolValueText.Text = CalculateToolValueLabel(tab);
 
         _suppressPropertyPanelEvents = false;
 
@@ -1881,9 +2031,18 @@ public partial class MainWindow : Window
         ObjectEndFrameBox.Visibility = Visibility.Collapsed;
         ObjectValueLabel.Visibility = Visibility.Collapsed;
         ObjectValueBox.Visibility = Visibility.Collapsed;
+        ObjectSigNumeratorLabel.Visibility = Visibility.Collapsed;
+        ObjectSigNumeratorBox.Visibility = Visibility.Collapsed;
+        ObjectSigDenominatorLabel.Visibility = Visibility.Collapsed;
+        ObjectSigDenominatorBox.Visibility = Visibility.Collapsed;
         ObjectCommentLabel.Visibility = Visibility.Collapsed;
         ObjectCommentBox.Visibility = Visibility.Collapsed;
+        ObjectCommentLabel.Text = "Comment";
         ObjectWarningCheck.Visibility = Visibility.Collapsed;
+        ObjectWordPositionLabel.Visibility = Visibility.Collapsed;
+        ObjectWordPositionBox.Visibility = Visibility.Collapsed;
+        ObjectWordFadeFrameLabel.Visibility = Visibility.Collapsed;
+        ObjectWordFadeFrameBox.Visibility = Visibility.Collapsed;
 
         // 2026-07-26: ノート/フリーズのコメント・警告(Annotations、tick=フリーズはStartTickで同定)を
         // ③タブへ表示する共通処理。マーカーのCommentとは別系統(こちらはlane付きオブジェクト用)。
@@ -1966,19 +2125,61 @@ public partial class MainWindow : Window
                     break;
                 }
 
+            case ObjectKind.Word:
+                {
+                    var lane = tab.WordLanes[r.Lane];
+                    var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
+                    ObjectKindText.Text = $"歌詞({lane.Name}{(lane.IsReverse ? "・Reverse専用" : "")})";
+                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+
+                    ObjectWordPositionLabel.Visibility = Visibility.Visible;
+                    ObjectWordPositionBox.Visibility = Visibility.Visible;
+                    ObjectWordPositionBox.Text = (w?.Position ?? 0).ToString(CultureInfo.InvariantCulture);
+
+                    ObjectCommentLabel.Text = "本文(歌詞、または[fadein]/[fadeout]/[left]/[center]/[right]/[fontSize=XX]の制御キーワード)";
+                    ObjectCommentLabel.Visibility = Visibility.Visible;
+                    ObjectCommentBox.Visibility = Visibility.Visible;
+                    ObjectCommentBox.Text = w?.Text ?? "";
+
+                    bool isFadeControl = w?.Kind == WordEntryKind.Control &&
+                        (w.Text.Equals("[fadein]", StringComparison.OrdinalIgnoreCase) || w.Text.Equals("[fadeout]", StringComparison.OrdinalIgnoreCase));
+                    ObjectWordFadeFrameLabel.Visibility = isFadeControl ? Visibility.Visible : Visibility.Collapsed;
+                    ObjectWordFadeFrameBox.Visibility = isFadeControl ? Visibility.Visible : Visibility.Collapsed;
+                    ObjectWordFadeFrameBox.Text = (w?.FadeFrame ?? 30).ToString(CultureInfo.InvariantCulture);
+                    break;
+                }
+
             case ObjectKind.TimeSignature:
                 {
                     var sig = _document.Project.TimeSignatures.FirstOrDefault(s => s.MeasureIndex == r.Tick);
                     ObjectKindText.Text = sig is null
                         ? "拍子(データ取得失敗)"
-                        : $"拍子 {sig.Numerator}/{sig.Denominator}(小節番号{sig.MeasureIndex}・このタブでの編集は今回未対応)";
+                        : $"拍子(小節番号{sig.MeasureIndex})";
                     ObjectFrameLabel.Text = "小節番号";
                     ObjectFrameBox.Text = r.Tick.ToString();
-                    ObjectFrameBox.IsEnabled = false;
+                    ObjectFrameBox.IsEnabled = false; // 小節番号は物理小節頭固定のため移動不可(仕様書7.5)
+                    ObjectSigNumeratorLabel.Visibility = Visibility.Visible;
+                    ObjectSigNumeratorBox.Visibility = Visibility.Visible;
+                    ObjectSigNumeratorBox.Text = (sig?.Numerator ?? 4).ToString(CultureInfo.InvariantCulture);
+                    ObjectSigDenominatorLabel.Visibility = Visibility.Visible;
+                    ObjectSigDenominatorBox.Visibility = Visibility.Visible;
+                    ObjectSigDenominatorBox.Text = (sig?.Denominator ?? 4).ToString(CultureInfo.InvariantCulture);
                     break;
                 }
         }
         _suppressObjectPanelEvents = false;
+    }
+
+    /// <summary>右パネルの単一行入力欄でEnterキーを押した際、LostFocusを待たずに即座に値を確定させる
+    /// (2026-08-04要望対応)。フォーカスを次のコントロールへ移すことで既存のLostFocusハンドラを
+    /// そのまま起動させる方式(コミット処理自体は複製しない)。複数行入力(AcceptsReturn=true、
+    /// ObjectCommentBox等)は対象外とし、Enterは通常通り改行として機能させる。</summary>
+    private void CommitOnEnter_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        if (sender is TextBox { AcceptsReturn: true }) return;
+        e.Handled = true;
+        (sender as UIElement)?.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
     }
 
     private static string FormatFrame(double frame) => frame.ToString("0.##", CultureInfo.InvariantCulture);
@@ -2087,6 +2288,22 @@ public partial class MainWindow : Window
     private static bool IsAnnotatableKind(ObjectKind kind) =>
         kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody;
 
+    /// <summary>拍子(TimeSignature)の分子/分母編集(2026-08-03要望対応)。既存のPlaceTimeSignatureActionは
+    /// 「同じ小節番号の既存拍子を削除→新しい拍子を追加」を1操作でUndo対応しているため、そのまま
+    /// 「編集」用途にも流用できる(小節番号自体は不変、値だけが変わる)。</summary>
+    private void ObjectTimeSignature_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { Kind: ObjectKind.TimeSignature } r) return;
+        if (!int.TryParse(ObjectSigNumeratorBox.Text, out var num) || num < 1 ||
+            !int.TryParse(ObjectSigDenominatorBox.Text, out var denom) || denom < 1)
+        { RefreshSelectedObjectPanel(); return; }
+
+        var sig = _document.Project.TimeSignatures.FirstOrDefault(s => s.MeasureIndex == r.Tick);
+        if (sig is not null && sig.Numerator == num && sig.Denominator == denom) return; // 変更なしならUndo履歴を汚さない
+
+        _document.Execute(new PlaceTimeSignatureAction((int)r.Tick, num, denom));
+    }
+
     private void ObjectComment_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
@@ -2101,11 +2318,50 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (r.Kind == ObjectKind.Word) { CommitWordEntryEdit(r); return; } // 2026-07-23(TBD 4)
+
         // 2026-07-26: ノート/フリーズのコメント編集(Annotations)
         if (!IsAnnotatableKind(r.Kind)) return;
         var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
         if ((a?.Comment ?? "") == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
         _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, ObjectCommentBox.Text, a?.Warning ?? false));
+        Canvas.InvalidateVisual();
+    }
+
+    /// <summary>歌詞エントリ(Word)専用フィールド(段/フェードフレーム数)のLostFocus共通処理(2026-07-23、TBD 4)。</summary>
+    private void ObjectWordEntry_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { Kind: ObjectKind.Word } r) return;
+        CommitWordEntryEdit(r);
+    }
+
+    /// <summary>歌詞エントリの本文(ObjectCommentBox)・段(ObjectWordPositionBox)・
+    /// フェードフレーム数(ObjectWordFadeFrameBox)をまとめて1つのEditWordEntryActionとして確定する
+    /// (2026-07-23、TBD 4)。種別(通常歌詞/制御)は本文が"[...]"形式かどうかで自動判定する
+    /// (専用UIは設けない、ユーザー確定仕様)。</summary>
+    private void CommitWordEntryEdit(ObjectRef r)
+    {
+        var lane = _document!.CurrentTab.WordLanes[r.Lane];
+        var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
+        if (w is null) return;
+
+        if (!int.TryParse(ObjectWordPositionBox.Text, out var position)) { RefreshSelectedObjectPanel(); return; }
+        string text = ObjectCommentBox.Text;
+        bool isControl = text.Length >= 2 && text[0] == '[' && text[^1] == ']';
+        bool isFadeControl = isControl && (text.Equals("[fadein]", StringComparison.OrdinalIgnoreCase) || text.Equals("[fadeout]", StringComparison.OrdinalIgnoreCase));
+        int? fadeFrame = null;
+        if (isFadeControl)
+        {
+            if (!int.TryParse(ObjectWordFadeFrameBox.Text, out var ff)) { RefreshSelectedObjectPanel(); return; }
+            fadeFrame = ff;
+        }
+
+        var kind = isControl ? WordEntryKind.Control : WordEntryKind.Lyrics;
+        var newEntry = new WordEntry(r.Tick, position, kind, text, fadeFrame);
+        if (w.Position == newEntry.Position && w.Kind == newEntry.Kind && w.Text == newEntry.Text && w.FadeFrame == newEntry.FadeFrame)
+            return; // 変更なしならUndo履歴を汚さない
+
+        _document.Execute(new EditWordEntryAction(r.Lane, r.Tick, newEntry));
         Canvas.InvalidateVisual();
     }
 
@@ -2645,6 +2901,7 @@ public partial class MainWindow : Window
                     UpdateNColorPreview();
                     PushPaintColorToController();
                 }
+                combo.PreviewKeyDown += CommitOnEnter_PreviewKeyDown;
                 combo.LostFocus += (_, _) => CommitName();
                 combo.SelectionChanged += (_, _) => CommitName();
 
@@ -2677,6 +2934,7 @@ public partial class MainWindow : Window
                     UpdateNColorPreview();
                     PushPaintColorToController();
                 };
+                box.PreviewKeyDown += CommitOnEnter_PreviewKeyDown;
                 box.LostFocus += (_, _) =>
                 {
                     ColorHistoryPicker.Record(_appSettings, box.Text);

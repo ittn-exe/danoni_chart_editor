@@ -467,10 +467,14 @@ internal sealed class TemplateEditorWindow : Window
     {
         var imgDir = AppPaths.FindAssetDir("img");
         if (imgDir is null) return ["arrow"];
+        // 2026-08-03: pngに加えてsvgも素材として認識する(要望対応)。同名のpng/svgが両方ある場合は
+        // 1項目にまとめる(実際の読込優先順位はChartCanvas.GetNoteImageと同じくpng優先)。
         return Directory.EnumerateFiles(imgDir, "*.png")
+            .Concat(Directory.EnumerateFiles(imgDir, "*.svg"))
             .Select(Path.GetFileNameWithoutExtension)
             .Where(n => !string.IsNullOrEmpty(n) && !n.Contains("shadow", StringComparison.OrdinalIgnoreCase))
             .Select(n => n!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }

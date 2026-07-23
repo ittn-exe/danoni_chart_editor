@@ -28,6 +28,10 @@ public sealed class AppSettings
     /// <summary>ノート強調グリッドの色(6桁カラーコード、仕様書6.4.2のカラーコード入力方式に準拠)。</summary>
     public string HighlightLineColorHex { get; set; } = "#FFD400";
 
+    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-08-02要望対応)。
+    /// 既定OFF(従来通り始点・終点の両方に描画)。環境設定「表示」カテゴリからのみ変更可能。</summary>
+    public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
+
     /// <summary>目視テスト中の再生位置ライン追従方式(2026-07-17f、未解決事項§2-1)。
     /// "page"=(A)ページ送り: ラインが画面外へ出た瞬間に次の1画面分へ切り替える。
     /// "smooth"=(B)スムーズスクロール: ラインを画面上の固定位置に据えて譜面側を流す。</summary>
@@ -57,8 +61,16 @@ public sealed class AppSettings
     /// <summary>カーソル強調帯の色(6桁カラーコード)。</summary>
     public string CursorHighlightColorHex { get; set; } = "#00E5FF";
 
-    /// <summary>プレイテスト: Reverse(スクロール反転)ON/OFF(2026-07-17g)。</summary>
+    /// <summary>プレイテスト: Reverse(スクロール反転)ON/OFF(2026-07-17g)。
+    /// 難易度タブ切替時にPlaytestReverseByKeyTypeの値で自動上書きされる(2026-08-02)。</summary>
     public bool PlaytestReverse { get; set; } = false;
+
+    /// <summary>プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応)。
+    /// キー=keyTypeId、値=そのキー種で難易度タブを開いた際に自動適用するReverse初期値。
+    /// エディタUIには編集欄を設けず、環境設定「テンプレート」カテゴリでのみ変更する
+    /// (テンプレートフォルダの全キー種を一覧表示してチェックボックスで設定)。
+    /// キーが存在しないキー種はfalse(通常)扱い。</summary>
+    public Dictionary<string, bool> PlaytestReverseByKeyType { get; set; } = [];
 
     /// <summary>プレイテスト: ハイスピード倍率(px/frame換算、本家のx1=1px/frame相当)。</summary>
     public double PlaytestHiSpeed { get; set; } = 2.0;
@@ -89,6 +101,11 @@ public sealed class AppSettings
     /// プレイテスト(PlaytestReverse)とは完全に独立した設定。環境設定からのみ切替可能
     /// (ボタン・チェックボックス・ショートカットキーは用意しない、2026-07-22ユーザー確定仕様)。</summary>
     public bool ChartViewReverse { get; set; } = false;
+
+    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-08-01、要望対応)。既定OFF。
+    /// マウスモード中はラベルの次の行に表示し、キーボードモード中(既に2行使用中)は
+    /// 1行目(実キー表示)をノート数表示に置き換える(ChartCanvas.DrawLaneLabels参照)。</summary>
+    public bool ShowLaneNoteCount { get; set; } = false;
 
     /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)。0.1〜2.0、0.1刻み。
     /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>

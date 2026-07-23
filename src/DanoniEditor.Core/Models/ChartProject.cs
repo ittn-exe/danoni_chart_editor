@@ -105,6 +105,12 @@ public sealed class DifficultyTab
     /// 指定しない(customGauge{N}ヘッダー自体を出力しない=本体の既定ゲージが使われる)。</summary>
     public GaugeConfig? Gauge { get; set; }
 
+    /// <summary>歌詞表示レーン(仕様dos-e0003-wordData、2026-07-23、TBD 4)。ユーザーが任意に追加/削除できる
+    /// (既定0本=歌詞表示機能を使わないプロジェクトでは何も出力されない)。同一タブ内でIsReverseが同じ
+    /// レーンが複数ある場合、出力時はフレーム順にマージして1つのword_data(またはwordRev_data)にまとめる
+    /// (DosExporter参照)。</summary>
+    public List<WordLane> WordLanes { get; set; } = [];
+
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
     {
@@ -194,3 +200,36 @@ public sealed class GaugeParamSet
     /// フォールバックに委ねる(先頭タブと同じ値が使われる)。</summary>
     public List<string> PerTabCsv { get; set; } = [];
 }
+
+// =====================================================================
+// 歌詞表示(word_data、仕様dos-e0003-wordData、2026-07-23、TBD 4)
+// =====================================================================
+
+/// <summary>歌詞レーン1本(ユーザーが任意に追加できる、DifficultyTab.WordLanes参照)。
+/// IsReverseが出力先データ名(word_data系 or wordRev_data系)を決める唯一のプロパティ。
+/// 将来、多言語(Ja/En)やスクロール種別(Cross/Split/Flat)対応が必要になった場合も、
+/// このクラスへプロパティを追加する形で拡張していく想定(現時点では非対応、TBDとして別途記録)。</summary>
+public sealed class WordLane
+{
+    /// <summary>UI表示用のレーン名(ユーザー編集可、出力には影響しない)</summary>
+    public string Name { get; set; } = "歌詞";
+
+    /// <summary>true=wordRev_data系(Reverse専用表示)として出力、false=word_data系(通常表示)</summary>
+    public bool IsReverse { get; set; }
+
+    public List<WordEntry> Entries { get; set; } = [];
+}
+
+/// <summary>歌詞表示1行分の種別(dos-e0003-wordData「使い方」節の3パターンに対応)。</summary>
+public enum WordEntryKind
+{
+    /// <summary>通常表記(Frame,Position,Lyrics)</summary>
+    Lyrics,
+    /// <summary>歌詞変化(Frame,Position,[fadein]等のキーワード,FadeFrame(fadein/fadeout時のみ))</summary>
+    Control,
+    /// <summary>コメント行(Frame,-,Comment)。Positionは出力上"-"固定でありEntry.Positionの値は無視される。</summary>
+    Comment,
+}
+
+/// <summary>歌詞表示1件分。KindがControlの場合、Textは"[fadein]"等のキーワード文字列そのものを保持する。</summary>
+public sealed record WordEntry(long Tick, int Position, WordEntryKind Kind, string Text, int? FadeFrame = null);

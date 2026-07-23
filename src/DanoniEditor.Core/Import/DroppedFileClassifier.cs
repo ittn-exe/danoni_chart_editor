@@ -9,6 +9,9 @@ public enum DroppedFileKind
 {
     /// <summary>自形式プロジェクトファイル(.json、schemaVersion/project持ち)</summary>
     OwnProject,
+    /// <summary>自形式タブファイル(.json、schemaVersion/project/tabExport持ち、2026-07-23、TBD 5)。
+    /// 合作用途でカレント難易度タブ1つだけを書き出したもの。</summary>
+    OwnTabExport,
     /// <summary>FUJIエディタファイル(.txt、$セクションキー8種全部揃い。2026-07-26仕様)</summary>
     Fuji,
     /// <summary>SKBエディタファイル(.txt/.json、keyKind/scores/timings持ちのJSON)</summary>
@@ -28,6 +31,8 @@ public enum DroppedFileKind
 /// 拡張子だけでは判別できない組み合わせがある(FUJI/SKB/dos.txtが.txtを共有、自形式/SKBが.jsonを共有)ため、
 /// 中身をスニッフィングして判定する。判定根拠は全て実データ/公式wikiで確認済みの各形式固有マーカー:
 /// - 自形式: JSONで"schemaVersion"+"project"キーを持つ(ProjectSerializerの出力形式)
+/// - 自形式タブファイル: 上記に加え"tabExport"キーを持つ(ProjectSerializer.SerializeTabExportの出力形式、
+///   2026-07-23、TBD 5)
 /// - SKB: JSONで"keyKind"+"scores"+"timings"キーを持つ(SkbImporterのSkbFile形状)
 /// - FUJI: $セクションキーとして version/template/dospath/option/frame/barcut/score/header の
 ///   8つが全部揃っている(2026-07-26確定仕様。従来の「$frame=を含む」単独チェックから変更。
@@ -125,6 +130,13 @@ public static partial class DroppedFileClassifier
                 doc.RootElement.EnumerateObject().Select(p => p.Name),
                 StringComparer.OrdinalIgnoreCase);
 
+            // 2026-07-23: tabExportキーを持つ場合はタブ単体エクスポート(OwnTabExport)。
+            // 通常のOwnProject判定より先にチェックする(両方とも"schemaVersion"+"project"を持つため)。
+            if (keys.Contains("schemaVersion") && keys.Contains("project") && keys.Contains("tabExport"))
+            {
+                kind = DroppedFileKind.OwnTabExport;
+                return true;
+            }
             if (keys.Contains("schemaVersion") && keys.Contains("project"))
             {
                 kind = DroppedFileKind.OwnProject;

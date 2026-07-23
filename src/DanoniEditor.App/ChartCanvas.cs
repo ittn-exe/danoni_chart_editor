@@ -35,6 +35,9 @@ public sealed class ChartCanvas : FrameworkElement
     private static readonly Brush BpmBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x50, 0xC0, 0x60)));
     private static readonly Brush TimeSigBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x60, 0xC0, 0xE0)));
     private static readonly Brush MarkerBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x90, 0x90, 0x90)));
+    // 2026-07-23(TBD 4): 歌詞レーン(WordLanes)のタグ色。制御行([fadein]等)は歌詞本文と区別しやすい紫系にする。
+    private static readonly Brush WordLyricsBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xE0, 0xB0, 0x50)));
+    private static readonly Brush WordControlBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xB0, 0x70, 0xE0)));
     private static readonly Brush LaneLabelBackgroundBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xE0, 0x10, 0x10, 0x10))); // 2026-07-22: レーンラベル背景
     private static readonly Brush KeyboardInputKeyBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x4F, 0xC3, 0xF7))); // 2026-07-22: キーボードモード入力キー(2行目)の色分け
     private static readonly Brush SelectionBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xA0, 0xFF, 0xEE, 0x00)));
@@ -48,29 +51,65 @@ public sealed class ChartCanvas : FrameworkElement
     private static readonly string? ImgDir = AppPaths.FindAssetDir("img");
     private static readonly Dictionary<string, BitmapImage?> ImageCache = [];
 
+    /// <summary>SVGラスタライズ時の出力解像度(px)。ノート画像は最大でもこの程度の表示サイズしか
+    /// 使わないため、これより大きくしても画質向上の意味が薄い一方でメモリ・処理コストが増える。</summary>
+    private const int SvgRasterSize = 256;
+
     internal static BitmapImage? GetNoteImage(string noteGraphic) // 2026-07-17g: PlaytestWindowと共用のためinternal化
     {
         if (ImageCache.TryGetValue(noteGraphic, out var cached)) return cached;
         BitmapImage? image = null;
         if (ImgDir is not null)
         {
-            var path = Path.Combine(ImgDir, $"{noteGraphic}.png");
-            if (File.Exists(path))
+            var pngPath = Path.Combine(ImgDir, $"{noteGraphic}.png");
+            if (File.Exists(pngPath))
             {
                 try
                 {
                     image = new BitmapImage();
                     image.BeginInit();
                     image.CacheOption = BitmapCacheOption.OnLoad;
-                    image.UriSource = new Uri(path, UriKind.Absolute);
+                    image.UriSource = new Uri(pngPath, UriKind.Absolute);
                     image.EndInit();
                     image.Freeze();
                 }
                 catch { image = null; } // 壊れた画像等はベクターへフォールバック
             }
+            else
+            {
+                // 2026-08-03: pngが無い場合、同名のsvgがあればラスタライズして使う(要望対応)。
+                // pngが優先(既存素材との互換性維持)、svgはpng不在時のみのフォールバック。
+                var svgPath = Path.Combine(ImgDir, $"{noteGraphic}.svg");
+                if (File.Exists(svgPath)) image = TryRasterizeSvg(svgPath);
+            }
         }
         ImageCache[noteGraphic] = image;
         return image;
+    }
+
+    /// <summary>SVGファイルをビットマップへラスタライズし、以降の着色処理(GetTintedNoteImage)や
+    /// 描画処理(DrawNoteImage)が既存のpng読込と全く同じ扱いをできるよう、BitmapImageとして返す
+    /// (Svgライブラリ(System.Drawing.Bitmap)でレンダリングしたのち、PNGエンコードしてメモリ上から
+    /// 通常のBitmapImage読込と同じ経路に載せる)。透過背景を維持する。</summary>
+    private static BitmapImage? TryRasterizeSvg(string svgPath)
+    {
+        try
+        {
+            var svgDoc = Svg.SvgDocument.Open(svgPath);
+            using var bitmap = svgDoc.Draw(SvgRasterSize, SvgRasterSize);
+            using var ms = new MemoryStream();
+            bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            ms.Position = 0;
+
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.StreamSource = ms;
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch { return null; } // 壊れたsvg等はベクターへフォールバック
     }
 
     // --- ノート画像の着色(2026-07-16k): setColor/frzColorをノート画像にも反映する要望対応。
@@ -187,15 +226,20 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>ノート強調グリッドの色。</summary>
     public Color HighlightLineColor { get; set; } = Color.FromRgb(0xFF, 0xD4, 0x00);
 
+    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-08-02要望対応、既定OFF)。
+    /// ONの場合、フリーズの終点位置には強調グリッド(横棒)を描かない(始点は従来通り描く)。</summary>
+    public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
+
     /// <summary>
     /// 表示設定(AppSettings由来)をまとめて適用し、再描画する。MainWindowが起動時・設定変更時に呼ぶ。
     /// </summary>
-    public void ApplyDisplaySettings(bool showNoteImages, bool showHighlightGrid, double highlightLineWidth, Color highlightLineColor)
+    public void ApplyDisplaySettings(bool showNoteImages, bool showHighlightGrid, double highlightLineWidth, Color highlightLineColor, bool excludeFreezeEndFromHighlight = false)
     {
         ShowNoteImages = showNoteImages;
         ShowHighlightGrid = showHighlightGrid;
         HighlightLineWidth = highlightLineWidth;
         HighlightLineColor = highlightLineColor;
+        ExcludeFreezeEndFromHighlight = excludeFreezeEndFromHighlight;
         InvalidateVisual();
     }
 
@@ -574,6 +618,8 @@ public sealed class ChartCanvas : FrameworkElement
         DrawValueEvents(dc, layout, tab, project, tickMin, tickMax);
         DrawMarkers(dc, layout, project, tickMin, tickMax);
         DrawTimeSignatures(dc, layout, project, engine, tickMin, tickMax);
+        DrawTimeInfoLane(dc, layout, tab, engine, tickMin, tickMax); // 2026-07-23: 時間情報表示レーン(TBD 1-1)
+        DrawWordEntries(dc, layout, tab, tickMin, tickMax); // 2026-07-23: 歌詞レーン(TBD 4)
         DrawSelectionHighlights(dc, layout, Document, tickMin, tickMax);
         DrawDragPreview(dc, layout, tab, project);
         DrawPlaybackLine(dc, layout, tickMin, tickMax);
@@ -589,6 +635,10 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>SKB操作モード(キーボード操作)が有効中か(2026-07-22、レーンラベルの2行目表示に使用)。
     /// MainWindow.ToggleKeyboardModeから反映される。</summary>
     public bool KeyboardModeActive { get; set; }
+
+    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-08-01、要望対応、既定OFF)。
+    /// AppSettings.ShowLaneNoteCountから反映される(MainWindow.ApplyDisplaySettingsToCanvas参照)。</summary>
+    public bool ShowLaneNoteCount { get; set; }
 
     private static readonly Brush WaveformBrush = MakeFrozen(new SolidColorBrush(Color.FromArgb(0x55, 0x4F, 0xC3, 0xF7)));
     private static readonly Pen GuidePen = MakeFrozenPen(new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)), 2) { DashStyle = new DashStyle([6, 3], 0) });
@@ -782,8 +832,9 @@ public sealed class ChartCanvas : FrameworkElement
             }
         }
 
-        // 小節線(strong、小節番号付き、仕様書7.5)
-        int measure = 0;
+        // 小節線(strong、仕様書7.5)。小節番号のテキスト表示は時間情報表示レーンへ移動済み
+        // (2026-07-23、TBD 1-1)。DrawTimeInfoLaneが同じ小節境界の走査で描画する。
+        int measureGuard = 0;
         long tick = 0;
         while (tick <= tickMax)
         {
@@ -791,17 +842,11 @@ public sealed class ChartCanvas : FrameworkElement
             {
                 double y = layout.TickToY(tick);
                 dc.DrawLine(new Pen(MeasureLineBrush, 1.5), new Point(left, y), new Point(right, y));
-                // 小節番号のフォントサイズもZoomScaleに連動させる(2026-07-16h、Ctrl+スクロールで
-                // 拡大しても文字サイズが変わらず見づらいとの指摘対応)
-                double measureFontSize = Math.Max(7, 11 * layout.ZoomScale);
-                var text = new FormattedText(measure.ToString(), System.Globalization.CultureInfo.InvariantCulture,
-                    FlowDirection.LeftToRight, Typeface, measureFontSize, Brushes.White, 1.0);
-                dc.DrawText(text, new Point(2, y - measureFontSize - 1));
             }
             var sig = engine.SignatureAt(tick);
             tick += sig.TicksPerMeasure;
-            measure++;
-            if (measure > 100000) break; // 安全弁(拍子破損時の無限ループ防止)
+            measureGuard++;
+            if (measureGuard > 100000) break; // 安全弁(拍子破損時の無限ループ防止)
         }
     }
 
@@ -943,9 +988,12 @@ public sealed class ChartCanvas : FrameworkElement
 
                 if (ShowHighlightGrid)
                 {
-                    // 強調グリッド: 始点・終点それぞれの位置に横棒を描く(2026-07-16h、2026-07-16jで独立トグル化)
+                    // 強調グリッド: 始点・終点それぞれの位置に横棒を描く(2026-07-16h、2026-07-16jで独立トグル化)。
+                    // 2026-08-02: 終点は密集時に非常に見づらいとの指摘対応で、設定でON/OFFできるようにした
+                    // (既定は従来通り描画する=OFF)。
                     dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y1 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
-                    dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y2 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
+                    if (!ExcludeFreezeEndFromHighlight)
+                        dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y2 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                 }
 
                 // 2026-07-26: 警告フラグON(StartTickで同定)のフリーズは始点側へ警告アイコンを重ねる
@@ -1131,6 +1179,107 @@ public sealed class ChartCanvas : FrameworkElement
     public bool MarkerCommentFull { get; set; } = true;
     public int MarkerCommentHeadChars { get; set; } = 4;
 
+    /// <summary>時間情報表示レーン(2026-07-23、TBD 1-1)。マーカーレーンのさらに左側に置く表示専用レーン。
+    /// 小節の頭には「小節番号・frame・time」の3行、ノート配置frame(小節頭を除く)には「frame」の1行を表示する。
+    /// クリック等の編集操作は持たない(ダブルクリックの再生開始位置指定のみSmartToolController側で対応済み)。</summary>
+    private void DrawTimeInfoLane(DrawingContext dc, ChartLayout layout, DifficultyTab tab, TimingEngine engine, long tickMin, long tickMax)
+    {
+        var col = layout.Column(ColumnKind.TimeInfo);
+        double x = col.X + 2;
+        double fontSize = Math.Max(6, 8 * layout.ZoomScale);
+
+        // 小節の頭: 小節番号・frame・time(既存の小節線描画と同じ走査ロジック、2026-07-23に小節線側から移設)。
+        // 2026-07-23追記: ズームアウト等で隣の小節との間隔が3行ぶんの高さを下回る(＝行が重なる)場合は、
+        // 自動的に小節番号のみの1行表示へ切り替える(ユーザー確定仕様: 「小節番号くらいなら重なっても良い」)。
+        double lineH = fontSize + 1;
+        double requiredHeight = lineH * 3;
+        var measureHeadTicks = new HashSet<long>();
+        int measure = 0;
+        long mTick = 0;
+        int measureGuard = 0;
+        double? prevY = null;
+        while (mTick <= tickMax)
+        {
+            measureHeadTicks.Add(mTick);
+            double y = layout.TickToY(mTick);
+            if (mTick >= tickMin - 4L * TimingEngine.TicksPerBeat * 4)
+            {
+                double frame = engine.TickToFrame(mTick);
+                bool crowded = prevY is double py && Math.Abs(y - py) < requiredHeight;
+                if (crowded)
+                    DrawTimeInfoText(dc, x, y, fontSize, Brushes.White, $"#{measure}");
+                else
+                    DrawTimeInfoText(dc, x, y, fontSize, Brushes.White,
+                        $"{frame / 60.0:0.00}s", $"{frame:0.#}f", $"#{measure}");
+            }
+            prevY = y;
+            var sig = engine.SignatureAt(mTick);
+            mTick += sig.TicksPerMeasure;
+            measure++;
+            measureGuard++;
+            if (measureGuard > 100000) break; // 安全弁(拍子破損時の無限ループ防止)
+        }
+
+        // ノートが置かれているframe(小節頭と重複するものは上で表示済みのため除外)
+        var noteTicks = new HashSet<long>();
+        foreach (var lane in tab.Lanes)
+        {
+            foreach (var t in lane.Notes)
+                if (t >= tickMin && t <= tickMax) noteTicks.Add(t);
+            foreach (var f in lane.Freezes)
+            {
+                if (f.StartTick >= tickMin && f.StartTick <= tickMax) noteTicks.Add(f.StartTick);
+                if (f.EndTick >= tickMin && f.EndTick <= tickMax) noteTicks.Add(f.EndTick);
+            }
+        }
+        foreach (var t in noteTicks)
+        {
+            if (measureHeadTicks.Contains(t)) continue;
+            double y = layout.TickToY(t);
+            double frame = engine.TickToFrame(t);
+            DrawTimeInfoText(dc, x, y, fontSize, Brushes.LightGray, $"{frame:0.#}f");
+        }
+    }
+
+    /// <summary>時間情報表示レーンのテキストを、基準線(y)のすぐ上を起点に下から積み上げて描画する
+    /// (linesBottomToTop[0]がyに最も近い行)。</summary>
+    private void DrawTimeInfoText(DrawingContext dc, double x, double y, double fontSize, Brush brush, params string[] linesBottomToTop)
+    {
+        double lineH = fontSize + 1;
+        double lineY = y - lineH - 1;
+        foreach (var line in linesBottomToTop)
+        {
+            var ft = new FormattedText(line, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, Typeface, fontSize, brush, 1.0);
+            dc.DrawText(ft, new Point(x, lineY));
+            lineY -= lineH;
+        }
+    }
+
+    private static string WordLaneLabel(WordLane lane) => lane.IsReverse ? $"{lane.Name}(Rev)" : lane.Name;
+
+    /// <summary>歌詞レーン(WordLanes、2026-07-23、TBD 4)のエントリをタグとして描画する。
+    /// 制御行([fadein]等)はそのままのキーワードを、通常歌詞は本文(長ければ省略)を表示する。</summary>
+    private void DrawWordEntries(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
+    {
+        for (int i = 0; i < tab.WordLanes.Count; i++)
+        {
+            var col = layout.WordColumn(i);
+            foreach (var w in tab.WordLanes[i].Entries)
+            {
+                if (w.Tick < tickMin || w.Tick > tickMax) continue;
+                string label = w.Kind switch
+                {
+                    WordEntryKind.Control => w.Text,
+                    WordEntryKind.Comment => $"//{w.Text}",
+                    _ => w.Text.Length <= 6 ? w.Text : w.Text[..6] + "…",
+                };
+                var brush = w.Kind == WordEntryKind.Control ? WordControlBrush : WordLyricsBrush;
+                DrawEventTag(dc, col, layout.TickToY(w.Tick), brush, label, pointLeft: false, layout.ZoomScale);
+            }
+        }
+    }
+
     private void DrawMarkers(DrawingContext dc, ChartLayout layout, ChartProject project, long tickMin, long tickMax)
     {
         var col = layout.Column(ColumnKind.Marker);
@@ -1162,38 +1311,59 @@ public sealed class ChartCanvas : FrameworkElement
     /// 固定ヘッダーのXAML要素は作らず、viewport(スクロール位置)に追従してOnRenderのたびに
     /// その位置へ描き直す方式(ChartCanvas全体が1枚のCanvasで、ScrollViewerが外側にあるため)。
     /// </summary>
+    /// <summary>2026-08-01: レーンラベル欄のノート数表示(要望対応)。マウスモード中はラベルの次の行に、
+    /// キーボードモード中(既に2行使用中)はレーンラベル(1行目)をノート数表示に置き換える。</summary>
+    private static readonly Brush NoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0xD5, 0x4F)));
+
     private void DrawLaneLabels(DrawingContext dc, ChartLayout layout, Rect viewport)
     {
         if (Document is null) return;
         var template = Document.CurrentTemplate;
+        var tab = Document.CurrentTab;
         double fontSize = Math.Max(7, 9 * layout.ZoomScale);
         double lineH = fontSize + 3;
-        double barHeight = (KeyboardModeActive ? lineH * 2 : lineH) + 6;
+        bool twoLines = KeyboardModeActive || ShowLaneNoteCount;
+        double barHeight = (twoLines ? lineH * 2 : lineH) + 6;
         double barTop = Reverse ? viewport.Bottom - barHeight : viewport.Top;
 
         dc.DrawRectangle(LaneLabelBackgroundBrush, null, new Rect(viewport.Left, barTop, viewport.Width, barHeight));
 
         foreach (var col in layout.Columns)
         {
+            string? noteCountText = null;
+            if (col.Kind == ColumnKind.Note && ShowLaneNoteCount)
+            {
+                var lane = tab.Lanes[col.NoteLaneIndex];
+                int count = lane.Notes.Count + lane.Freezes.Count;
+                noteCountText = $"×{count}";
+            }
+
             string? line1 = col.Kind switch
             {
+                ColumnKind.TimeInfo => "時間情報",
                 ColumnKind.Marker => "マーカー",
                 ColumnKind.Measure => "拍子",
                 ColumnKind.Speed => "speed",
                 ColumnKind.Boost => "boost",
                 ColumnKind.Bpm => "BPM",
-                ColumnKind.Note => template.Lanes[col.NoteLaneIndex].KeyAssignLabel,
+                ColumnKind.Note => (KeyboardModeActive && ShowLaneNoteCount) ? noteCountText : template.Lanes[col.NoteLaneIndex].KeyAssignLabel,
+                ColumnKind.Word => WordLaneLabel(tab.WordLanes[col.NoteLaneIndex]),
                 _ => null,
             };
             if (string.IsNullOrEmpty(line1)) continue;
 
-            DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, Brushes.White);
+            bool line1IsNoteCount = col.Kind == ColumnKind.Note && KeyboardModeActive && ShowLaneNoteCount;
+            DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, line1IsNoteCount ? NoteCountBrush : Brushes.White);
 
             if (col.Kind == ColumnKind.Note && KeyboardModeActive)
             {
                 var line2 = template.Lanes[col.NoteLaneIndex].KeyboardInputKeysLabel;
                 if (!string.IsNullOrEmpty(line2))
                     DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, line2, fontSize, KeyboardInputKeyBrush);
+            }
+            else if (col.Kind == ColumnKind.Note && ShowLaneNoteCount && noteCountText is not null)
+            {
+                DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, noteCountText, fontSize, NoteCountBrush);
             }
         }
     }
@@ -1314,6 +1484,10 @@ public sealed class ChartCanvas : FrameworkElement
                     case ObjectKind.Marker:
                         DrawGhostTag(dc, ghostPen, layout.Column(ColumnKind.Marker), layout.TickToY(r.Tick + mv.TickDelta));
                         break;
+                    case ObjectKind.Word:
+                        // 2026-07-23(TBD 4): 歌詞はレーンを跨いだ移動をサポートしないため、常に自分自身のレーンで描く
+                        DrawGhostTag(dc, ghostPen, layout.WordColumn(r.Lane), layout.TickToY(r.Tick + mv.TickDelta));
+                        break;
                 }
             }
         }
@@ -1389,6 +1563,9 @@ public sealed class ChartCanvas : FrameworkElement
             case ObjectKind.TimeSignature:
                 DrawDragDeleteTagMark(dc, layout.Column(ColumnKind.Measure), layout.TickToY(r.Tick), deletePen);
                 break;
+            case ObjectKind.Word:
+                DrawDragDeleteTagMark(dc, layout.WordColumn(r.Lane), layout.TickToY(r.Tick), deletePen);
+                break;
         }
     }
 
@@ -1457,6 +1634,9 @@ public sealed class ChartCanvas : FrameworkElement
                     break;
                 case ObjectKind.Marker:
                     HighlightTag(dc, layout.Column(ColumnKind.Marker), layout.TickToY(r.Tick));
+                    break;
+                case ObjectKind.Word:
+                    if (r.Lane < tab.WordLanes.Count) HighlightTag(dc, layout.WordColumn(r.Lane), layout.TickToY(r.Tick));
                     break;
             }
         }

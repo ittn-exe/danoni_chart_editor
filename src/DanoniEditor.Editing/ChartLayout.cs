@@ -3,10 +3,11 @@ using DanoniEditor.Core.Timing;
 
 namespace DanoniEditor.Editing;
 
-/// <summary>レーン列の種別(仕様書6.1: マーカー|小節|キーレーン群|speed|boost|BPM)</summary>
-public enum ColumnKind { Marker, Measure, Note, Speed, Boost, Bpm }
+/// <summary>レーン列の種別(仕様書6.1: 時間情報|マーカー|小節|キーレーン群|speed|boost|BPM|歌詞)</summary>
+public enum ColumnKind { TimeInfo, Marker, Measure, Note, Speed, Boost, Bpm, Word }
 
-/// <summary>1列分のレイアウト情報</summary>
+/// <summary>1列分のレイアウト情報。NoteLaneIndexはKind=NoteならtabのLanes[]index、
+/// Kind=WordならtabのWordLanes[]indexを指す(2026-07-23、TBD 4、Note用フィールドを流用)。</summary>
 public sealed record ColumnInfo(ColumnKind Kind, int NoteLaneIndex, double X, double Width)
 {
     public double CenterX => X + Width / 2;
@@ -14,7 +15,7 @@ public sealed record ColumnInfo(ColumnKind Kind, int NoteLaneIndex, double X, do
 }
 
 /// <summary>ヒットテスト対象のオブジェクト参照(選択状態の保持にも使う)</summary>
-public enum ObjectKind { Note, FreezeStart, FreezeEnd, FreezeBody, Speed, Boost, Bpm, TimeSignature, Marker }
+public enum ObjectKind { Note, FreezeStart, FreezeEnd, FreezeBody, Speed, Boost, Bpm, TimeSignature, Marker, Word }
 
 public readonly record struct ObjectRef(ObjectKind Kind, int Lane, long Tick)
 {
@@ -31,6 +32,10 @@ public readonly record struct ObjectRef(ObjectKind Kind, int Lane, long Tick)
 /// </summary>
 public sealed class ChartLayout
 {
+    /// <summary>時間情報表示レーン(2026-07-23、TBD 1-1)。マーカー・小節番号レーンの左隣に置く
+    /// 表示専用レーン(frame/time/小節番号)。ノートレーンと幅を揃える必要は無いという確定仕様のため、
+    /// 3行の短いテキストが収まる程度の専用幅を割り当てる。</summary>
+    public const double TimeInfoColWidth = 54;
     public const double MarkerColWidth = 30;
     public const double MeasureColWidth = 46;
     public const double EventColWidth = 46;
@@ -63,6 +68,12 @@ public sealed class ChartLayout
     public IReadOnlyList<ColumnInfo> Columns { get; private set; }
     public double TotalWidth { get; private set; }
 
+    /// <summary>現在タブが持つ歌詞レーン(WordLanes)の本数(2026-07-23、TBD 4)。
+    /// タブごとに可変のため、EditorDocument.CurrentLayoutがタブ切替・レーン追加/削除のたびに
+    /// SyncWordLaneCountで同期する。テンプレートのみに依存する他カラムと異なり、この値だけは
+    /// レイアウト外部(DifficultyTab.WordLanes)から都度反映する必要がある。</summary>
+    public int WordLaneCount { get; private set; }
+
     public ChartLayout(KeyTemplate template)
     {
         Template = template;
@@ -80,6 +91,15 @@ public sealed class ChartLayout
         RebuildColumns();
     }
 
+    /// <summary>歌詞レーン本数を最新化する(変化があった場合のみ再構築、2026-07-23、TBD 4)。
+    /// EditorDocument.CurrentLayoutから、タブ切替時・歌詞レーン追加/削除の直後に呼ぶ想定。</summary>
+    public void SyncWordLaneCount(int count)
+    {
+        if (count == WordLaneCount) return;
+        WordLaneCount = count;
+        RebuildColumns();
+    }
+
     private void RebuildColumns()
     {
         var cols = new List<ColumnInfo>();
@@ -87,6 +107,7 @@ public sealed class ChartLayout
         void Add(ColumnKind kind, double w, int lane = -1)
         { cols.Add(new ColumnInfo(kind, lane, x, w)); x += w; }
 
+        Add(ColumnKind.TimeInfo, TimeInfoColWidth * ZoomScale);
         Add(ColumnKind.Marker, MarkerColWidth * ZoomScale);
         Add(ColumnKind.Measure, MeasureColWidth * ZoomScale);
         for (int i = 0; i < Template.KeyCount; i++)
@@ -94,6 +115,8 @@ public sealed class ChartLayout
         Add(ColumnKind.Speed, EventColWidth * ZoomScale);
         Add(ColumnKind.Boost, EventColWidth * ZoomScale);
         Add(ColumnKind.Bpm, EventColWidth * ZoomScale);
+        for (int i = 0; i < WordLaneCount; i++)
+            Add(ColumnKind.Word, NoteLaneWidth, i);
         Columns = cols;
         TotalWidth = x;
     }
@@ -132,6 +155,8 @@ public sealed class ChartLayout
 
     /// <summary>キーレーンindex→列(displayOrder順に並んでいるlanes[]のindexそのまま)</summary>
     public ColumnInfo NoteColumn(int laneIndex) => Columns.First(c => c.Kind == ColumnKind.Note && c.NoteLaneIndex == laneIndex);
+    /// <summary>歌詞レーンindex(DifficultyTab.WordLanesのindex)→列(2026-07-23、TBD 4)</summary>
+    public ColumnInfo WordColumn(int laneIndex) => Columns.First(c => c.Kind == ColumnKind.Word && c.NoteLaneIndex == laneIndex);
     public ColumnInfo Column(ColumnKind kind) => Columns.First(c => c.Kind == kind);
 
     /// <summary>コンテンツ全体の高さ(最終オブジェクト+4小節ぶんの余白)。Reverseの影響を受けない
@@ -189,6 +214,14 @@ public sealed class ChartLayout
                 }
             case ColumnKind.Marker:
                 return HitEvents(project.Markers.Select(m => m.Tick), ObjectKind.Marker, y, evH);
+            case ColumnKind.Word:
+                {
+                    var entries = tab.WordLanes[col.NoteLaneIndex].Entries;
+                    foreach (var w in entries)
+                        if (Math.Abs(TickToY(w.Tick) - y) <= evH)
+                            return new ObjectRef(ObjectKind.Word, col.NoteLaneIndex, w.Tick);
+                    return null;
+                }
             default:
                 return null;
         }
@@ -238,6 +271,11 @@ public sealed class ChartLayout
                     foreach (var e in project.BpmEvents)
                         if (e.Tick >= tMin && e.Tick <= tMax && e.Tick != 0)
                             yield return new ObjectRef(ObjectKind.Bpm, -1, e.Tick);
+                    break;
+                case ColumnKind.Word:
+                    foreach (var w in tab.WordLanes[col.NoteLaneIndex].Entries)
+                        if (w.Tick >= tMin && w.Tick <= tMax)
+                            yield return new ObjectRef(ObjectKind.Word, col.NoteLaneIndex, w.Tick);
                     break;
             }
         }

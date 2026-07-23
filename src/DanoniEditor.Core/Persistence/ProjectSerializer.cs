@@ -54,6 +54,71 @@ public static class ProjectSerializer
 
     public static ChartProject Load(string path) => Deserialize(File.ReadAllText(path));
 
+    // =====================================================================
+    // タブ単体エクスポート(2026-07-23、TBD 5)。合作(複数人で1曲を分担制作)用途で、
+    // プロジェクト全体ではなく現在開いている難易度タブ1つ分だけをITTNエディタ形式で書き出す。
+    // 合作相手は「開く」/D&Dで自分のプロジェクトへタブとして追加インポートできる。
+    // =====================================================================
+
+    /// <summary>タブファイルのJSON構造。"tabExport"キーの有無で通常のプロジェクトファイル(OwnProject)と
+    /// 区別する(DroppedFileClassifier参照)。ProjectはTabsが常に1件のみのChartProjectを使い回す。</summary>
+    private sealed class TabExportEnvelope
+    {
+        public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+        public bool TabExport { get; set; } = true;
+        public required ChartProject Project { get; set; }
+    }
+
+    /// <summary>タブ単体エクスポートの読込結果。Sourceはタブ+共通タイミング情報を保持する
+    /// 単一タブのChartProject(インポート先が空プロジェクトの場合、タイミングの引き継ぎ元として使う)。</summary>
+    public sealed record TabExportResult(ChartProject Source, DifficultyTab Tab);
+
+    /// <summary>カレント難易度タブ1つをタブファイルとしてシリアライズする。tick位置の解釈に必須の
+    /// 共通タイミング情報(BPM/拍子/StartNumber/StartFrame/BlankFrame/FrzAttempt/Tuning)と、
+    /// 参考用の曲情報の一部を同梱する。Markers/ゲージ共有パラメータ/その他ヘッダーはプロジェクト全体の
+    /// 設定のため対象外(2026-07-23ユーザー確定仕様: 「作業としては軽そう」な範囲に留める)。</summary>
+    public static string SerializeTabExport(ChartProject project, DifficultyTab tab)
+    {
+        var single = new ChartProject
+        {
+            ProjectName = project.ProjectName,
+            MusicTitle = project.MusicTitle,
+            ArtistName = project.ArtistName,
+            ArtistUrl = project.ArtistUrl,
+            MusicUrl = project.MusicUrl,
+            Tuning = project.Tuning,
+            StartFrame = project.StartFrame,
+            BlankFrame = project.BlankFrame,
+            FrzAttempt = project.FrzAttempt,
+            StartNumber = project.StartNumber,
+            BpmEvents = [.. project.BpmEvents],
+            TimeSignatures = [.. project.TimeSignatures],
+            Tabs = [tab],
+        };
+        return JsonSerializer.Serialize(new TabExportEnvelope { Project = single }, Opts);
+    }
+
+    public static TabExportResult DeserializeTabExport(string json)
+    {
+        var env = JsonSerializer.Deserialize<TabExportEnvelope>(json, Opts)
+            ?? throw new InvalidDataException("タブファイルの解析に失敗しました");
+        if (env.SchemaVersion > CurrentSchemaVersion)
+            throw new InvalidDataException(
+                $"このタブファイルはより新しいバージョンのエディタで作成されています(schemaVersion={env.SchemaVersion})");
+        if (env.SchemaVersion == 1) MigrateV1ToV2(env.Project);
+        if (env.Project.Tabs.Count != 1)
+            throw new InvalidDataException("タブファイルの形式が不正です(タブ数が1件ではありません)");
+        return new TabExportResult(env.Project, env.Project.Tabs[0]);
+    }
+
+    public static void SaveTabExport(ChartProject project, DifficultyTab tab, string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.WriteAllText(path, SerializeTabExport(project, tab));
+    }
+
+    public static TabExportResult LoadTabExport(string path) => DeserializeTabExport(File.ReadAllText(path));
+
     /// <summary>v1(48tick/拍)のプロジェクトを読み込んだ際、全tickを×35してv2(1680tick/拍)へ移行する
     /// (2026-07-19g、5連符・7連符対応に伴う分解能引き上げ)。拍子はMeasureIndex基準のため対象外。</summary>
     private static void MigrateV1ToV2(Models.ChartProject p)
@@ -115,6 +180,35 @@ public static class ProjectOperations
         }
         else if (Math.Abs(project.BpmEvents[0].Bpm - result.BpmEvents[0].Bpm) > 0.001 ||
                  Math.Abs(project.StartNumber - result.StartNumber) > 0.001)
+        {
+            warnings.Add("インポート元のタイミング(BPM/StartNumber)がプロジェクトと異なります。プロジェクト側の設定を維持します");
+        }
+        project.Tabs.Add(result.Tab);
+        return warnings;
+    }
+
+    /// <summary>ITTNエディタ形式のタブファイル(合作用、2026-07-23、TBD 5)を現在のプロジェクトへ
+    /// 難易度タブとして追加する。プロジェクトが空ならタイミング情報(BPM/拍子/StartNumber等)ごと
+    /// 採用し、既存タブがある場合はプロジェクト側のタイミングを維持して警告を返す
+    /// (Fuji/Skbインポートと同じ方針、ApplyImport(FujiImportResult)参照)。</summary>
+    public static List<string> ApplyImport(ChartProject project, ProjectSerializer.TabExportResult result)
+    {
+        var warnings = new List<string>();
+        var source = result.Source;
+        if (project.Tabs.Count == 0)
+        {
+            project.StartNumber = source.StartNumber;
+            project.StartFrame = source.StartFrame;
+            project.BlankFrame = source.BlankFrame;
+            project.FrzAttempt = source.FrzAttempt;
+            project.Tuning = source.Tuning;
+            project.BpmEvents = [.. source.BpmEvents];
+            project.TimeSignatures = [.. source.TimeSignatures];
+            if (string.IsNullOrWhiteSpace(project.MusicTitle)) project.MusicTitle = source.MusicTitle;
+            if (string.IsNullOrWhiteSpace(project.ArtistName)) project.ArtistName = source.ArtistName;
+        }
+        else if (Math.Abs(project.BpmEvents[0].Bpm - source.BpmEvents[0].Bpm) > 0.001 ||
+                 Math.Abs(project.StartNumber - source.StartNumber) > 0.001)
         {
             warnings.Add("インポート元のタイミング(BPM/StartNumber)がプロジェクトと異なります。プロジェクト側の設定を維持します");
         }

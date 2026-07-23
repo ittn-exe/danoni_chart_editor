@@ -53,8 +53,18 @@ public sealed class EditorDocument
     public KeyTemplate CurrentTemplate => Templates.Get(CurrentTab.KeyTypeId);
 
     private ChartLayout? _layoutCache;
-    /// <summary>現在タブのレイアウト(テンプレート変更・タブ切替まではキャッシュ)</summary>
-    public ChartLayout CurrentLayout => _layoutCache ??= new ChartLayout(CurrentTemplate);
+    /// <summary>現在タブのレイアウト(テンプレート変更・タブ切替まではキャッシュ)。
+    /// 歌詞レーン本数(2026-07-23、TBD 4)はタブごとに可変のため、取得の都度SyncWordLaneCountで
+    /// 最新化する(変化が無ければ何もしない軽量な呼び出し)。</summary>
+    public ChartLayout CurrentLayout
+    {
+        get
+        {
+            _layoutCache ??= new ChartLayout(CurrentTemplate);
+            _layoutCache.SyncWordLaneCount(CurrentTab.WordLanes.Count);
+            return _layoutCache;
+        }
+    }
 
     public EditorDocument(ChartProject project, TemplateRepository templates)
     {

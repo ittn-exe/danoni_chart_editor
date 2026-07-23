@@ -656,14 +656,15 @@ public sealed class SmartToolController
     // 外部トリガ操作(ダブルクリック/キーボード)
     // =====================================================================
 
-    /// <summary>マーカーレーンのダブルクリックで「再生開始フレーム」を設定する(2026-07-17f、未解決事項§2-2)。
+    /// <summary>マーカーレーン(および時間情報表示レーン、2026-07-23)のダブルクリックで
+    /// 「再生開始フレーム」を設定する(2026-07-17f、未解決事項§2-2)。
     /// 処理した場合true。それ以外の列ではfalseを返し、呼び出し側は通常のクリックとして扱う。
     /// 1回目のクリック(押下即処理)はカレントtick設定で冪等なため、シングルクリックの取り消しは不要。
     /// 譜面内容ではなく再生設定のためUndo対象外。</summary>
     public bool DoubleLeft(PointerPos pos)
     {
         var col = _doc.CurrentLayout.ColumnAt(pos.X);
-        if (col is not { Kind: ColumnKind.Marker }) return false;
+        if (col is not { Kind: ColumnKind.Marker or ColumnKind.TimeInfo }) return false;
         long tick = SnappedTickAt(pos);
         var engine = _doc.Project.CreateTimingEngine();
         _doc.Project.PlaybackStartFrame = engine.TickToFrame(tick);
@@ -957,6 +958,11 @@ public sealed class SmartToolController
                     return new PlaceTimeSignatureAction(measureIndex, sig.Numerator, sig.Denominator);
                 }
 
+            case ColumnKind.Word:
+                // 2026-07-23(TBD 4): 既定値(Position=0, 通常歌詞、本文空)で配置し、詳細は右パネルで編集する
+                // (マーカーのコメント編集と同じ流れ)。
+                return new PlaceWordEntryAction(col.NoteLaneIndex, tick);
+
             default:
                 return null;
         }
@@ -971,6 +977,7 @@ public sealed class SmartToolController
         ObjectKind.Bpm => r.Tick == 0 ? null : new DeleteValueEventAction(ValueEventKind.Bpm, r.Tick),
         ObjectKind.Marker => new DeleteMarkerAction(r.Tick),
         ObjectKind.TimeSignature => new DeleteTimeSignatureAction((int)r.Tick),
+        ObjectKind.Word => new DeleteWordEntryAction(r.Lane, r.Tick),
         _ => null,
     };
 

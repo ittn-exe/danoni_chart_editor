@@ -9,10 +9,16 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- 単独EXE配布(仕様書2章): dotnet publish -r win-x64 -p:PublishSingleFile=true -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- 2026-07-23: exeファイル自体のアイコン(エクスプローラー/タスクバー表示用) -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\DanoniEditor.Core\DanoniEditor.Core.csproj" />
     <ProjectReference Include="..\DanoniEditor.Editing\DanoniEditor.Editing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- MainWindow.xamlのIcon属性から参照する実行時ウィンドウアイコン -->
+    <Resource Include="Assets\AppIcon.ico" />
   </ItemGroup>
 
   <!-- ./template と ./img はexeと同じフォルダにコピーする(Debug実行にもpublish単独exe配布にも対応、仕様書2章/3.1)。
@@ -20,11 +26,15 @@
   <ItemGroup>
     <Content Include="..\..\template\**\*.json" Link="template\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\img\**\*.png" Link="img\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\img')" />
+    <!-- 2026-08-03: imgフォルダのSVG対応(ノート画像素材としてpngの代わりにsvgを置けるようにする要望) -->
+    <Content Include="..\..\img\**\*.svg" Link="img\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\img')" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />
     <!-- 2026-07-26: 警告アイコン表示(SystemIcons.Warning)用。WPFプロファイルの共有フレームワークに
          含まれない環境があるため明示参照する -->
     <PackageReference Include="System.Drawing.Common" Version="8.0.7" />
+    <!-- 2026-08-03: imgフォルダのSVGノート画像対応(pngが無い場合にsvgをラスタライズして使用) -->
+    <PackageReference Include="Svg" Version="3.4.7" />
   </ItemGroup>
 </Project>

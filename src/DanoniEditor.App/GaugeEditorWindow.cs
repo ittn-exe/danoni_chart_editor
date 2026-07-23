@@ -52,8 +52,19 @@ internal sealed class GaugeEditorWindow : Window
     private readonly StackPanel _paramTablePanel = new();
     private readonly Button _addParamButton = new() { Content = "ゲージ名を追加", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
 
+    /// <summary>2026-08-01: ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。
+    /// 既に開いている場合は再利用してActivate()するのみにする。</summary>
+    private GaugeCalculatorWindow? _calculatorWindow;
+
     /// <summary>保存に成功したかどうか(呼び出し元がNotifyChanged等を行う目安)</summary>
     public bool Saved { get; private set; }
+
+    // --- GaugeCalculatorWindowから参照するための内部アクセサ ---
+    internal ChartProject ProjectRef => _project;
+    internal TabControl TabGaugeTabsControl => _tabGaugeTabs;
+    internal List<ParamRowVm> ParamRowsRef => _paramRows;
+    internal List<TabGaugeVm> TabVmsRef => _tabVms;
+    internal void RefreshParamTableExternal() => RefreshParamTable();
 
     public GaugeEditorWindow(ChartProject project)
     {
@@ -119,7 +130,23 @@ internal sealed class GaugeEditorWindow : Window
             _paramRows.Add(new ParamRowVm { GaugeName = "", PerTabCsv = Enumerable.Repeat("", _project.Tabs.Count).ToList() });
             RefreshParamTable();
         };
-        outer.Children.Add(_addParamButton);
+        var openCalculatorButton = new Button
+        {
+            Content = "ゲージ計算機を開く...", Width = 140, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 4, 0, 0),
+        };
+        openCalculatorButton.Click += OpenCalculator_Click;
+        var addParamRow = new StackPanel { Orientation = Orientation.Horizontal };
+        addParamRow.Children.Add(_addParamButton);
+        addParamRow.Children.Add(openCalculatorButton);
+        outer.Children.Add(addParamRow);
+        outer.Children.Add(new TextBlock
+        {
+            Text = "計算機は①のタブで選択中の難易度タブを対象に動作します(タブを切り替えると自動で再計算されます)。",
+            Foreground = Brushes.Gray,
+            FontSize = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(8, 2, 0, 0),
+        });
 
         outer.Children.Add(SectionLabel("③ 直接入力モード(過去資産からのコピペ用)"));
         outer.Children.Add(new TextBlock
@@ -140,6 +167,22 @@ internal sealed class GaugeEditorWindow : Window
 
         Content = root;
         UpdateRawActiveState();
+
+        Closed += (_, _) => _calculatorWindow?.Close();
+    }
+
+    /// <summary>「ゲージ計算機を開く...」ボタン(2026-08-01)。モードレスウィンドウとして開き、
+    /// 既に開いている場合は前面に出すだけにする(複数出さない)。</summary>
+    private void OpenCalculator_Click(object sender, RoutedEventArgs e)
+    {
+        if (_calculatorWindow is { IsVisible: true })
+        {
+            _calculatorWindow.Activate();
+            return;
+        }
+        _calculatorWindow = new GaugeCalculatorWindow(this) { Owner = this };
+        _calculatorWindow.Closed += (_, _) => _calculatorWindow = null;
+        _calculatorWindow.Show();
     }
 
     private static TextBlock SectionLabel(string text) => new()
@@ -162,7 +205,7 @@ internal sealed class GaugeEditorWindow : Window
     // ① 難易度タブ別ゲージ名リスト
     // =====================================================================
 
-    private sealed class TabGaugeVm
+    internal sealed class TabGaugeVm
     {
         public string Mode = "none"; // "none" | "inherit" | "list"
         public string InheritKeyword = InheritKeywords[0];
@@ -181,7 +224,7 @@ internal sealed class GaugeEditorWindow : Window
         }
     }
 
-    private sealed class EntryVm
+    internal sealed class EntryVm
     {
         public string Name = "";
         public bool IsVariable;
@@ -264,7 +307,7 @@ internal sealed class GaugeEditorWindow : Window
     // ② ゲージ別パラメータ
     // =====================================================================
 
-    private sealed class ParamRowVm
+    internal sealed class ParamRowVm
     {
         public string GaugeName = "";
         public List<string> PerTabCsv = [];

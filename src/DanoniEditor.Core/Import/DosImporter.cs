@@ -280,6 +280,8 @@ public sealed class DosImporter
                 tab.FrzColorOverride = [.. fc.Split(',', StringSplitOptions.TrimEntries).Select(NormalizeColorToken)];
 
             ImportNColorData($"ncolor{suffix}_data", p, project, tab, template, Snap, warnings);
+            ImportWordData($"word{suffix}_data", p, tab, Snap, isReverse: false);
+            ImportWordData($"wordRev{suffix}_data", p, tab, Snap, isReverse: true);
 
             project.Tabs.Add(tab);
         }
@@ -326,6 +328,54 @@ public sealed class DosImporter
     private static readonly string[] SupportedTargetPatterns =
         ["", "Normal", "NormalBar", "NormalShadow", "ArrowShadow", "Hit", "HitBar", "HitShadow"];
 
+    /// <summary>word_data/wordRev_dataの読み込み(仕様dos-e0003-wordData、2026-07-23、TBD 4)。
+    /// 1行=Frame,Position,Text(,FadeFrame)の3〜4項目。改行区切り(手書き・本エディタ出力とも同じ形式、
+    /// ncolor_data等と異なりトークン数の可変長ヒューリスティックが不要)。
+    /// Position="-"の行はコメント行として扱う(Comment、Position値自体は無視)。
+    /// Textが"["で始まり"]"で終わる行は制御行(Control。[fadein]/[fadeout]/[left]/[center]/[right]/
+    /// [fontSize=XX])とみなし、4項目目があればFadeFrameとして保持する。それ以外は通常の歌詞行(Lyrics)。
+    /// 本エディタは多言語(Ja/En)・Cross/Split/Flat・別キーモード(wordA*)・他データ参照委譲は未対応
+    /// (該当データ名は他の未知ヘッダーと同様、ExtraHeadersへ素通しされるのみで無視される)。
+    /// データが1件でもあれば新規WordLaneを1本作成してtab.WordLanesへ追加する(0件ならレーンを作らない)。</summary>
+    private static void ImportWordData(string paramName, Dictionary<string, string> p,
+        DifficultyTab tab, Func<double, long> snap, bool isReverse)
+    {
+        if (!p.TryGetValue(paramName, out var raw) || raw.Length == 0) return;
+
+        var lines = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+
+        var lane = new WordLane { Name = isReverse ? "歌詞(Reverse)" : "歌詞", IsReverse = isReverse };
+        foreach (var line in lines)
+        {
+            var fields = line.Split(',', StringSplitOptions.TrimEntries);
+            if (fields.Length < 3) continue;
+            if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var frameVal)) continue;
+            long tick = snap(frameVal);
+
+            if (fields[1] == "-")
+            {
+                lane.Entries.Add(new WordEntry(tick, 0, WordEntryKind.Comment, fields[2]));
+                continue;
+            }
+            if (!int.TryParse(fields[1], out var position)) continue;
+
+            string text = fields[2];
+            bool isControl = text.Length >= 2 && text[0] == '[' && text[^1] == ']';
+            if (isControl)
+            {
+                int? fadeFrame = fields.Length > 3 && int.TryParse(fields[3], out var ff) ? ff : null;
+                lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Control, text, fadeFrame));
+            }
+            else
+            {
+                lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Lyrics, text));
+            }
+        }
+
+        if (lane.Entries.Count > 0) tab.WordLanes.Add(lane);
+    }
+
     /// <summary>
     /// ncolor_dataの読み込み(色編集モード、2026-07-23。永続状態モデルへ2026-07-24に再設計、
     /// 同日allFlg・Hit/Shadow系対応を追加)。本家仕様ではncolor_data(allFlg無し)は「指定フレーム
@@ -338,9 +388,14 @@ public sealed class DosImporter
     /// 必ずしもノート自身のtickと一致する必要はない(以前はtick一致を要求してそれ以外を警告付き
     /// スキップしていたが、本家仕様上は不要な制約だったため撤廃した)。4番目のフィールド(all/ALL)は
     /// NColorEntry.AllFlagとして保持する(1エンティティに寄与する複数トラックで異なるAllFlagが
-    /// 復元された場合は、いずれか1つでもtrueならエントリ全体をtrueとして扱う)。範囲指定(0...7)・
-    /// スラッシュ複数・グループ(g0等)・未対応TargetPatternの照合不能な行は、データを壊さないよう
-    /// 無視した上で件数を警告として積む(仕様書の「読めない物は警告、握りつぶさない」方針に合わせる)。
+    /// 復元された場合は、いずれか1つでもtrueならエントリ全体をtrueとして扱う)。
+    /// 2026-07-23(TBD 3): 矢印番号は単一指定に加え、連続範囲("0...7")・スラッシュ複数("1/3/5/7")・
+    /// "all"(テンプレート全レーン)を解釈し、該当する全レーンへ同じ変化点として展開する。
+    /// "g0"〜"g9"(本家キーグループ記法)は、本エディタが対象とする通常譜面(トランスキー以外)では
+    /// キーグループが常に0のみである仕様(dos-h0092-keyGroupOrder)のため、g0=all、g1〜g9=常に0件
+    /// (トランスキー機能自体が対象外のため意図的に無警告)として扱う。
+    /// それ以外の未対応TargetPattern・記法として解釈できない行は、データを壊さないよう無視した上で
+    /// 件数を警告として積む(仕様書の「読めない物は警告、握りつぶさない」方針に合わせる)。
     /// 値は本エディタの出力(改行なし1行CSV)と、手書き想定の複数行形式の両方を受け付ける。
     /// </summary>
     private static void ImportNColorData(string paramName, Dictionary<string, string> p,
@@ -404,8 +459,48 @@ public sealed class DosImporter
             if (matchedPattern is null)
             { skipped++; continue; } // FrzNormal/FrzHit/Frz等の略記や未対応パターン
 
-            if (!int.TryParse(numPart, out var engineNo) || !engineToLane.TryGetValue(engineNo, out var laneIdx))
-            { skipped++; continue; } // 範囲指定(0...7)・スラッシュ複数・グループ(g0等)・未知レーン
+            // 2026-07-23(TBD 3): 矢印番号部分(numPart)を単一/範囲/スラッシュ複数/all/グループへ展開する。
+            List<int> laneIndices;
+            if (numPart.Length >= 2 && numPart[0] is 'g' or 'G' &&
+                int.TryParse(numPart.AsSpan(1), out var groupNo) && groupNo is >= 0 and <= 9)
+            {
+                // g0〜g9はトランスキー専用のキーグループ記法。本エディタの対象範囲(通常譜面)では
+                // キーグループが常に0のみ(dos-h0092-keyGroupOrder仕様)のため、g0=全レーン、
+                // g1〜g9=常に0件(トランスキー自体が対象外のため意図的に無警告で何もしない)。
+                laneIndices = groupNo == 0 ? [.. engineToLane.Values] : [];
+            }
+            else if (numPart.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                laneIndices = [.. engineToLane.Values];
+            }
+            else if (numPart.Contains("..."))
+            {
+                var rangeParts = numPart.Split("...", StringSplitOptions.TrimEntries);
+                if (rangeParts.Length != 2 ||
+                    !int.TryParse(rangeParts[0], out var rFrom) || !int.TryParse(rangeParts[1], out var rTo))
+                { skipped++; continue; } // 記法として解釈できない範囲指定
+                if (rFrom > rTo) (rFrom, rTo) = (rTo, rFrom);
+                laneIndices = [];
+                for (int n = rFrom; n <= rTo; n++)
+                    if (engineToLane.TryGetValue(n, out var idx)) laneIndices.Add(idx);
+            }
+            else if (numPart.Contains('/'))
+            {
+                var slashTokens = numPart.Split('/', StringSplitOptions.TrimEntries);
+                if (slashTokens.Any(t => !int.TryParse(t, out _)))
+                { skipped++; continue; } // スラッシュ区切り内に非数値トークンがあれば記法不正
+                laneIndices = [];
+                foreach (var t in slashTokens)
+                    if (engineToLane.TryGetValue(int.Parse(t), out var idx)) laneIndices.Add(idx);
+            }
+            else if (int.TryParse(numPart, out var engineNo))
+            {
+                if (!engineToLane.TryGetValue(engineNo, out var singleIdx))
+                { skipped++; continue; } // 未知レーン
+                laneIndices = [singleIdx];
+            }
+            else
+            { skipped++; continue; } // 未対応の記法
 
             if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var frameVal))
             { skipped++; continue; }
@@ -414,8 +509,11 @@ public sealed class DosImporter
             string colorCode = fields[2];
 
             var bucket = changesByPattern[matchedPattern];
-            if (!bucket.TryGetValue(laneIdx, out var list)) bucket[laneIdx] = list = [];
-            list.Add((tick, colorCode, allFlag));
+            foreach (var laneIdx in laneIndices)
+            {
+                if (!bucket.TryGetValue(laneIdx, out var list)) bucket[laneIdx] = list = [];
+                list.Add((tick, colorCode, allFlag));
+            }
         }
 
         // 状態復元: 各トラックの変化点をtick順に並べ、レーン内の各対象オブジェクトについて
@@ -530,8 +628,8 @@ public sealed class DosImporter
         }
 
         if (skipped > 0)
-            warnings.Add($"{paramName}: {skipped}件の色変化指定(範囲/グループ/全体色変化/未対応対象部位/" +
-                         "対象オブジェクトが存在しないレーンへの指定等)は現在のエディタでは読み込めないため無視しました");
+            warnings.Add($"{paramName}: {skipped}件の色変化指定(記法として解釈できないもの/未対応対象部位/" +
+                         "未知レーンの指定/対象オブジェクトが存在しないレーンへの指定等)は現在のエディタでは読み込めないため無視しました");
     }
 
     /// <summary>

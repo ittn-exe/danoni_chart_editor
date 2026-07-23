@@ -567,6 +567,146 @@ public sealed class DeleteMarkerAction(long tick) : IEditAction
 }
 
 // =====================================================================
+// 歌詞表示(word_data、2026-07-23、TBD 4)
+// =====================================================================
+
+/// <summary>歌詞レーンへの新規配置(既定値: Position=0, Kind=Lyrics, Text="")。
+/// 詳細(Position/種別/本文/FadeFrame)は右パネルでEditWordEntryActionにより編集する想定。</summary>
+public sealed class PlaceWordEntryAction(int laneIndex, long tick) : IEditAction
+{
+    public string Label => "歌詞配置";
+    public void Do(EditorDocument doc) =>
+        doc.CurrentTab.WordLanes[laneIndex].Entries.Add(new WordEntry(tick, 0, WordEntryKind.Lyrics, ""));
+    public void Undo(EditorDocument doc) =>
+        doc.CurrentTab.WordLanes[laneIndex].Entries.RemoveAll(e => e.Tick == tick);
+}
+
+public sealed class DeleteWordEntryAction(int laneIndex, long tick) : IEditAction
+{
+    private WordEntry? _removed;
+
+    public string Label => "歌詞削除";
+
+    public void Do(EditorDocument doc)
+    {
+        var lane = doc.CurrentTab.WordLanes[laneIndex];
+        _removed = lane.Entries.FirstOrDefault(e => e.Tick == tick);
+        if (_removed is not null) lane.Entries.Remove(_removed);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_removed is not null) doc.CurrentTab.WordLanes[laneIndex].Entries.Add(_removed);
+    }
+}
+
+/// <summary>歌詞エントリのプロパティ編集(Position/種別/本文/FadeFrame、右パネルから呼ぶ)。
+/// tickは変更しない(位置移動はMoveObjectsAction、既存のドラッグ移動と共通の仕組みを使う)。</summary>
+public sealed class EditWordEntryAction(int laneIndex, long tick, WordEntry newEntry) : IEditAction
+{
+    private WordEntry? _old;
+
+    public string Label => "歌詞編集";
+
+    public void Do(EditorDocument doc)
+    {
+        var lane = doc.CurrentTab.WordLanes[laneIndex];
+        _old = lane.Entries.FirstOrDefault(e => e.Tick == tick);
+        if (_old is not null) lane.Entries.Remove(_old);
+        lane.Entries.Add(newEntry);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        var lane = doc.CurrentTab.WordLanes[laneIndex];
+        lane.Entries.RemoveAll(e => e.Tick == newEntry.Tick);
+        if (_old is not null) lane.Entries.Add(_old);
+    }
+}
+
+/// <summary>歌詞レーンの追加(WordLaneManagerWindow「+ 歌詞レーンを追加」、2026-07-31)。末尾に1本追加する。</summary>
+public sealed class AddWordLaneAction(string name) : IEditAction
+{
+    private int _addedIndex = -1;
+
+    public string Label => "歌詞レーン追加";
+
+    public void Do(EditorDocument doc)
+    {
+        var lanes = doc.CurrentTab.WordLanes;
+        _addedIndex = lanes.Count;
+        lanes.Add(new WordLane { Name = name });
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_addedIndex < 0) return;
+        doc.CurrentTab.WordLanes.RemoveAt(_addedIndex);
+        doc.Selection.RemoveWhere(s => s.Kind == ObjectKind.Word);
+    }
+}
+
+/// <summary>歌詞レーンの削除(WordLaneManagerWindow、2026-07-31)。削除時点のレーン内容(歌詞エントリを
+/// 含む全体)をそのまま保持し、Undoで元のindexへ丸ごと復元する(=削除操作そのものを取り消す)。
+/// 後続レーンのindexが詰まる/戻る関係上、Do・Undoいずれの直後もWord系の選択状態はクリアする
+/// (削除前後で他の歌詞エントリのindex対応が変わり得るため、選択の連続性までは保証しない)。</summary>
+public sealed class DeleteWordLaneAction(int index) : IEditAction
+{
+    private WordLane? _removed;
+
+    public string Label => "歌詞レーン削除";
+
+    public void Do(EditorDocument doc)
+    {
+        var lanes = doc.CurrentTab.WordLanes;
+        _removed = lanes[index];
+        lanes.RemoveAt(index);
+        doc.Selection.RemoveWhere(s => s.Kind == ObjectKind.Word);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_removed is null) return;
+        doc.CurrentTab.WordLanes.Insert(index, _removed);
+        doc.Selection.RemoveWhere(s => s.Kind == ObjectKind.Word);
+    }
+}
+
+/// <summary>歌詞レーンの名前変更(WordLaneManagerWindow、2026-07-31)。</summary>
+public sealed class RenameWordLaneAction(int index, string newName) : IEditAction
+{
+    private string _old = "";
+
+    public string Label => "歌詞レーン名変更";
+
+    public void Do(EditorDocument doc)
+    {
+        var lane = doc.CurrentTab.WordLanes[index];
+        _old = lane.Name;
+        lane.Name = newName;
+    }
+
+    public void Undo(EditorDocument doc) => doc.CurrentTab.WordLanes[index].Name = _old;
+}
+
+/// <summary>歌詞レーンのReverse専用フラグ切替(WordLaneManagerWindow、2026-07-31)。</summary>
+public sealed class SetWordLaneReverseAction(int index, bool value) : IEditAction
+{
+    private bool _old;
+
+    public string Label => "歌詞レーンReverse切替";
+
+    public void Do(EditorDocument doc)
+    {
+        var lane = doc.CurrentTab.WordLanes[index];
+        _old = lane.IsReverse;
+        lane.IsReverse = value;
+    }
+
+    public void Undo(EditorDocument doc) => doc.CurrentTab.WordLanes[index].IsReverse = _old;
+}
+
+// =====================================================================
 // 拍子(仕様書7.5: 物理小節頭にのみ配置可能)
 // =====================================================================
 
@@ -741,6 +881,19 @@ public sealed class MoveObjectsAction : IEditAction
                     doc.Project.Markers.Add(moved);
                     return new ObjectRef(ObjectKind.Marker, -1, moved.Tick);
                 }
+            case ObjectKind.Word:
+                {
+                    // 2026-07-23(TBD 4): 歌詞はレーン(r.Lane=WordLanesのindex)を跨いだ移動をサポートしない
+                    // (laneDeltaは無視、tickのみ移動)。ノートレーンのようにレーン列がキー数固定ではなく
+                    // ユーザーが任意本追加するため、隣接レーンへ機械的に移すのは意図しない結果になりやすい。
+                    var lane = tab.WordLanes[r.Lane];
+                    var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (w is null) return null;
+                    lane.Entries.Remove(w);
+                    var moved = w with { Tick = r.Tick + tickDelta };
+                    lane.Entries.Add(moved);
+                    return new ObjectRef(ObjectKind.Word, r.Lane, moved.Tick);
+                }
             case ObjectKind.TimeSignature:
             default:
                 return null; // 拍子は本アクションの対象外(仕様書7.5)
@@ -801,6 +954,15 @@ public sealed class MoveObjectsAction : IEditAction
                     if (m is null) return false;
                     doc.Project.Markers.Remove(m);
                     doc.Project.Markers.Add(new Marker(to.Tick, m.Comment));
+                    return true;
+                }
+            case ObjectKind.Word:
+                {
+                    var lane = tab.WordLanes[from.Lane];
+                    var w = lane.Entries.FirstOrDefault(x => x.Tick == from.Tick);
+                    if (w is null) return false;
+                    lane.Entries.Remove(w);
+                    tab.WordLanes[to.Lane].Entries.Add(w with { Tick = to.Tick });
                     return true;
                 }
             default:

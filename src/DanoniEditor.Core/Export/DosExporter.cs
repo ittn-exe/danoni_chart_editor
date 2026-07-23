@@ -104,7 +104,10 @@ public sealed class DosExporter
                 throw new InvalidOperationException(
                     $"タブ'{tab.DifficultyName}'のレーン数({tab.Lanes.Count})がテンプレート({template.KeyCount})と一致しません");
 
-            var nColorEntries = new List<(long Frame, string ColorNo, string ColorCode, bool AllFlag)>();
+            // 2026-07-23(TBD 3): 最終的な出力直前に(Frame,TargetSuffix,ColorCode,AllFlag)が同一の
+            // エントリをまとめて0...7/1・3・5・7/all記法へ圧縮するため、まずはレーンごとの生データ
+            // (EngineLaneNumとTargetSuffixを分離した形)で集める。
+            var nColorRaw = new List<(long Frame, int EngineLaneNum, string TargetSuffix, string ColorCode, bool AllFlag)>();
 
             for (int j = 0; j < template.KeyCount; j++)
             {
@@ -154,12 +157,10 @@ public sealed class DosExporter
                             string desired = e is not null ? pick(e) ?? defaultHex : defaultHex;
                             if (string.Equals(desired, current, StringComparison.Ordinal)) continue;
                             long frame = RoundFrame(engine.TickToFrame(tick) + blankShift);
-                            string colorNo = targetSuffix.Length == 0
-                                ? lane.EngineLaneNum.ToString() : $"{lane.EngineLaneNum}:{targetSuffix}";
                             // allFlg(即時適用)は基本色への自動復帰(e=null)には適用しない。
                             // ユーザーが明示的に塗った箇所(eが存在する)でのみ、その時のチェック状態を反映する。
                             bool allFlag = e?.AllFlag ?? false;
-                            nColorEntries.Add((frame, colorNo, desired, allFlag));
+                            nColorRaw.Add((frame, lane.EngineLaneNum, targetSuffix, desired, allFlag));
                             current = desired;
                         }
                     }
@@ -192,7 +193,8 @@ public sealed class DosExporter
 
             AppendValueEvents(sb, $"speed{suffix}_data", tab.SpeedEvents, engine, blankShift);
             AppendValueEvents(sb, $"boost{suffix}_data", tab.BoostEvents, engine, blankShift);
-            AppendNColorData(sb, $"ncolor{suffix}_data", nColorEntries);
+            AppendNColorData(sb, $"ncolor{suffix}_data", CompressNColorEntries(nColorRaw, template));
+            AppendWordData(sb, suffix, tab, engine, blankShift);
             sb.AppendLine();
         }
 
@@ -225,6 +227,42 @@ public sealed class DosExporter
         AppendParam(sb, name, string.Join(",", parts));
     }
 
+    /// <summary>2026-07-23(TBD 3): 同一(Frame,TargetSuffix,ColorCode,AllFlag)で複数レーンが同時に
+    /// 色変化するエントリを、本家dos-e0002-ncolorData仕様の省略記法(範囲"0...7"/スラッシュ複数"1/3/5/7"/
+    /// 全レーン"all")へ圧縮する。本エディタが対象とする通常譜面(トランスキー以外)ではキーグループは
+    /// 常に0のみのため、"all"のみを使用し(g0〜g9のグループ記法は出力しない、キーグループ仕様上g1〜g9は
+    /// 通常譜面で意味を持たないため)。</summary>
+    private static List<(long Frame, string ColorNo, string ColorCode, bool AllFlag)> CompressNColorEntries(
+        List<(long Frame, int EngineLaneNum, string TargetSuffix, string ColorCode, bool AllFlag)> raw,
+        KeyTemplate template)
+    {
+        var allEngineLaneNums = template.Lanes.Select(l => l.EngineLaneNum).ToHashSet();
+        return raw
+            .GroupBy(e => (e.Frame, e.TargetSuffix, e.ColorCode, e.AllFlag))
+            .Select(g => (
+                Frame: g.Key.Frame,
+                ColorNo: CompressColorNoGroup(g.Select(x => x.EngineLaneNum).ToList(), g.Key.TargetSuffix, allEngineLaneNums),
+                ColorCode: g.Key.ColorCode,
+                AllFlag: g.Key.AllFlag))
+            .ToList();
+    }
+
+    /// <summary>矢印番号の集合をncolor_data記法の1トークンへ圧縮する。
+    /// 複数かつテンプレート全レーンと一致する場合は"all"、複数かつ連番(EngineLaneNum基準)なら
+    /// "min...max"、それ以外はスラッシュ区切り。単一の場合はそのまま数値のみ。</summary>
+    private static string CompressColorNoGroup(List<int> engineLaneNums, string targetSuffix, HashSet<int> allEngineLaneNums)
+    {
+        var sorted = engineLaneNums.Distinct().OrderBy(n => n).ToList();
+        string numPart;
+        if (sorted.Count > 1 && allEngineLaneNums.SetEquals(sorted))
+            numPart = "all";
+        else if (sorted.Count > 1 && sorted[^1] - sorted[0] + 1 == sorted.Count)
+            numPart = $"{sorted[0]}...{sorted[^1]}";
+        else
+            numPart = string.Join("/", sorted);
+        return targetSuffix.Length == 0 ? numPart : $"{numPart}:{targetSuffix}";
+    }
+
     /// <summary>ncolor_data出力(仕様: 1エントリ=Frame,ColorNo(:TargetPattern),ColorCode(,allFlg)の
     /// 3〜4項目CSV。AllFlag=trueの場合のみ4項目目に"all"を付与する、2026-07-24)。Frame昇順に整列する。</summary>
     private static void AppendNColorData(StringBuilder sb, string name,
@@ -237,6 +275,40 @@ public sealed class DosExporter
                 ? new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode, "all" }
                 : new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode });
         AppendParam(sb, name, string.Join(",", parts));
+    }
+
+    /// <summary>word_data/wordRev_dataの出力(仕様dos-e0003-wordData、2026-07-23、TBD 4)。
+    /// tab.WordLanesのうちIsReverseが同じもの同士をフレーム順にマージし、1つのデータ名(word{suffix}_data
+    /// またはwordRev{suffix}_data)としてまとめて出力する(dos.txt側は1タブにつき1つのデータ名しか
+    /// 持てないため)。改行区切り形式(1行=1エントリ)で出力する。レーンが1本も無ければ何も出力しない。</summary>
+    private static void AppendWordData(StringBuilder sb, string suffix, DifficultyTab tab,
+        Timing.TimingEngine engine, double blankShift)
+    {
+        if (tab.WordLanes.Count == 0) return;
+
+        foreach (var isReverse in new[] { false, true })
+        {
+            var entries = tab.WordLanes.Where(l => l.IsReverse == isReverse)
+                .SelectMany(l => l.Entries)
+                .OrderBy(e => e.Tick)
+                .ToList();
+            if (entries.Count == 0) continue;
+
+            var rows = entries.Select(e => FormatWordRow(e, engine, blankShift));
+            string name = (isReverse ? "wordRev" : "word") + suffix + "_data";
+            AppendParam(sb, name, string.Join("\n", rows));
+        }
+    }
+
+    private static string FormatWordRow(WordEntry e, Timing.TimingEngine engine, double blankShift)
+    {
+        long frame = RoundFrame(engine.TickToFrame(e.Tick) + blankShift);
+        return e.Kind switch
+        {
+            WordEntryKind.Comment => $"{frame},-,{e.Text}",
+            WordEntryKind.Control when e.FadeFrame is { } ff => $"{frame},{e.Position},{e.Text},{ff}",
+            _ => $"{frame},{e.Position},{e.Text}",
+        };
     }
 
     private static void AppendParam(StringBuilder sb, string name, string value)
