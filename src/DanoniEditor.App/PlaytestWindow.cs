@@ -47,12 +47,17 @@ internal sealed class PlaytestWindow : Window
         Math.Max(BaseWidth, MinWidthByKeyType.TryGetValue(keyTypeId, out var w) ? w : MinWidthDefault);
 
     /// <summary>環境設定「プレイテスト」のウィンドウ幅設定から、実際に使うフォールバック幅(px)を
-    /// 解決する(2026-08-03)。dos.txtのplayingWidthヘッダーが明示されている場合はこの値より常に
-    /// そちらが優先される(呼び出し元のHeaderDouble経由、仕様書12.2)。ヘッダー未指定時のみここへ来る。</summary>
+    /// 解決する(2026-08-03、2026-08-06 "auto"モード追加)。dos.txtのplayingWidthヘッダーが
+    /// 明示されている場合はこの値より常にそちらが優先される(呼び出し元のHeaderDouble経由、仕様書12.2)。
+    /// ヘッダー未指定時のみここへ来る。</summary>
     internal static double ResolveWindowWidthFallback(AppSettings settings, string currentTabKeyTypeId)
     {
         if (settings.PlaytestWindowWidthMode == "px")
             return Math.Max(1, settings.PlaytestWindowWidthPx);
+
+        // "auto"モード: 固定のキー種を指定せず、常に今プレイテストを開いているタブのキー種で決める
+        if (settings.PlaytestWindowWidthMode == "auto")
+            return AutoSpreadWidth(currentTabKeyTypeId);
 
         // "keyType"モード: 指定キー種が未設定なら、従来通り実際に開いているタブのキー種を使う
         var keyTypeId = string.IsNullOrEmpty(settings.PlaytestWindowWidthKeyType)
@@ -114,6 +119,17 @@ internal sealed class PlaytestWindow : Window
     private Brush _freezeJudgeBrush = Brushes.White;
     private string _freezeComboText = "";
 
+    // 2026-08-05: ステップゾーンの判定ヒットフラッシュ(danoniplus本体danoni_main.js judgeArrow内の
+    // stepHitTargetArrowを参考に移植)。本体は通常ノート判定(イイ/シャキン/マターリ/ショボーン/ウワァン、
+    // フリーズは対象外)の瞬間にステップゾーンへ「一回り大きい(±15px)ノート画像を判定色で不透明度0.75、
+    // 4フレームだけ(フェード無しで即消灯)表示する」演出を入れており、これをそのまま再現する
+    // (本家: C_ARW_WIDTH+30サイズ・opacity 0.75・C_FRM_HITMOTION=4フレーム)。
+    private const int StepHitFrames = 4;
+    private const double StepHitOpacity = 0.75;
+    private const double StepHitSizeAdd = 30;
+    private readonly PlayJudge?[] _stepHitJudge;
+    private readonly int[] _stepHitFramesRemaining;
+
     private readonly PlaySurface _surface;
 
     public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0, bool autoPlay = false,
@@ -174,6 +190,8 @@ internal sealed class PlaytestWindow : Window
         for (int i = 0; i < _pressedKeys.Length; i++) _pressedKeys[i] = [];
         _autoPlayArrowCursor = new int[_template.Lanes.Count];
         _autoPlayFreezeCursor = new int[_template.Lanes.Count];
+        _stepHitJudge = new PlayJudge?[_template.Lanes.Count];
+        _stepHitFramesRemaining = new int[_template.Lanes.Count];
         BuildKeyMap();
 
         Title = $"プレイテスト - {doc.Project.ProjectName} [{doc.CurrentTab.DifficultyName}]";
@@ -287,6 +305,10 @@ internal sealed class PlaytestWindow : Window
         _currentFrame = _player.Position.TotalSeconds * 60.0;
         if (_autoPlay) AutoPlayAdvance();
         _engine.Advance(_currentFrame);
+        // 2026-08-05: ステップゾーンヒットフラッシュのカウントダウン(本家のmovArrowループ内カウントダウンと
+        // 同じく、フェード無しでcnt=0になった瞬間に非表示化する)。
+        for (int i = 0; i < _stepHitFramesRemaining.Length; i++)
+            if (_stepHitFramesRemaining[i] > 0) _stepHitFramesRemaining[i]--;
         _surface.InvalidateVisual();
     }
 
@@ -387,6 +409,14 @@ internal sealed class PlaytestWindow : Window
             _ => ("ｲｸﾅｲ(・A・)", Brushes.Gray),
         };
 
+        // 2026-08-05: ステップゾーンヒットフラッシュは本家準拠で通常ノート判定(イイ〜ウワァン)のみが対象
+        // (フリーズのキター/イクナイはこの演出を使わず、帯の消去/変色で判定を表す)。
+        if (r.Judge is not (PlayJudge.Kita or PlayJudge.Iknai))
+        {
+            _stepHitJudge[r.Lane] = r.Judge;
+            _stepHitFramesRemaining[r.Lane] = StepHitFrames;
+        }
+
         // 2026-07-25: 本家準拠でフリーズ(キター/イクナイ)と通常ノート(イイ〜ウワァン)の判定文字・
         // コンボ表示を別系統に書き分ける(danoni_main.jsのcharaJ/comboJ ←→ charaFJ/comboFJ)。
         if (r.Judge is PlayJudge.Kita or PlayJudge.Iknai)
@@ -417,6 +447,15 @@ internal sealed class PlaytestWindow : Window
             double w = o._playingWidth, h = o._playingHeight;
             dc.DrawRectangle(Brushes.Black, null, new Rect(0, 0, w, h));
 
+            // 2026-08-05: 判定文字(+コンボ)は最背面レイヤーへ変更(ユーザー要望)。矢印・フリーズより
+            // 先に描く=それらの下に隠れる形になる。あわせて不透明度75%・文字サイズも縮小する。
+            dc.PushOpacity(0.75);
+            DrawCenteredText(dc, o._judgeText, o._judgeBrush, 18, h / 2 - 30, w);
+            DrawCenteredText(dc, o._comboText, Brushes.White, 13, h / 2 + 8, w);
+            DrawCenteredText(dc, o._freezeJudgeText, o._freezeJudgeBrush, 15, h / 2 + 40, w);
+            DrawCenteredText(dc, o._freezeComboText, Brushes.White, 11, h / 2 + 66, w);
+            dc.Pop();
+
             var tab = o._doc.CurrentTab;
             var project = o._doc.Project;
 
@@ -438,6 +477,14 @@ internal sealed class PlaytestWindow : Window
 
                 // ステップゾーン(2026-07-20: レーンの画像・回転角を使用。色は従来通りDimGrayのtint)
                 DrawNote(dc, image, laneDef, cx, stepY, Colors.DimGray);
+
+                // 2026-08-05: ステップゾーンヒットフラッシュ(本家stepHitTargetArrow移植)。
+                if (o._stepHitFramesRemaining[i] > 0 && o._stepHitJudge[i] is { } hitJudge)
+                {
+                    dc.PushOpacity(StepHitOpacity);
+                    DrawNote(dc, image, laneDef, cx, stepY, JudgeColor(hitJudge), ArrowSize + StepHitSizeAdd);
+                    dc.Pop();
+                }
 
                 // 2026-07-21: speed_data(現在時刻に効くグローバル倍率、区分線形積分)×boost_data
                 // (そのノート自身の到達フレームで決まる固定倍率)で実際の移動距離を求める
@@ -472,29 +519,33 @@ internal sealed class PlaytestWindow : Window
                     DrawNote(dc, image, laneDef, cx, y, color);
                 }
             }
-
-            // 判定文字(画面中央)+コンボ(その下)。2026-07-25: 本家準拠でフリーズ用の判定文字・
-            // コンボはさらにその下へ別枠として常時表示する(矢印側の表示を上書きしない)。
-            DrawCenteredText(dc, o._judgeText, o._judgeBrush, 28, h / 2 - 30, w);
-            DrawCenteredText(dc, o._comboText, Brushes.White, 20, h / 2 + 8, w);
-            DrawCenteredText(dc, o._freezeJudgeText, o._freezeJudgeBrush, 22, h / 2 + 40, w);
-            DrawCenteredText(dc, o._freezeComboText, Brushes.White, 16, h / 2 + 66, w);
         }
 
-        private static void DrawNote(DrawingContext dc, System.Windows.Media.Imaging.BitmapImage? image, LaneDef laneDef, double cx, double y, Color color)
+        private static void DrawNote(DrawingContext dc, System.Windows.Media.Imaging.BitmapImage? image, LaneDef laneDef, double cx, double y, Color color, double size = ArrowSize)
         {
             if (image is not null)
             {
-                ChartCanvas.DrawNoteImage(dc, image, laneDef, cx, y, ArrowSize, color);
+                ChartCanvas.DrawNoteImage(dc, image, laneDef, cx, y, size, color);
             }
             else
             {
                 var b = new SolidColorBrush(color);
                 b.Freeze();
                 dc.DrawRectangle(b, new Pen(Brushes.Black, 0.5),
-                    new Rect(cx - ArrowSize / 2, y - ArrowSize / 2, ArrowSize, ArrowSize));
+                    new Rect(cx - size / 2, y - size / 2, size, size));
             }
         }
+
+        /// <summary>ステップゾーンヒットフラッシュの判定色(2026-08-05、画面中央の判定文字と同系色に統一)。</summary>
+        private static Color JudgeColor(PlayJudge judge) => judge switch
+        {
+            PlayJudge.Ii => Colors.Cyan,
+            PlayJudge.Shakin => Colors.LightGreen,
+            PlayJudge.Matari => Colors.Orange,
+            PlayJudge.Shobon => Colors.MediumPurple,
+            PlayJudge.Uwan => Colors.Red,
+            _ => Colors.White,
+        };
 
         private static void DrawCenteredText(DrawingContext dc, string text, Brush brush, double size, double y, double width)
         {

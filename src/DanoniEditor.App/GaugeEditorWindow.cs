@@ -7,20 +7,25 @@ using DanoniEditor.Core.Models;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-08-01)。
+/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-08-01、2026-08-05再設計)。
 /// 設定メニューから開く。ChartProjectを直接編集するのではなく編集用コピー(VM)上で作業し、
 /// 「保存」時にのみ project.Tabs[].Gauge / project.GaugeParams / project.GaugeRawOverrideText へ反映する
 /// (テンプレ編集・マクロ編集ウィンドウと同じ「保存確定まではキャンセル可能」の方針)。
-/// - ①難易度タブ別ゲージ名リスト: タブごとにTabItemを持ち、「指定しない」「継承キーワード」
-///   「明示リスト」の3択(ユーザー確定仕様: 難易度ごとに異なるリストを完全サポート)。
-/// - ②ゲージ別パラメータ: プロジェクト全体で共有するゲージ名→タブ数分のCSV行のテーブル。
-/// - ③直接入力モード(ユーザー確定仕様、2026-08-01): プロジェクト全体で1つのテキスト欄。
-///   空でなければ①②の内容を完全に無視し、このテキストをそのままdos.txtへ出力する
-///   (DosExporter.AppendGaugeHeaders参照)。内容がある間は①②のパネルを無効化して事故を防ぐ。
-/// - ④難易度別デフォルトゲージ(2026-08-05、TBD対応): difDataの4フィールド目以降(名前を介さない
-///   border/recovery/damage/initLife%の生値、DifficultyTab.DifDataExtra)を編集する欄。
-///   ②と同じ「ノルマ(またはx),回復,ダメージ,初期ライフ」のCSV形式だが、customGauge/gaugeXXXとは
-///   独立したdifData自体の値のため、③(直接入力)がアクティブでも無効化しない(別ヘッダー行のため干渉しない)。
+///
+/// 2026-08-05再設計(ユーザー確定仕様): danoni_main.js(resetCustomGauge/getGaugeSetting)を確認した結果、
+/// 「difDataのborder/recovery/damage/initLife%(本体ゲージ)」と「customGauge/gaugeXXX(切替候補ゲージ)」は
+/// 排他ではなく併存する別機能だと判明したため、「対象の譜面(タブ)を選び、その譜面の設定をまとめて行う」
+/// UIへ再構成した。TabControl(_tabGaugeTabs)がその「対象譜面選択」を兼ねる(GaugeCalculatorWindowが
+/// SelectionChangedを購読して追随する既存の仕組みをそのまま流用)。各TabItem内には
+///   - 本体ゲージ(difData直接指定、旧④): ノルマ(x指定/数値+数値欄)・回復量・ダメージ・初期ライフを
+///     独立した入力欄で編集する(以前は1本の生CSV欄だった)。上書きしない場合はチェックを外せば
+///     DifDataExtraは書き出されず、本体既定値が使われる。
+///   - 切替候補ゲージ(customGauge、旧①): 「指定しない」「継承キーワード」「明示リスト」の3択。
+/// を配置する。ゲージ名(gaugeXXX)自体はプロジェクト全体で共有される情報のため、TabControlの外側に
+/// 「ゲージ別パラメータ」表(旧②、名前の新規作成/削除も含む)として残す。
+/// 「直接入力モード」(旧③、過去資産からのコピペ用)は末尾に残置。空でなければ本体ゲージ・切替候補ゲージ
+/// いずれも完全に無視してこのテキストをそのままdos.txtへ出力する(DosExporter.AppendGaugeHeaders参照)。
+/// 「dos作成後に直接編集する」(2026-08-05)がON中は、上記すべてを無効化しエクスポートも一切行わない。
 /// </summary>
 internal sealed class GaugeEditorWindow : Window
 {
@@ -29,8 +34,9 @@ internal sealed class GaugeEditorWindow : Window
     private readonly ChartProject _project;
     private readonly List<TabGaugeVm> _tabVms;
     private readonly List<ParamRowVm> _paramRows;
-    /// <summary>④難易度別デフォルトゲージ(difData直接指定)のタブごとのCSV入力値(2026-08-05)</summary>
-    private readonly List<string> _difDataExtraCsv;
+    /// <summary>本体ゲージ(difData直接指定)のタブごとの入力値(2026-08-05再設計、旧・生CSV欄を
+    /// フィールドごとの入力欄+チェックボックスへ分解したもの)</summary>
+    private readonly List<DifDataExtraVm> _difDataVms;
 
     private readonly TextBox _rawOverrideBox = new()
     {
@@ -45,7 +51,7 @@ internal sealed class GaugeEditorWindow : Window
 
     private readonly TextBlock _rawActiveNotice = new()
     {
-        Text = "直接入力が優先されています(①②は無視されます)。",
+        Text = "直接入力が優先されています(上の譜面ごとの設定・ゲージ別パラメータは無視されます)。",
         Foreground = Brushes.OrangeRed,
         FontWeight = FontWeights.Bold,
         Margin = new Thickness(0, 4, 0, 4),
@@ -53,6 +59,15 @@ internal sealed class GaugeEditorWindow : Window
     };
 
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
+
+    /// <summary>「dos作成後に直接編集する」フラグ(2026-08-05)。ON中は①②③④すべて無効化し、
+    /// エクスポート時もゲージ関連ヘッダーを一切出力しない(ChartProject.GaugeManualEditAfterExport参照)。</summary>
+    private readonly CheckBox _manualEditAfterExport = new()
+    {
+        Content = "dos作成後に直接編集する(このエディタでは触らず、書き出し後のdos.txtへ自分で追記する)",
+        FontWeight = FontWeights.Bold,
+        Margin = new Thickness(0, 0, 0, 8),
+    };
 
     private readonly TabControl _tabGaugeTabs = new();
     private readonly StackPanel _paramTablePanel = new();
@@ -92,7 +107,7 @@ internal sealed class GaugeEditorWindow : Window
             GaugeName = name,
             PerTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "").ToList(),
         }).ToList();
-        _difDataExtraCsv = project.Tabs.Select(t => t.DifDataExtra ?? "").ToList();
+        _difDataVms = project.Tabs.Select(t => DifDataExtraVm.Parse(t.DifDataExtra)).ToList();
 
         var root = new DockPanel();
 
@@ -111,19 +126,21 @@ internal sealed class GaugeEditorWindow : Window
 
         var outer = new StackPanel { Margin = new Thickness(12) };
 
-        outer.Children.Add(SectionLabel("① 難易度タブ別ゲージ名リスト (customGauge)"));
+        _manualEditAfterExport.IsChecked = project.GaugeManualEditAfterExport;
+        _manualEditAfterExport.Checked += (_, _) => UpdateRawActiveState();
+        _manualEditAfterExport.Unchecked += (_, _) => UpdateRawActiveState();
+        outer.Children.Add(_manualEditAfterExport);
+
+        outer.Children.Add(SectionLabel("譜面(難易度)ごとのゲージ設定"));
+        outer.Children.Add(new TextBlock
+        {
+            Text = "対象の譜面をタブで選び、その譜面の本体ゲージ・切替候補ゲージを設定してくださいまし。",
+            Margin = new Thickness(0, 0, 0, 6),
+        });
         BuildTabGaugeTabs();
         outer.Children.Add(_tabGaugeTabs);
 
-        outer.Children.Add(SectionLabel("② ゲージ別パラメータ (gaugeXXX)"));
-        outer.Children.Add(new TextBlock
-        {
-            Text = "各セルは「ノルマ(またはx固定),回復,ダメージ,初期ライフ」のCSVで入力してくださいまし。" +
-                   "空欄のタブは先頭タブと同じ値が使われます(本体側の既定フォールバック動作)。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 4),
-        });
+        outer.Children.Add(SectionLabel("ゲージ別パラメータ (gaugeXXX、プロジェクト全体で共有)"));
         RefreshParamTable();
         var paramScroll = new ScrollViewer
         {
@@ -146,39 +163,12 @@ internal sealed class GaugeEditorWindow : Window
         addParamRow.Children.Add(_addParamButton);
         addParamRow.Children.Add(openCalculatorButton);
         outer.Children.Add(addParamRow);
-        outer.Children.Add(new TextBlock
-        {
-            Text = "計算機は①のタブで選択中の難易度タブを対象に動作します(タブを切り替えると自動で再計算されます)。",
-            Foreground = Brushes.Gray,
-            FontSize = 10,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(8, 2, 0, 0),
-        });
 
-        outer.Children.Add(SectionLabel("③ 直接入力モード(過去資産からのコピペ用)"));
-        outer.Children.Add(new TextBlock
-        {
-            Text = "dos.txtのゲージ関連ヘッダー行(例: |customGauge=...|、|gaugeOriginal=...|)をそのまま貼り付けてくださいまし。" +
-                   "ここに空白以外の内容がある間は①②の設定より常にこちらが優先され、①②は編集不可になります。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 4),
-        });
+        outer.Children.Add(SectionLabel("直接入力モード(過去資産からのコピペ用)"));
         outer.Children.Add(_rawActiveNotice);
         _rawOverrideBox.Text = project.GaugeRawOverrideText ?? "";
         _rawOverrideBox.TextChanged += (_, _) => UpdateRawActiveState();
         outer.Children.Add(_rawOverrideBox);
-
-        outer.Children.Add(SectionLabel("④ 難易度別デフォルトゲージ(difDataへの直接指定)"));
-        outer.Children.Add(new TextBlock
-        {
-            Text = "各タブの欄に「ノルマ(またはx),回復,ダメージ,初期ライフ」のCSVで入力してくださいまし。" +
-                   "②のような名前付きゲージを介さず、difData自体に直接埋め込まれる値ですの。空欄のままで問題ありません。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 4),
-        });
-        outer.Children.Add(BuildDifDataExtraPanel());
 
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = outer };
         root.Children.Add(scroll);
@@ -212,11 +202,17 @@ internal sealed class GaugeEditorWindow : Window
 
     private void UpdateRawActiveState()
     {
-        bool rawActive = !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
+        bool manualEdit = _manualEditAfterExport.IsChecked == true;
+        // 2026-08-05再設計: _tabGaugeTabsが「対象譜面選択+本体ゲージ+切替候補ゲージ」をすべて
+        // 内包するため、これを無効化するだけで両方まとめて無効化される。
+        bool rawActive = !manualEdit && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
         _rawActiveNotice.Visibility = rawActive ? Visibility.Visible : Visibility.Collapsed;
-        _tabGaugeTabs.IsEnabled = !rawActive;
-        _paramTablePanel.IsEnabled = !rawActive;
-        _addParamButton.IsEnabled = !rawActive;
+        _tabGaugeTabs.IsEnabled = !manualEdit && !rawActive;
+        _paramTablePanel.IsEnabled = !manualEdit && !rawActive;
+        _addParamButton.IsEnabled = !manualEdit && !rawActive;
+        // 2026-08-05: 「dos作成後に直接編集する」がON中は直接入力モードも無効化する
+        // (エディタでは一切触らせない、というユーザー確定仕様のため)。
+        _rawOverrideBox.IsEnabled = !manualEdit;
     }
 
     // =====================================================================
@@ -249,6 +245,118 @@ internal sealed class GaugeEditorWindow : Window
         public string DisplayName = "";
     }
 
+    // =====================================================================
+    // 本体ゲージ(difData直接指定、旧④、2026-08-05再設計でタブパネル内へ統合)
+    // =====================================================================
+
+    /// <summary>本体ゲージ(difDataのborder/recovery/damage/initLife%)のタブごとの入力値。
+    /// Enabled=falseの間はDifDataExtraを出力しない(本体既定値が使われる)。ノルマはdanoniplus側で
+    /// "x"という特殊キーワードを受け付ける(danoni_main.js getGaugeSetting確認済み)ため、
+    /// 数値入力とx指定をラジオボタンで切り替えられるようにしている。</summary>
+    internal sealed class DifDataExtraVm
+    {
+        public bool Enabled;
+        public bool BorderIsX;
+        public string BorderValue = "70";
+        public string Recovery = "6";
+        public string Damage = "40";
+        public string InitLife = "";
+
+        public static DifDataExtraVm Parse(string? csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv)) return new DifDataExtraVm { Enabled = false };
+            var parts = csv.Split(',');
+            string border = parts.Length > 0 ? parts[0].Trim() : "";
+            bool isX = border == "x";
+            return new DifDataExtraVm
+            {
+                Enabled = true,
+                BorderIsX = isX,
+                BorderValue = isX || border.Length == 0 ? "70" : border,
+                Recovery = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "6",
+                Damage = parts.Length > 2 && parts[2].Length > 0 ? parts[2] : "40",
+                InitLife = parts.Length > 3 ? parts[3] : "",
+            };
+        }
+
+        /// <summary>Enabled=falseなら空文字(=出力なし)、trueならCSVを組み立てる。初期ライフのみ
+        /// 空欄可(danoniplus側で末尾フィールド省略時は本体既定のinitLifeが使われるため)。</summary>
+        public string ToCsv()
+        {
+            if (!Enabled) return "";
+            string border = BorderIsX ? "x" : BorderValue;
+            string csv = $"{border},{Recovery},{Damage}";
+            return string.IsNullOrWhiteSpace(InitLife) ? csv : $"{csv},{InitLife}";
+        }
+    }
+
+    /// <summary>本体ゲージ(difData)の入力欄一式を組み立てる(2026-08-05)。</summary>
+    private FrameworkElement BuildDifDataExtraFields(int tabIndex)
+    {
+        var vm = _difDataVms[tabIndex];
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+
+        var enabledCheck = new CheckBox
+        {
+            Content = "本体ゲージ(border/recovery/damage/initLife%)を上書きする(OFF=本体既定値を使用)",
+            IsChecked = vm.Enabled,
+            Margin = new Thickness(0, 0, 0, 6),
+        };
+        panel.Children.Add(enabledCheck);
+
+        var fieldsPanel = new StackPanel { Margin = new Thickness(16, 0, 0, 0) };
+        panel.Children.Add(fieldsPanel);
+
+        var borderXRadio = new RadioButton { Content = "x指定", GroupName = $"border_{tabIndex}", Margin = new Thickness(0, 0, 12, 0), IsChecked = vm.BorderIsX };
+        var borderNumRadio = new RadioButton { Content = "数値", GroupName = $"border_{tabIndex}", IsChecked = !vm.BorderIsX };
+        var borderValueBox = new TextBox { Width = 80, Text = vm.BorderValue, Margin = new Thickness(8, 0, 0, 0) };
+        var borderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        borderRow.Children.Add(new TextBlock { Text = "ノルマ(0-100):", Width = 110, VerticalAlignment = VerticalAlignment.Center });
+        borderRow.Children.Add(borderXRadio);
+        borderRow.Children.Add(borderNumRadio);
+        borderRow.Children.Add(borderValueBox);
+        fieldsPanel.Children.Add(borderRow);
+
+        var recoveryBox = new TextBox { Width = 80, Text = vm.Recovery };
+        fieldsPanel.Children.Add(LabeledFieldRow("回復量:", recoveryBox));
+
+        var damageBox = new TextBox { Width = 80, Text = vm.Damage };
+        fieldsPanel.Children.Add(LabeledFieldRow("ダメージ:", damageBox));
+
+        var initLifeBox = new TextBox { Width = 80, Text = vm.InitLife };
+        fieldsPanel.Children.Add(LabeledFieldRow("初期ライフ(空欄可):", initLifeBox));
+
+        void RefreshEnabledState()
+        {
+            fieldsPanel.IsEnabled = vm.Enabled;
+            borderValueBox.IsEnabled = !vm.BorderIsX;
+        }
+
+        enabledCheck.Checked += (_, _) => { vm.Enabled = true; RefreshEnabledState(); };
+        enabledCheck.Unchecked += (_, _) => { vm.Enabled = false; RefreshEnabledState(); };
+        borderXRadio.Checked += (_, _) => { vm.BorderIsX = true; RefreshEnabledState(); };
+        borderNumRadio.Checked += (_, _) => { vm.BorderIsX = false; RefreshEnabledState(); };
+        borderValueBox.TextChanged += (_, _) => vm.BorderValue = borderValueBox.Text;
+        recoveryBox.TextChanged += (_, _) => vm.Recovery = recoveryBox.Text;
+        damageBox.TextChanged += (_, _) => vm.Damage = damageBox.Text;
+        initLifeBox.TextChanged += (_, _) => vm.InitLife = initLifeBox.Text;
+
+        RefreshEnabledState();
+        return panel;
+    }
+
+    private static StackPanel LabeledFieldRow(string label, FrameworkElement control)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        row.Children.Add(new TextBlock { Text = label, Width = 110, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(control);
+        return row;
+    }
+
+    // =====================================================================
+    // ① 難易度タブ別ゲージ名リスト(customGauge、切替候補ゲージ)
+    // =====================================================================
+
     private void BuildTabGaugeTabs()
     {
         _tabGaugeTabs.Items.Clear();
@@ -259,6 +367,10 @@ internal sealed class GaugeEditorWindow : Window
 
             var panel = new StackPanel { Margin = new Thickness(8) };
 
+            panel.Children.Add(SectionLabel("本体ゲージ(difDataへの直接指定)"));
+            panel.Children.Add(BuildDifDataExtraFields(i));
+
+            panel.Children.Add(SectionLabel("切替候補ゲージ(customGauge)"));
             var modeCombo = new ComboBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8) };
             modeCombo.Items.Add("指定しない(本体既定を使用)");
             modeCombo.Items.Add("継承キーワードを使用");
@@ -376,44 +488,6 @@ internal sealed class GaugeEditorWindow : Window
     }
 
     // =====================================================================
-    // ④ 難易度別デフォルトゲージ(difData直接指定、2026-08-05)
-    // =====================================================================
-
-    /// <summary>タブごとに「タブ名+CSV入力欄」の縦組を横並びにしたパネルを組み立てる。
-    /// ②のパラメータテーブルと違い行の追加/削除が無い(タブ数固定)ため、都度作り直す必要が無い。</summary>
-    private FrameworkElement BuildDifDataExtraPanel()
-    {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal };
-        for (int i = 0; i < _project.Tabs.Count; i++)
-        {
-            int idx = i;
-            var col = new StackPanel { Margin = new Thickness(0, 0, 8, 4) };
-            col.Children.Add(new TextBlock
-            {
-                Text = _project.Tabs[i].DisplayLabel,
-                Width = 110,
-                FontWeight = FontWeights.Bold,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
-            var box = new TextBox
-            {
-                Width = 110,
-                Text = _difDataExtraCsv[idx],
-                ToolTip = "ノルマ(またはx),回復,ダメージ,初期ライフ(空欄可)",
-            };
-            box.TextChanged += (_, _) => _difDataExtraCsv[idx] = box.Text;
-            col.Children.Add(box);
-            panel.Children.Add(col);
-        }
-        return new ScrollViewer
-        {
-            Content = panel,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-        };
-    }
-
-    // =====================================================================
     // 保存
     // =====================================================================
 
@@ -488,13 +562,16 @@ internal sealed class GaugeEditorWindow : Window
 
         _project.GaugeRawOverrideText = rawText;
 
-        // 2026-08-05: ④difData直接指定(名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
-        // ③の直接入力モード(customGauge/gaugeXXX)とは無関係な別ヘッダーのため、rawTextの有無を問わず常に反映する。
+        // 2026-08-05: 本体ゲージ(difData直接指定、名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
+        // 直接入力モード(customGauge/gaugeXXX)とは無関係な別ヘッダーのため、rawTextの有無を問わず常に反映する。
         for (int i = 0; i < _project.Tabs.Count; i++)
         {
-            var csv = _difDataExtraCsv[i].Trim();
+            var csv = _difDataVms[i].ToCsv();
             _project.Tabs[i].DifDataExtra = string.IsNullOrEmpty(csv) ? null : csv;
         }
+
+        // 2026-08-05: 「dos作成後に直接編集する」フラグの書き戻し(プロジェクト全体で1つ)。
+        _project.GaugeManualEditAfterExport = _manualEditAfterExport.IsChecked == true;
 
         Saved = true;
         DialogResult = true;

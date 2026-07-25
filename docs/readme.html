@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ダンおに譜面エディタ 簡易ReadMe</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --panel: #ffffff;
+    --accent: #b3557a;
+    --accent-light: #f3e3ea;
+    --text: #333333;
+    --muted: #777777;
+    --border: #e6d9d0;
+    --code-bg: #f5f0ea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Yu Gothic", "Hiragino Sans", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+  }
+  header {
+    background: linear-gradient(120deg, var(--accent), #d98aa8);
+    color: #fff;
+    padding: 40px 24px 32px;
+    text-align: center;
+  }
+  header h1 { margin: 0 0 8px; font-size: 1.9em; letter-spacing: 0.03em; }
+  header p { margin: 0; opacity: 0.92; font-size: 0.95em; }
+  .layout { display: flex; max-width: 1180px; margin: 0 auto; align-items: flex-start; }
+  nav {
+    position: sticky;
+    top: 0;
+    width: 250px;
+    flex-shrink: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 24px 16px;
+    font-size: 0.88em;
+  }
+  nav a {
+    display: block;
+    color: var(--text);
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin-bottom: 2px;
+  }
+  nav a:hover { background: var(--accent-light); color: var(--accent); }
+  nav .nav-section { font-weight: bold; color: var(--accent); margin-top: 14px; margin-bottom: 2px; padding: 5px 10px 0; }
+  main { flex: 1; padding: 24px 32px 80px; min-width: 0; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 28px;
+    margin-bottom: 22px;
+  }
+  h2 {
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent-light);
+    padding-bottom: 8px;
+    margin-top: 0;
+    font-size: 1.3em;
+  }
+  h3 { color: #a3456a; font-size: 1.05em; margin-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92em; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--accent-light); color: #8a3a58; }
+  tr:nth-child(even) td { background: #fcfaf7; }
+  code, kbd {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 0.9em;
+    white-space: nowrap;
+  }
+  .badge {
+    display: inline-block;
+    background: var(--accent-light);
+    color: var(--accent);
+    border-radius: 999px;
+    font-size: 0.75em;
+    padding: 1px 10px;
+    margin-left: 6px;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 4px; }
+  .note {
+    background: #fff8ec;
+    border: 1px solid #eddcb0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9em;
+    color: #7a6633;
+    margin-top: 10px;
+  }
+  footer { text-align: center; color: var(--muted); font-size: 0.85em; padding: 20px; }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    nav { position: static; width: auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ダンおに譜面エディタ 簡易ReadMe</h1>
+  <p>danoniplus形式の譜面(dos.txt)を作成・編集するためのWPFデスクトップエディタ、操作方法まとめ</p>
+</header>
+
+<div class="layout">
+<nav>
+  <div class="nav-section">概要</div>
+  <a href="#overview">エディタについて</a>
+  <div class="nav-section">基本操作</div>
+  <a href="#file">ファイル操作</a>
+  <a href="#tabs">タブ・ウィンドウ構成</a>
+  <a href="#chart-edit">譜面編集(マウス)</a>
+  <a href="#minimap">ミニマップ</a>
+  <div class="nav-section">キーボード</div>
+  <a href="#kb-always">常時ショートカット</a>
+  <a href="#kb-mode">キーボードモード</a>
+  <a href="#kb-grid">グリッド分解能</a>
+  <div class="nav-section">機能ウィンドウ</div>
+  <a href="#gauge">ゲージ設定</a>
+  <a href="#gauge-calc">ゲージ計算機</a>
+  <a href="#playtest">プレイテスト</a>
+  <a href="#preferences">環境設定</a>
+  <a href="#other-dialogs">その他ダイアログ</a>
+  <div class="nav-section">その他</div>
+  <a href="#analysis">分析タブ</a>
+  <a href="#macro">マクロ</a>
+  <a href="#persist">保存される情報</a>
+</nav>
+
+<main>
+
+<section id="overview">
+<h2>エディタについて</h2>
+<p>danoniplus互換の譜面ファイル(dos.txt)を作成するための編集ソフトです。1ウィンドウ=1曲(複数難易度タブを内包)構成で、FUJIエディタ・SKBエディタ・既存dos.txtからのインポートにも対応しています。</p>
+</section>
+
+<section id="file">
+<h2>ファイル操作</h2>
+<table>
+<tr><th>メニュー</th><th>内容</th></tr>
+<tr><td>新規プロジェクト</td><td>キー種・難易度名・BPMを指定してプロジェクトを新規作成</td></tr>
+<tr><td>開く...</td><td>既存プロジェクトファイルを開く</td></tr>
+<tr><td>最近開いたファイル</td><td>履歴から再度開く。履歴クリアも可能</td></tr>
+<tr><td>上書き保存 <kbd>Ctrl+S</kbd></td><td>プロジェクトを保存</td></tr>
+<tr><td>dos.txtをエクスポート <kbd>Ctrl+E</kbd></td><td>danoniplus用のdos.txtを書き出し</td></tr>
+<tr><td>現在の難易度タブをエクスポート...</td><td>合作用に、1タブ分だけをITTNエディタ形式で書き出し</td></tr>
+<tr><td>FUJIエディタからのインポート...</td><td>FUJI形式ファイルの取り込み(下記参照)</td></tr>
+<tr><td>SKBエディタからのインポート...</td><td>SKB形式ファイルの取り込み</td></tr>
+<tr><td>dos.txtからのインポート...</td><td>既存dos.txtの取り込み(BPM自動推定の可否を確認)</td></tr>
+<tr><td>ITTNエディタのタブファイルをインポート...</td><td>他プロジェクトからタブを合流</td></tr>
+<tr><td>音楽ファイルを読み込む...</td><td>波形表示・プレイテスト用の音源を設定</td></tr>
+<tr><td>新しいウィンドウ</td><td>同一エディタをもう1つのプロセスとして起動(別の曲を並行編集)</td></tr>
+</table>
+
+<h3>ドラッグ&ドロップ</h3>
+<p>ウィンドウへファイルをドロップすると内容を自動判定し、自プロジェクト/タブエクスポート/FUJI/SKB/dos.txt/音声ファイル/Base64埋め込み音楽/不明のいずれかとしてインポート処理へ振り分けます。</p>
+
+<h3>FUJIインポートの詳細</h3>
+<p>読み込んだファイルからdifDataの候補行をスキャンし、1つのダイアログで以下を設定します。</p>
+<ol>
+<li><b>キー種</b>: FUJI側の記載は一切参照せず、テンプレートフォルダに存在するキー種一覧から選択</li>
+<li><b>難易度名</b>: difDataの全行から拾った難易度名の候補、または「後で設定する」「今設定する」(手入力欄が表示されます)から選択</li>
+</ol>
+<p>インポート後、既存プロジェクトへの追加/新規プロジェクトとして開く/キャンセルを確認します。</p>
+</section>
+
+<section id="tabs">
+<h2>タブ・ウィンドウ構成</h2>
+<ul>
+<li>プロジェクトタブ(上段)・難易度タブ(下段)の2段構成。ドラッグで並べ替え可能(同一グループ内のみ)</li>
+<li>「新規譜面を追加」ボタンで難易度タブを追加(キー種・難易度名・BPM入力)</li>
+<li>タブを閉じるには最低1タブが残っている必要があり、閉じる操作はUndo不可(確認あり)</li>
+</ul>
+
+<h3>表示トグルボタン</h3>
+<table>
+<tr><th>トグル</th><th>内容</th></tr>
+<tr><td>キーボードモード</td><td>マウス中心の操作からキーボード中心の操作(SKB準拠)へ切替</td></tr>
+<tr><td>色編集モード</td><td>ncolor_dataの個別編集専用モード。マーカーレーンと色塗り以外の編集を制限</td></tr>
+<tr><td>フレーム情報モード</td><td>拍情報表示⇔フレーム情報表示を切替(StartNumber編集モードと排他)</td></tr>
+<tr><td>波形表示</td><td>音楽読込済みの場合に波形を表示(ogg未対応)</td></tr>
+<tr><td>StartNumber編集</td><td>ドラッグで譜面全体を波形に対しスライド、クリックでガイド線を表示</td></tr>
+<tr><td>ノート画像表示/強調表示</td><td>どちらか一方は必ずON</td></tr>
+<tr><td>ノート数表示</td><td>配置数の表示切替</td></tr>
+</table>
+</section>
+
+<section id="chart-edit">
+<h2>譜面編集(マウス)</h2>
+<table>
+<tr><th>操作</th><th>内容</th></tr>
+<tr><td>左クリック</td><td>ノート配置/選択(マーカーレーンのダブルクリックは再生開始フレーム設定)</td></tr>
+<tr><td>右ドラッグ</td><td>矩形選択(ラバーバンド)。触れたオブジェクトを連続的に削除するモードもあり(オレンジ赤枠でプレビュー)</td></tr>
+<tr><td>中クリック</td><td>フリーズアロー配置(FUJIエディタ準拠)</td></tr>
+<tr><td>ドラッグ移動/延長</td><td>黄色いゴーストでプレビューし、マウスアップ時に確定</td></tr>
+<tr><td>Ctrl+ドラッグ</td><td>複製(マウスアップ時の修飾キー状態で判定)</td></tr>
+<tr><td>Escape</td><td>選択解除</td></tr>
+</table>
+
+<h3>マウスホイール(修飾キー体系)</h3>
+<table>
+<tr><th>操作</th><th>内容</th></tr>
+<tr><td>修飾なし</td><td>通常スクロール</td></tr>
+<tr><td><kbd>Shift</kbd>+ホイール</td><td>縦ズーム(カーソル位置を中心に1.1倍刻み)</td></tr>
+<tr><td><kbd>Alt</kbd>+ホイール</td><td>横ズーム(レーン幅・ノート表示サイズ)</td></tr>
+<tr><td><kbd>Ctrl</kbd>+ホイール</td><td>2倍速スクロール</td></tr>
+<tr><td><kbd>Shift+Ctrl</kbd>+ホイール</td><td>4倍速スクロール</td></tr>
+</table>
+<p>縦・横のズーム率はプロジェクトファイルに保存され、次回開いたときも維持されます。</p>
+
+<h3>その他</h3>
+<ul>
+<li>編集中はIME(日本語入力)を自動的に無効化(Space等のショートカットがIMEに奪われないように)</li>
+<li>タイム情報レーン/マーカーレーンの文字サイズは環境設定で変更可能(既定8.0pt/9.0pt)</li>
+<li>スナップに連動したカーソルライン表示、選択オブジェクトの黄色ハイライト、譜面ビューの反転(Reverse)表示に対応</li>
+</ul>
+</section>
+
+<section id="minimap">
+<h2>ミニマップ</h2>
+<p>譜面ビュー右側に全体構成を表示。クリックでその位置を画面中央にスクロールジャンプ、ドラッグで連続的にスクラブ移動できます。操作後は自動的にフォーカスが譜面ビュー側へ戻ります。</p>
+</section>
+
+<section id="kb-always">
+<h2>常時有効なショートカット</h2>
+<h3>Ctrl系(マウス/キーボードモード共通)</h3>
+<table>
+<tr><th>キー</th><th>動作</th></tr>
+<tr><td><kbd>Ctrl+Z</kbd></td><td>元に戻す(Undo)</td></tr>
+<tr><td><kbd>Ctrl+Y</kbd></td><td>やり直し(Redo)</td></tr>
+<tr><td><kbd>Ctrl+S</kbd></td><td>プロジェクト保存</td></tr>
+<tr><td><kbd>Ctrl+E</kbd></td><td>dos.txtエクスポート</td></tr>
+<tr><td><kbd>Ctrl+Home</kbd></td><td>譜面先頭(tick0)へスクロール</td></tr>
+<tr><td><kbd>Ctrl+End</kbd></td><td>末尾ノートを画面中央へスクロール</td></tr>
+<tr><td><kbd>Ctrl+Space</kbd></td><td>(目視テスト中のみ)現在位置で目視テストを終了</td></tr>
+<tr><td><kbd>Ctrl+P</kbd></td><td>プレイテスト開始</td></tr>
+<tr><td><kbd>Ctrl+,</kbd></td><td>キーボードモードのON/OFF切替</td></tr>
+<tr><td><kbd>Ctrl+X</kbd> / <kbd>Ctrl+C</kbd> / <kbd>Ctrl+V</kbd></td><td>切り取り/コピー/貼り付け</td></tr>
+<tr><td><kbd>Ctrl+A</kbd></td><td>ノート・フリーズアローを全選択</td></tr>
+<tr><td><kbd>Shift+Ctrl+A</kbd></td><td>環境設定で指定した対象種別を全選択</td></tr>
+<tr><td><kbd>Ctrl+1〜9,0,-,^</kbd></td><td>グリッド分解能(スナップ)切替(詳細は後述)</td></tr>
+</table>
+<p>テキスト入力欄にフォーカスがある間は、Ctrl系の一部を除きほとんど無効になります。</p>
+
+<h3>修飾なし(テキスト入力欄フォーカス中は無効)</h3>
+<table>
+<tr><th>キー</th><th>動作</th></tr>
+<tr><td><kbd>PageUp</kbd> / <kbd>PageDown</kbd></td><td>1画面分スクロール</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>選択中オブジェクトを削除</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>再生開始フレームをリセット(キーボードモードON中は「カーソル位置削除」に変化)</td></tr>
+<tr><td><kbd>Space</kbd></td><td>目視テストの開始/終了(キーボードモードON中は「カーソル前進」に変化)</td></tr>
+</table>
+</section>
+
+<section id="kb-mode">
+<h2>キーボードモード(<kbd>Ctrl+,</kbd>でON)</h2>
+<p>SKBエディタの操作感に準拠。ON中はマウスモードの同キーより優先されます。</p>
+<table>
+<tr><th>キー</th><th>動作</th></tr>
+<tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>カーソル後退/前進(画面上の見た目方向)</td></tr>
+<tr><td><kbd>Space</kbd></td><td>カーソル前進(tick順方向)</td></tr>
+<tr><td><kbd>B</kbd></td><td>カーソル後退(tick順方向)</td></tr>
+<tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>1小節戻る/進む</td></tr>
+<tr><td><kbd>Ctrl+←</kbd> / <kbd>Ctrl+→</kbd></td><td>2小節分戻る/進む</td></tr>
+<tr><td><kbd>Shift+Ctrl+←</kbd> / <kbd>Shift+Ctrl+→</kbd></td><td>4小節分戻る/進む</td></tr>
+<tr><td><kbd>Backspace</kbd></td><td>カーソル位置のノート/フリーズを削除</td></tr>
+<tr><td>(レーンごとの入力キー)</td><td>カーソル位置にノートを配置/解除</td></tr>
+<tr><td>Shift+(レーンごとの入力キー)</td><td>フリーズの開始/終了をトグル</td></tr>
+</table>
+<p>レーンごとの入力キーは各キー種テンプレート(<code>temp_*.json</code>)で個別設定されています。標準5keyの例: left=J, down=K, up=I, right=L, space=G。同時押しとみなす時間閾値(既定30ms)は環境設定「SKB操作モード」カテゴリで変更できます。</p>
+</section>
+
+<section id="kb-grid">
+<h2>グリッド分解能ショートカット(<kbd>Ctrl+1〜9,0,-,^</kbd>)</h2>
+<p>マウス/キーボードモードどちらでも常時有効。選択すると自動的にスナップもONになります。環境設定「キーボードモード」カテゴリの「グリッド分解能ショートカット」で、以下2種類のキー割り当てセットを選択できます。</p>
+<table>
+<tr><th>物理キー</th><th>オリジナルセット</th><th>SKB拡張セット</th></tr>
+<tr><td>Ctrl+1</td><td>4分</td><td>4分</td></tr>
+<tr><td>Ctrl+2</td><td>8分</td><td>8分</td></tr>
+<tr><td>Ctrl+3</td><td>12分</td><td>16分</td></tr>
+<tr><td>Ctrl+4</td><td>16分</td><td>12分</td></tr>
+<tr><td>Ctrl+5</td><td>20分</td><td>24分</td></tr>
+<tr><td>Ctrl+6</td><td>24分</td><td>48分</td></tr>
+<tr><td>Ctrl+7</td><td>28分</td><td>32分</td></tr>
+<tr><td>Ctrl+8</td><td>32分</td><td>20分</td></tr>
+<tr><td>Ctrl+9</td><td>40分</td><td>28分</td></tr>
+<tr><td>Ctrl+0</td><td>48分</td><td>40分</td></tr>
+<tr><td>Ctrl+-</td><td>56分</td><td>56分</td></tr>
+<tr><td>Ctrl+^</td><td>64分</td><td>64分</td></tr>
+</table>
+<p>「^」はJIS配列で「0」の右隣にあるキーです。</p>
+</section>
+
+<section id="gauge">
+<h2>ゲージ設定</h2>
+<p>「設定 &gt; ゲージ設定」から開き、難易度タブを選んでからそのタブ内で設定します。</p>
+<h3>タブごとの設定(併存可能)</h3>
+<ul>
+<li><b>本体ゲージ(difData直接指定)</b>: チェックONでノルマ(x指定または0〜100の数値)/回復量(既定6)/ダメージ(既定40)/初期ライフ(空欄可)を上書き</li>
+<li><b>切替候補ゲージ(customGauge)</b>: 「指定しない」/「継承キーワード使用(survival・border・customDefault)」/「明示リスト指定(ゲージ名・可変V・表示名を行ごとに編集)」の3択</li>
+</ul>
+<h3>プロジェクト全体共有の設定</h3>
+<ul>
+<li><b>gaugeXXXパラメータ表</b>: ゲージ名ごとに難易度タブ列でCSV(ノルマ,回復,ダメージ,初期ライフ)を入力</li>
+<li><b>生の上書き設定</b>: テキストボックスに入力すると他の全設定を無視し、その文字列がそのままdos.txtへ出力される</li>
+</ul>
+<h3>「dos作成後に直接編集する」</h3>
+<p>ONにすると、本体ゲージ・切替候補ゲージ・パラメータ表・生の上書き入力欄まで全て無効化し、エクスポート時にゲージ関連ヘッダーを一切出力しません(書き出し後のdos.txtへ自分で追記する運用向け)。</p>
+</section>
+
+<section id="gauge-calc">
+<h2>ゲージ計算機</h2>
+<p>ゲージ設定ウィンドウの「ゲージ計算機を開く...」から起動するモードレスの計算機です。</p>
+<ul>
+<li>MAX Life/ノルマ%/通常ノート数・フリーズ数(自動取得)/初期ライフ%を入力</li>
+<li>対象ゲージ名・Fix(固定値)またはVary(ノーツ数按分)モードで回復・ダメージ値を設定すると、必要達成率・許容ミス数を自動算出</li>
+<li>逆に目標達成率またはミス数から回復・ダメージ値を逆算する「設計モード」も搭載</li>
+<li>「選択中のゲージ名へ適用」ボタンでゲージ設定ウィンドウのパラメータ表へ書き戻し可能</li>
+</ul>
+</section>
+
+<section id="playtest">
+<h2>プレイテスト(<kbd>Ctrl+P</kbd>)</h2>
+<ul>
+<li>判定表示: イイ!!/シャキン/マターリ/ショボーン/ウワァン!!(通常ノート系)、キタ-!!/イクナイ(フリーズ系)。通常ノートとフリーズは別管理でコンボ表示</li>
+<li>ステップゾーンのヒットフラッシュ: 判定確定時、該当レーンのノート画像を一回り大きく(+30px)半透明(75%不透明度)で数フレーム表示</li>
+<li>キー操作: 使用中のキー種テンプレートのキー割り当てに準拠</li>
+<li>中断キー: Delete/BackSpace/Escapeを個別にON/OFF設定可能(最低1つは必須)</li>
+<li>AutoPlay有効時は全ノートをジャストタイミングで自動判定</li>
+<li>Reverse・HiSpeed・調整フレーム(オフセット)・ウィンドウ倍率・再生速度も反映</li>
+</ul>
+<p class="note">ライフゲージやリザルト画面は無く、判定文字とコンボ表示のみのシンプルな構成です。</p>
+</section>
+
+<section id="preferences">
+<h2>環境設定(設定 &gt; 環境設定)</h2>
+<table>
+<tr><th>カテゴリ</th><th>内容</th></tr>
+<tr><td>表示</td><td>ノート画像/強調表示、各種ライン幅・色、マーカー表示、レーン文字サイズ、譜面ビュー反転</td></tr>
+<tr><td>目視テスト</td><td>追従方式</td></tr>
+<tr><td>プレイテスト</td><td>Reverse既定、HiSpeed、調整オフセット、ウィンドウ倍率・幅、中断キー、キー種別Reverse既定</td></tr>
+<tr><td>新規プロジェクト既定値</td><td>キー種・BPM等の初期値</td></tr>
+<tr><td>編集・保存</td><td>Undo履歴件数、保存確認、自動保存間隔、色履歴上限、最近ファイル履歴数、Shift+Ctrl+A対象種別</td></tr>
+<tr><td>キーボードモード</td><td>同時押し判定の閾値(ms)、グリッド分解能ショートカットのセット選択</td></tr>
+<tr><td>musicURL取得</td><td>有効化・保存先フォルダ</td></tr>
+<tr><td>テンプレート</td><td>キー種テンプレート(temp_*.json)の編集</td></tr>
+<tr><td>統計情報</td><td>配置/削除/コピー/カット/貼付数など各種操作回数(読み取り専用)</td></tr>
+</table>
+</section>
+
+<section id="other-dialogs">
+<h2>その他のダイアログ</h2>
+<table>
+<tr><th>名称</th><th>役割</th></tr>
+<tr><td>新規プロジェクト</td><td>キー種・難易度名・BPMを指定してプロジェクト/タブを新規作成</td></tr>
+<tr><td>色履歴ピッカー / CSS色ピッカー</td><td>色履歴やCSS標準色名からの色選択ポップアップ</td></tr>
+<tr><td>マクロ編集ウィンドウ</td><td>レーン入れ替えマクロの追加・編集・削除(ドラッグで並べ替え)</td></tr>
+<tr><td>テンプレート編集ウィンドウ</td><td>キー種テンプレートのレーン追加・削除・並べ替え</td></tr>
+<tr><td>歌詞レーン管理ウィンドウ</td><td>歌詞レーンの追加・リネーム・Reverse専用フラグ設定・削除(Undo対応)</td></tr>
+<tr><td>簡易入力ダイアログ</td><td>汎用の1行テキスト入力</td></tr>
+</table>
+</section>
+
+<section id="analysis">
+<h2>分析タブ</h2>
+<p>累計配置オブジェクト数が10,000に達すると出現する隠し機能です。</p>
+<ul>
+<li>「分析を実行」: ITTNアナライザー(danoniplus analyze.jsの移植)によるSTREAM/VOLTAGE/CHORD/FREEZE/SOF-LAN/ONIGIRI等のスコアと総合レーティングを表示</li>
+<li>「算出・再算出」: ボタンを10回押すまで結果が表示されない二段階ロック。到達後は信頼区間付きの「おにスター」推定値を表示</li>
+</ul>
+</section>
+
+<section id="macro">
+<h2>マクロ(レーン入れ替え)</h2>
+<p>マクロタブから、レーン入れ替えマクロの追加・編集・削除・実行が行えます。実行は現在の難易度タブに対してUndo可能な形で適用されます。</p>
+</section>
+
+<section id="persist">
+<h2>保存される情報</h2>
+<table>
+<tr><th>保存先</th><th>内容</th></tr>
+<tr><td>環境設定ファイル(settings.json)</td><td>ウィンドウ位置・サイズ・最大化状態、各種表示トグル、プレイテスト設定、音量・再生速度、最近使ったファイル、色履歴、グリッドショートカットプリセット、統計カウンタ等</td></tr>
+<tr><td>プロジェクトファイル</td><td>楽曲メタデータ、BPM/拍子イベント、各難易度タブの内容、音声パス、<b>縦・横のズーム率</b></td></tr>
+<tr><td>swap_macro.json</td><td>レーン入れ替えマクロ定義</td></tr>
+<tr><td>自動保存フォルダ</td><td>クラッシュ復旧専用のセッション単位バックアップ</td></tr>
+</table>
+<div class="note">ウィンドウの位置・サイズ・最大化状態は終了時に環境設定へ保存され、次回起動時に同じ位置・状態で復元されます(画面外にはみ出す場合は復元をスキップ)。</div>
+</section>
+
+</main>
+</div>
+
+<footer>ダンおに譜面エディタ 簡易ReadMe — 実装内容に基づき随時更新</footer>
+
+</body>
+</html>

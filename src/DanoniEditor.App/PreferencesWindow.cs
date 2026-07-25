@@ -55,10 +55,11 @@ internal sealed class PreferencesWindow : Window
     // --- プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応) ---
     private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
 
-    // --- プレイテスト: ウィンドウ幅(2026-08-03要望対応) ---
+    // --- プレイテスト: ウィンドウ幅(2026-08-03要望対応、2026-08-06 自動モード追加) ---
+    private readonly RadioButton _ptWidthAutoMode = new() { Content = "自動(特に指定せず、プレイテストする譜面のキー種に合わせて自動的に切り替える)", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
     private readonly RadioButton _ptWidthPxMode = new() { Content = "ウィンドウ幅を直接入力", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
     private readonly TextBox _ptWidthPx = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(20, 0, 0, 8) };
-    private readonly RadioButton _ptWidthKeyTypeMode = new() { Content = "キー種から選択", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly RadioButton _ptWidthKeyTypeMode = new() { Content = "キー種から選択(常に指定したキー種の幅を使う)", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
     private readonly StackPanel _ptWidthKeyTypeList = new() { Margin = new Thickness(20, 0, 0, 0) };
     /// <summary>幅グループごとのラジオボタン。Members=その幅を共有するキー種ID一式(設定値の読込照合用)、
     /// RepresentativeKeyTypeId=保存時にAppSettings.PlaytestWindowWidthKeyTypeへ書き込む代表キー種
@@ -69,6 +70,10 @@ internal sealed class PreferencesWindow : Window
     private readonly RadioButton _markerFull = new() { Content = "全文表示", GroupName = "marker" };
     private readonly RadioButton _markerHead = new() { Content = "先頭数文字のみ", GroupName = "marker" };
     private readonly TextBox _markerHeadChars = new() { Width = 50, HorizontalAlignment = HorizontalAlignment.Left };
+
+    // --- レーン文字サイズ(時間情報レーン/マーカーレーン、2026-08-05) ---
+    private readonly TextBox _timeInfoFontSize = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _markerFontSize = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 新規プロジェクト(headerDefaults) ---
     private readonly TextBox _defStartFrame = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
@@ -215,14 +220,6 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_showImages);
         p.Children.Add(_showGrid);
         p.Children.Add(_excludeFreezeEndHighlight);
-        p.Children.Add(new TextBlock
-        {
-            Text = "フリーズが密集した際に終点の横棒が見づらいという指摘への対応ですわ(既定OFF=従来通り表示)。",
-            Foreground = Brushes.Gray,
-            FontSize = 10,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(16, 0, 0, 4),
-        });
         p.Children.Add(Label("強調グリッドの太さ(px):"));
         p.Children.Add(_gridWidth);
         p.Children.Add(Label("強調グリッドの色(#RRGGBB):"));
@@ -241,14 +238,6 @@ internal sealed class PreferencesWindow : Window
         _startLineColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _startLineColor.Text);
 
         p.Children.Add(Label("カーソルライン(マウスモード)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "マウスホバー中、今クリックすると実際にどこへスナップされるかを示す線ですわ。" +
-                   "全レーン共通の細い線と、カーソルが乗っているレーンだけを強調する太い帯を別々に設定できますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 6),
-        });
         p.Children.Add(Label("細い線の太さ(px):"));
         p.Children.Add(_cursorLineWidth);
         p.Children.Add(Label("細い線の色(#RRGGBB):"));
@@ -273,17 +262,15 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("先頭表示の文字数:"));
         p.Children.Add(_markerHeadChars);
 
+        p.Children.Add(Label("レーン文字サイズ(ZoomScale=1.0時、pt)", section: true));
+        p.Children.Add(Label("時間情報レーン(小節番号/frame/time):"));
+        p.Children.Add(_timeInfoFontSize);
+        p.Children.Add(Label("マーカーレーン:"));
+        p.Children.Add(_markerFontSize);
+
         p.Children.Add(Label("譜面ビュー", section: true));
         _chartViewReverse.Margin = new Thickness(0, 0, 0, 2);
         p.Children.Add(_chartViewReverse);
-        p.Children.Add(new TextBlock
-        {
-            Text = "進行方向(カーソル・目視テストの流れ)だけが逆になりますわ。ノート画像等の見た目は反転しませんの。" +
-                   "プレイテストの表示には影響しませんわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
@@ -294,13 +281,6 @@ internal sealed class PreferencesWindow : Window
         _followMode.Items.Add("ページ送り(画面外に出たら次の1画面へ)");
         _followMode.Items.Add("スムーズスクロール(ライン位置固定で譜面が流れる)");
         p.Children.Add(_followMode);
-        p.Children.Add(new TextBlock
-        {
-            Text = "目視テスト(Space)中、再生位置ラインが画面外へ出た時の譜面ビューの動き方ですわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0),
-        });
         return p;
     }
 
@@ -318,25 +298,12 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("ウィンドウサイズ倍率:"));
         foreach (var v in new[] { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 }) _ptScale.Items.Add(v);
         p.Children.Add(_ptScale);
-        p.Children.Add(new TextBlock
-        {
-            Text = "これらは上部パネルの「プレーテスト」欄と同じ設定ですわ(どちらで変えても保存されますの)。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0),
-        });
 
-        p.Children.Add(Label("ウィンドウ幅(2026-08-03要望対応)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "dos.txtのplayingWidthヘッダーが明示されているプロジェクトでは常にそちらが優先されますの。" +
-                   "ここはヘッダー未指定時に使うフォールバック値ですわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 6),
-        });
+        p.Children.Add(Label("ウィンドウ幅(2026-08-03要望対応、2026-08-06 自動モード追加)", section: true));
+        _ptWidthAutoMode.Checked += (_, _) => UpdateWidthModeEnabled();
         _ptWidthPxMode.Checked += (_, _) => UpdateWidthModeEnabled();
         _ptWidthKeyTypeMode.Checked += (_, _) => UpdateWidthModeEnabled();
+        p.Children.Add(_ptWidthAutoMode);
         p.Children.Add(_ptWidthPxMode);
         p.Children.Add(_ptWidthPx);
         p.Children.Add(_ptWidthKeyTypeMode);
@@ -377,23 +344,8 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_ptQuitDelete);
         p.Children.Add(_ptQuitBackSpace);
         p.Children.Add(_ptQuitEscape);
-        p.Children.Add(new TextBlock
-        {
-            Text = "checkedのキーだけがプレイテストの中断キーとして機能しますわ(最低1つはcheckedが必要ですの)。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
 
         p.Children.Add(Label("キー種ごとのReverse既定値(2026-08-02要望対応)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "難易度タブを切り替えた際、そのキー種に応じて上部パネルの「プレーテスト:Reverse」の" +
-                   "チェック状態を自動的に変更しますの。ここに無いキー種はOFF(通常)扱いですわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 6),
-        });
         _ptReverseByKeyType.Clear();
         if (_templates is null)
         {
@@ -419,17 +371,15 @@ internal sealed class PreferencesWindow : Window
         _ptWidthKeyTypeList.IsEnabled = _ptWidthKeyTypeMode.IsChecked == true;
     }
 
+    /// <summary>環境設定内部で使う「幅指定方式」の文字列表現(2026-08-06)</summary>
+    private const string WidthModeAuto = "auto";
+    private const string WidthModePx = "px";
+    private const string WidthModeKeyType = "keyType";
+
     private UIElement BuildNewProjectPanel()
     {
         var p = new StackPanel { Margin = new Thickness(4) };
         p.Children.Add(Label("新規プロジェクトのデフォルト値(headerDefaults)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "新規プロジェクト作成時に適用される初期値ですわ(仕様書6.4.1)。musicURLは対象外(毎回入力)ですの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 8),
-        });
         p.Children.Add(Label("startFrame:"));
         p.Children.Add(_defStartFrame);
         p.Children.Add(Label("blankFrame(個人運用では200等):"));
@@ -458,37 +408,14 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_autoSaveEnabled);
         p.Children.Add(Label("保存間隔(分):"));
         p.Children.Add(_autoSaveInterval);
-        p.Children.Add(new TextBlock
-        {
-            Text = "変更のあるプロジェクトタブのみ、通常の保存(Ctrl+S)とは別の場所へ自動的に控えを取りますの。" +
-                   "手動保存した時点で、そのタブの控えは役目を終えて消去されますわ。次回起動時に前回の異常終了を" +
-                   "検知した場合のみ「復元しますか?」とお尋ねいたします。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
 
         p.Children.Add(Label("色履歴", section: true));
         p.Children.Add(Label("色コード使用履歴の上限件数(デフォルト24):"));
         p.Children.Add(_colorHistLimit);
-        p.Children.Add(new TextBlock
-        {
-            Text = "※履歴の記録・呼び出しUI(カラーピッカー連携)は今後の実装ですわ。上限だけ先に設定できますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
 
         p.Children.Add(Label("最近開いたファイル(2026-07-28)", section: true));
         p.Children.Add(Label("履歴の保持件数(デフォルト10):"));
         p.Children.Add(_recentFilesLimit);
-        p.Children.Add(new TextBlock
-        {
-            Text = "ファイル > 最近開いたファイルに表示する件数の上限ですわ。減らすと超過分は次回保存時に切り詰められますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
 
         p.Children.Add(Label("全選択(Shift+Ctrl+A)の対象", section: true));
         foreach (var cb in new[] { _selAllNote, _selAllFreeze, _selAllSpeed, _selAllBoost, _selAllBpm, _selAllTimeSig, _selAllMarker })
@@ -500,14 +427,6 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_selAllBpm);
         p.Children.Add(_selAllTimeSig);
         p.Children.Add(_selAllMarker);
-        p.Children.Add(new TextBlock
-        {
-            Text = "Ctrl+A(修飾無し)は常にノート・フリーズアローのみを対象としますわ。ここで選んだ種別は" +
-                   "Shift+Ctrl+Aの時だけ有効になりますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
@@ -517,31 +436,12 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("SKB操作モード(Ctrl+,)", section: true));
         p.Children.Add(Label("同時押し判定の閾値(ms、デフォルト30):"));
         p.Children.Add(_kbdThreshold);
-        p.Children.Add(new TextBlock
-        {
-            Text = "この時間以内に連続でノート入力キーを押すと、同じカーソル位置への入力(同時押し)として" +
-                   "扱われ、カーソルが進みませんの。SKBエディタの同時押し判定に合わせた仕様ですわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
 
         // --- グリッド分解能ショートカット(Ctrl+1〜9,0,-,^、2026-07-26) ---
         p.Children.Add(Label("グリッド分解能ショートカット(Ctrl+1〜9,0,-,^)", section: true));
         _gridShortcutPreset.Items.Add("オリジナルセット(分解能を単純な昇順で割り当て)");
         _gridShortcutPreset.Items.Add("SKB拡張セット(SKBエディタのCtrl+1〜7割り当てを踏襲)");
         p.Children.Add(_gridShortcutPreset);
-        p.Children.Add(new TextBlock
-        {
-            Text = "Ctrl+数字キー(メイン列、テンキー不可)で譜面ビューのグリッド分解能(スナップ)を直接切り替え" +
-                   "られますの。オリジナルセットは 1=4分/2=8分/3=12分/4=16分/5=20分/6=24分/7=28分/8=32分/" +
-                   "9=40分/0=48分/-=56分/^=64分。SKB拡張セットは 1=4分/2=8分/3=16分/4=12分/5=24分/6=48分/" +
-                   "7=32分/8=20分/9=28分/0=40分/-=56分/^=64分(1〜7はSKBエディタと同じ並び)。" +
-                   "どちらもマウスモード・キーボードモードの両方で常時使え、選ぶと自動的にスナップもONになりますわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-        });
         return p;
     }
 
@@ -549,16 +449,6 @@ internal sealed class PreferencesWindow : Window
     {
         var p = new StackPanel { Margin = new Thickness(4) };
         p.Children.Add(Label("musicURLからの楽曲取得(2026-07-27)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "ONにすると、下記フォルダを「カレントディレクトリ」として扱い、プロジェクトのmusicURLで" +
-                   "指定されたファイル名の楽曲をそこから読み込めるようになりますの。①タブのmusicURL欄の横に" +
-                   "「読込」ボタンが現れ、musicURLを編集すると押せるようになりますわ。" +
-                   "musicURL設定済みのプロジェクトファイルを開いた時は自動で読み込みますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 8),
-        });
         _musicUrlEnabled.Margin = new Thickness(0, 0, 0, 8);
         _musicUrlEnabled.Checked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = true;
         _musicUrlEnabled.Unchecked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = false;
@@ -588,14 +478,6 @@ internal sealed class PreferencesWindow : Window
     {
         var p = new StackPanel { Margin = new Thickness(4) };
         p.Children.Add(Label("キー種テンプレート(temp_*.json)", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "./templateフォルダのテンプレート一覧ですわ。「編集」で選択中のファイルを、" +
-                   "「新規作成」で新しいキー種テンプレートを専用ウィンドウで作成・編集できますの。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 8),
-        });
         p.Children.Add(_templateList);
         _templateList.SelectionChanged += (_, _) => _templateEditButton.IsEnabled = _templateList.SelectedItem is not null;
         _templateList.MouseDoubleClick += (_, _) =>
@@ -654,13 +536,6 @@ internal sealed class PreferencesWindow : Window
     {
         var p = new StackPanel { Margin = new Thickness(4) };
         p.Children.Add(Label("統計情報", section: true));
-        p.Children.Add(new TextBlock
-        {
-            Text = "これまでの操作回数の累計です(閲覧専用、アプリ全体でプロジェクトを跨いで記録されます)。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 8),
-        });
 
         void Row(string label, int value)
         {
@@ -713,8 +588,9 @@ internal sealed class PreferencesWindow : Window
         _ptOffset.Text = s.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         _ptScale.SelectedItem = _ptScale.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestWindowScale)).First();
         _ptWidthPx.Text = s.PlaytestWindowWidthPx.ToString(CultureInfo.InvariantCulture);
-        _ptWidthPxMode.IsChecked = s.PlaytestWindowWidthMode == "px";
-        _ptWidthKeyTypeMode.IsChecked = s.PlaytestWindowWidthMode != "px";
+        _ptWidthAutoMode.IsChecked = s.PlaytestWindowWidthMode == WidthModeAuto;
+        _ptWidthPxMode.IsChecked = s.PlaytestWindowWidthMode == WidthModePx;
+        _ptWidthKeyTypeMode.IsChecked = s.PlaytestWindowWidthMode != WidthModeAuto && s.PlaytestWindowWidthMode != WidthModePx;
         foreach (var g in _ptWidthKeyTypeGroups)
             g.Radio.IsChecked = g.Members.Contains(s.PlaytestWindowWidthKeyType);
         // 保存済みのキー種が現在のテンプレート一覧に見当たらない場合(削除等)は先頭グループへフォールバック
@@ -729,6 +605,8 @@ internal sealed class PreferencesWindow : Window
         _markerFull.IsChecked = s.MarkerCommentFull;
         _markerHead.IsChecked = !s.MarkerCommentFull;
         _markerHeadChars.Text = s.MarkerCommentHeadChars.ToString(CultureInfo.InvariantCulture);
+        _timeInfoFontSize.Text = s.TimeInfoFontSize.ToString(CultureInfo.InvariantCulture);
+        _markerFontSize.Text = s.MarkerFontSize.ToString(CultureInfo.InvariantCulture);
         _chartViewReverse.IsChecked = s.ChartViewReverse;
         _defStartFrame.Text = s.DefaultStartFrame.ToString(CultureInfo.InvariantCulture);
         _defBlankFrame.Text = s.DefaultBlankFrame.ToString(CultureInfo.InvariantCulture);
@@ -784,6 +662,10 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "プレイテストのウィンドウ幅は正の数値で入力してくださいまし"; return false; }
         if (!int.TryParse(_markerHeadChars.Text, out var headChars) || headChars < 1)
         { _error.Text = "マーカー先頭表示の文字数は1以上の整数で入力してくださいまし"; return false; }
+        if (!TryPositive(_timeInfoFontSize.Text, out var timeInfoFontSize))
+        { _error.Text = "時間情報レーンの文字サイズは正の数値で入力してくださいまし"; return false; }
+        if (!TryPositive(_markerFontSize.Text, out var markerFontSize))
+        { _error.Text = "マーカーレーンの文字サイズは正の数値で入力してくださいまし"; return false; }
         if (!int.TryParse(_defStartFrame.Text, out var defSf) || defSf < 0)
         { _error.Text = "startFrameは0以上の整数で入力してくださいまし"; return false; }
         if (!int.TryParse(_defBlankFrame.Text, out var defBf) || defBf < 0)
@@ -821,7 +703,9 @@ internal sealed class PreferencesWindow : Window
         if (_ptHiSpeed.SelectedItem is double hs) _work.PlaytestHiSpeed = hs;
         _work.PlaytestOffsetFrames = ofs;
         if (_ptScale.SelectedItem is double sc) _work.PlaytestWindowScale = sc;
-        _work.PlaytestWindowWidthMode = _ptWidthPxMode.IsChecked == true ? "px" : "keyType";
+        _work.PlaytestWindowWidthMode = _ptWidthAutoMode.IsChecked == true ? WidthModeAuto
+            : _ptWidthPxMode.IsChecked == true ? WidthModePx
+            : WidthModeKeyType;
         _work.PlaytestWindowWidthPx = ptWidthPx;
         var selectedWidthGroup = _ptWidthKeyTypeGroups.FirstOrDefault(g => g.Radio.IsChecked == true);
         if (selectedWidthGroup.Radio is not null) _work.PlaytestWindowWidthKeyType = selectedWidthGroup.RepresentativeKeyTypeId;
@@ -831,6 +715,8 @@ internal sealed class PreferencesWindow : Window
         _work.PlaytestReverseByKeyType = _ptReverseByKeyType.ToDictionary(kv => kv.Key, kv => kv.Value.IsChecked == true);
         _work.MarkerCommentFull = _markerFull.IsChecked == true;
         _work.MarkerCommentHeadChars = headChars;
+        _work.TimeInfoFontSize = timeInfoFontSize;
+        _work.MarkerFontSize = markerFontSize;
         _work.ChartViewReverse = _chartViewReverse.IsChecked == true;
         _work.DefaultStartFrame = defSf;
         _work.DefaultBlankFrame = defBf;

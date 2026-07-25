@@ -39,7 +39,10 @@ public sealed class ChartLayout
     public const double MarkerColWidth = 30;
     public const double MeasureColWidth = 46;
     public const double EventColWidth = 46;
-    public const double TopMargin = 24;
+    // 2026-08-05: 「0小節目頭を画面中央までスクロールできるようにしたい」との要望対応で24→400へ拡大。
+    // tick0の描画位置(RawTickToY(0)=TopMargin)がそのままスクロール可能範囲の先頭側の余白にもなるため、
+    // ここを広げるだけで先頭を画面中央付近まで持ってこられるようになる(一般的なウィンドウ高さを想定した値)。
+    public const double TopMargin = 400;
     public const double BaseNoteSize = 34;
 
     /// <summary>1tickあたりのピクセル数(Shift+スクロールで可変、仕様書4.3)</summary>
@@ -177,12 +180,18 @@ public sealed class ChartLayout
             case ColumnKind.Note:
                 {
                     var lane = tab.Lanes[col.NoteLaneIndex];
+                    // 2026-07-25: フリーズ端点の判定半径は通常ノートの半分に縮小する。
+                    // 端点半径を通常ノートと同じ(NoteSize/2)にすると、NoteSize未満の長さの
+                    // フリーズノーツ(既定ズームではごく普通に発生する)で始点・終点の判定域が
+                    // 重なり合い、帯(FreezeBody)を掴む隙間が事実上消えてしまう
+                    // (=帯ドラッグでの全体移動が実質不可能になる)ため。
+                    double freezeEndpointHalf = half / 2;
                     // フリーズ端点 > 通常ノート > フリーズ胴体 の優先順
                     foreach (var f in lane.Freezes)
                     {
-                        if (Math.Abs(TickToY(f.StartTick) - y) <= half)
+                        if (Math.Abs(TickToY(f.StartTick) - y) <= freezeEndpointHalf)
                             return new ObjectRef(ObjectKind.FreezeStart, col.NoteLaneIndex, f.StartTick);
-                        if (Math.Abs(TickToY(f.EndTick) - y) <= half)
+                        if (Math.Abs(TickToY(f.EndTick) - y) <= freezeEndpointHalf)
                             return new ObjectRef(ObjectKind.FreezeEnd, col.NoteLaneIndex, f.StartTick);
                     }
                     foreach (var t in lane.Notes)

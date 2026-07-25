@@ -193,14 +193,6 @@ internal sealed class TemplateEditorWindow : Window
         p.Children.Add(Label("posMax:"));
         p.Children.Add(_posMax);
         p.Children.Add(_laneCountLabel);
-        p.Children.Add(new TextBlock
-        {
-            Text = "keyCount(レーン数)はレーンタブの数から自動算出しますの。displayOrderも" +
-                   "保存時にタブの左からの順番(一番左=0)で自動採番しますわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 8, 0, 0),
-        });
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 

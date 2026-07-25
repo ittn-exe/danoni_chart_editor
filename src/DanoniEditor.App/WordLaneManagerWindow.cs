@@ -34,18 +34,6 @@ internal sealed class WordLaneManagerWindow : Window
 
         var root = new DockPanel { Margin = new Thickness(10) };
 
-        var info = new TextBlock
-        {
-            Text = "現在の難易度タブに対する歌詞レーンです。レーンはノートレーンの右側(Speed/Boost/BPMのさらに右)に表示されます。" +
-                   "「Reverse専用」をONにすると、出力先がwordRev_data系になります(通常表示との同時ON/OFFはできません)。",
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 10),
-            Foreground = System.Windows.Media.Brushes.Gray,
-            FontSize = 11,
-        };
-        DockPanel.SetDock(info, Dock.Top);
-        root.Children.Add(info);
-
         var addButton = new Button { Content = "+ 歌詞レーンを追加", Width = 160, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 10) };
         addButton.Click += (_, _) =>
         {

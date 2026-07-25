@@ -82,7 +82,7 @@ public sealed class AppSettings
     /// キー種別の基準サイズ(本家autoSpread準拠の横幅×高さ)に掛けて実ウィンドウサイズとする。</summary>
     public double PlaytestWindowScale { get; set; } = 1.0;
 
-    /// <summary>プレイテスト: ウィンドウ幅の指定方式(2026-08-03要望対応)。dos.txtの
+    /// <summary>プレイテスト: ウィンドウ幅の指定方式(2026-08-03要望対応、2026-08-06 "auto"追加)。dos.txtの
     /// playingWidthヘッダーが明示されている場合は常にそちらが最優先(仕様書12.2)。ヘッダー未指定時の
     /// フォールバック値をどう決めるかがこの設定で、"px"=PlaytestWindowWidthPxを直接使う、
     /// "keyType"=PlaytestWindowWidthKeyTypeで指定したキー種の幅(本家autoSpread準拠)を常に使う
@@ -243,6 +243,18 @@ public sealed class AppSettings
     public int MarkerCommentHeadChars { get; set; } = 4;
 
     // =====================================================================
+    // 譜面ビューのレーン文字サイズ(2026-08-05要望対応)。時間情報レーン(小節番号/frame/time)と
+    // マーカーレーンのタグ文字それぞれの基準フォントサイズ(pt、ZoomScale=1.0時)。
+    // 実描画時はChartCanvas側でZoomScaleを掛けて最終サイズを求める(既定値は変更前の固定値8/9を踏襲)。
+    // =====================================================================
+
+    /// <summary>時間情報レーン(小節番号/frame/time)の基準フォントサイズ</summary>
+    public double TimeInfoFontSize { get; set; } = 8.0;
+
+    /// <summary>マーカーレーンのタグ文字の基準フォントサイズ</summary>
+    public double MarkerFontSize { get; set; } = 9.0;
+
+    // =====================================================================
     // musicURLからの楽曲取得(2026-07-27確定仕様)。指定フォルダをカレントディレクトリとして扱い、
     // その中からProject.MusicUrlで指定されたファイル名の楽曲を読み込めるようにする機能。
     // 既定OFF(意図しない自動読込・意図しないフォルダ露出を避けるため)。
@@ -323,6 +335,23 @@ public sealed class AppSettings
 
     /// <summary>クラッシュ検出(前回起動時に正常終了フラグが消えていなかった)の累計回数。</summary>
     public int StatCrashCount { get; set; } = 0;
+
+    // =====================================================================
+    // 終了時のウィンドウ状態(2026-08-05要望対応)。「どの画面のどの位置に」「最大化かどうか」を保存し、
+    // 次回起動時に復元する。null/未設定=従来通りOS既定の位置。位置(WindowLeft/Top)は仮想スクリーン
+    // 座標(マルチモニタ環境ではモニタをまたいだ通し座標)のため、これ自体が「何番の画面か」の情報を
+    // 兼ねる(モニタ構成が変わって画面外になった場合はMainWindow側で既定位置へフォールバックする)。
+    // =====================================================================
+
+    /// <summary>終了時に最大化状態だったか。</summary>
+    public bool WindowMaximized { get; set; }
+
+    /// <summary>終了時の非最大化状態でのウィンドウ位置・サイズ(仮想スクリーン座標、px)。
+    /// 最大化解除時に復元する基準としても使う(WPFのRestoreBounds相当)。</summary>
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
 
     /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistory/RecentFilesは参照型のため個別に複製する</summary>
     public AppSettings Clone()

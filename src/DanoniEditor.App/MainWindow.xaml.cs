@@ -136,6 +136,12 @@ public partial class MainWindow : Window
         SnapDivisionCombo.SelectedItem = 16;
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
+        // 2026-08-06: Alt+ホイール(譜面ビューの横ズーム)でAltキーを離した際、Windows/WPF標準の
+        // 「単独Alt押下→メニューへのアクセスキーフォーカス」機能が働き、メニュー(ファイル(F)等)へ
+        // フォーカスが奪われてしまう不具合への対処。単独AltのKeyDown/KeyUpをここで握りつぶし、
+        // メニューのアクセスキー処理へ渡らないようにする(Ctrl+Alt等の組み合わせは通常通り通す)。
+        PreviewKeyDown += MainWindow_SuppressLoneAltMenuFocus;
+        PreviewKeyUp += MainWindow_SuppressLoneAltMenuFocus;
         _playbackTimer.Tick += PlaybackTimer_Tick;
         _autoSaveTimer.Tick += AutoSaveTimer_Tick; // 2026-07-25
 
@@ -200,7 +206,60 @@ public partial class MainWindow : Window
 
         RefreshMacroList(); // 2026-07-30: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
 
+        // 2026-08-05: 終了時のウィンドウ状態(モニタ/最大化/位置サイズ)を復元し、終了時に保存する。
+        RestoreWindowPlacement();
+        Closed += (_, _) => SaveWindowPlacement();
+
         _initialized = true;
+    }
+
+    // =====================================================================
+    // 終了時のウィンドウ状態の保存/復元(2026-08-05要望対応)
+    // =====================================================================
+
+    /// <summary>起動時、前回終了時の位置・サイズ・最大化状態を復元する。WindowLeft/Topは仮想スクリーン
+    /// 座標(マルチモニタをまたいだ通し座標)のため、これ自体が「どの画面にあったか」を表す。
+    /// モニタ構成が変わって画面外(現在の仮想スクリーン範囲外)になっている場合は、位置指定を諦めて
+    /// OS既定の位置へフォールバックする(画面外に表示されて操作不能になる事故を避けるため)。</summary>
+    private void RestoreWindowPlacement()
+    {
+        if (_appSettings.WindowLeft is not { } left || _appSettings.WindowTop is not { } top ||
+            _appSettings.WindowWidth is not { } width || _appSettings.WindowHeight is not { } height)
+            return; // 未保存(初回起動等)はOS既定の位置のまま
+
+        double vLeft = SystemParameters.VirtualScreenLeft, vTop = SystemParameters.VirtualScreenTop;
+        double vRight = vLeft + SystemParameters.VirtualScreenWidth, vBottom = vTop + SystemParameters.VirtualScreenHeight;
+        // ウィンドウの少なくとも一部(タイトルバー付近)が現在の仮想スクリーン範囲内に収まっているかで判定
+        bool onScreen = left + width > vLeft && left < vRight && top + 40 > vTop && top < vBottom;
+        if (!onScreen) return;
+
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = left;
+        Top = top;
+        Width = width;
+        Height = height;
+
+        if (_appSettings.WindowMaximized)
+        {
+            // 2026-08-05: WindowState=Maximizedを起動直後に直接指定すると、Left/Topで指定した
+            // モニタではなくプライマリ画面側で最大化されることがあるため、Loadedまで遅延させる。
+            Loaded += (_, _) => WindowState = WindowState.Maximized;
+        }
+    }
+
+    /// <summary>終了時、最大化状態・非最大化時の位置サイズ(RestoreBounds)を保存する。</summary>
+    private void SaveWindowPlacement()
+    {
+        _appSettings.WindowMaximized = WindowState == WindowState.Maximized;
+
+        // 最大化中はRestoreBoundsが「解除した時に戻る非最大化時の位置サイズ」を保持している
+        var bounds = WindowState == WindowState.Maximized ? RestoreBounds : new Rect(Left, Top, Width, Height);
+        _appSettings.WindowLeft = bounds.Left;
+        _appSettings.WindowTop = bounds.Top;
+        _appSettings.WindowWidth = bounds.Width;
+        _appSettings.WindowHeight = bounds.Height;
+
+        _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
     private void ApplyDisplaySettingsToCanvas()
@@ -215,6 +274,8 @@ public partial class MainWindow : Window
         Canvas.ApplyCursorLineSettings(_appSettings.CursorLineWidth, cursorLineColor, _appSettings.CursorHighlightWidth, cursorHighlightColor);
         Canvas.MarkerCommentFull = _appSettings.MarkerCommentFull;   // 2026-07-19b
         Canvas.MarkerCommentHeadChars = Math.Max(1, _appSettings.MarkerCommentHeadChars);
+        Canvas.TimeInfoFontSize = _appSettings.TimeInfoFontSize;     // 2026-08-05
+        Canvas.MarkerFontSize = _appSettings.MarkerFontSize;         // 2026-08-05
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
         Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-08-01
         Canvas.InvalidateVisual();
@@ -597,10 +658,10 @@ public partial class MainWindow : Window
     }
 
     /// <summary>FUJIエディタファイルをインポートする。ImportFuji_ClickとD&D(2026-07-20)の共通処理。
-    /// 2026-07-20: 従来は「キー種を手入力→Import後、同キー種内で難易度候補が複数あれば選択」の
-    /// 二段構えだったが、difData行は自分のキー種を持つ自己完結データなので、Import前に
-    /// FujiImporter.ScanDifDataで全キー種混在のまま先読みし、1件なら自動採用・複数ならこの時点で
-    /// 選択、0件の場合のみ従来通り手入力してもらう形に統合(ユーザー要望)。</summary>
+    /// 2026-08-05再設計(ユーザー確定仕様、difDataへの参照範囲縮小+「1回で済ませたい」): キー種
+    /// (difDataからは自動検出せずテンプレートフォルダの一覧から選択)と難易度名(選んだキー種に一致する
+    /// difData候補+「後で設定する」「今設定する」)を、1つのウィンドウ(FujiImportSetupDialog)でまとめて
+    /// 選ばせる。「後で設定する」を選んだ場合も、それ自体は正常な選択のため確認ダイアログは出さない。</summary>
     private void ImportFujiFile(string path)
     {
         var fileName = Path.GetFileName(path);
@@ -613,44 +674,22 @@ public partial class MainWindow : Window
         }
 
         var allCandidates = FujiImporter.ScanDifData(text);
-        DifDataCandidate? chosen;
-        bool pickerCancelled = false;
-        string keyTypeId;
-
-        if (allCandidates.Count == 1)
-        {
-            chosen = allCandidates[0];
-            keyTypeId = chosen.KeyTypeId;
-        }
-        else if (allCandidates.Count > 1)
-        {
-            var picked = DifDataPickerDialog.Ask(this, allCandidates, fileName);
-            chosen = picked ?? allCandidates[0]; // キャンセル時は先頭候補のまま(従来の挙動を踏襲)
-            pickerCancelled = picked is null;
-            keyTypeId = chosen.KeyTypeId;
-        }
-        else
-        {
-            // difData自体が無いファイル: 従来通りキー種を手入力してもらう(難易度名は分からないまま)
-            var input = SimplePrompt.Ask(this, "キー種の指定",
-                $"インポート中のファイル: {fileName}\n\nこのFUJIファイルのキー種ID(例: 5, 7, 11, 11L, 9A 等)を入力してくださいませ。", "5");
-            if (string.IsNullOrWhiteSpace(input)) return;
-            chosen = null;
-            keyTypeId = input;
-        }
+        var setup = FujiImportSetupDialog.Ask(this, _templates, allCandidates, fileName);
+        if (setup is null) return; // キャンセル
+        var (keyTypeId, nameChoice) = setup.Value;
 
         try
         {
             var importer = new FujiImporter(_templates.Get);
             var result = importer.Import(text, keyTypeId);
 
-            if (chosen is not null)
-            {
-                result.Tab.DifficultyName = chosen.DifficultyName;
-                if (chosen.InitialSpeed is { } sp) result.Tab.InitialSpeed = sp;
-                if (pickerCancelled)
-                    result.Warnings.Add("難易度候補の選択がキャンセルされたため、暫定値(先頭候補)のままです。手動で確認・修正してくださいませ");
-            }
+            // FujiImporter.Import内部の暫定的なdifData自動反映(difDataに1件だけ一致した場合等)は
+            // ここで上のダイアログで選んだ内容によって常に上書きする(SetLaterなら空のまま)。
+            result.Tab.DifficultyName = nameChoice.Name;
+            if (nameChoice.InitialSpeed is { } sp) result.Tab.InitialSpeed = sp;
+            // Import内部生成分の「難易度名を特定できません」警告はダイアログで解決済みのため取り除く
+            // (「後で設定する」を選んだ場合も、それは意図した選択であって警告すべき問題ではない)。
+            result.Warnings.RemoveAll(w => w.Contains("難易度名を特定できません"));
 
             var project = ChooseImportTargetProject(fileName);
             if (project is null) return; // インポート先の選択をキャンセル
@@ -852,6 +891,9 @@ public partial class MainWindow : Window
 
         Canvas.Document = doc;
         Canvas.Controller = _controller;
+        Minimap.Document = doc;
+        Minimap.TargetScrollViewer = ChartScrollViewer;
+        Minimap.FocusTarget = Canvas;
         // 2026-07-23: 色編集モードのON/OFF・塗り色はセッションを跨いで保持する仕様のため、
         // アクティブになったコントローラへ都度反映する(コントローラ自体はセッションごとに使い回される)。
         // 2026-07-24: サブモード(Normal/FrzHit/Shadow)関連の状態もまとめてPushColorEditStateToControllerへ集約。
@@ -1016,6 +1058,7 @@ public partial class MainWindow : Window
         Canvas.Controller = null;
         Canvas.Waveform = null;
         Canvas.PlaybackTick = null;
+        Minimap.Document = null;
 
         ProjectTitleText.Text = "(プロジェクト未作成)";
         _suppressSelectionEvent = true;
@@ -2696,6 +2739,7 @@ public partial class MainWindow : Window
         var rect = new Rect(ChartScrollViewer.HorizontalOffset, ChartScrollViewer.VerticalOffset,
             ChartScrollViewer.ViewportWidth, ChartScrollViewer.ViewportHeight);
         Canvas.UpdateViewport(rect);
+        Minimap.InvalidateVisual(); // 2026-08-05: 現在の表示範囲インジケータを最新化
     }
 
     // =====================================================================
@@ -2709,6 +2753,15 @@ public partial class MainWindow : Window
         if (!didSomething) return;
         _appSettings.StatUndoRedoCount++;
         _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>単独のAltキー押下/解放を握りつぶし、メニューへのアクセスキーフォーカス移動を防ぐ
+    /// (2026-08-06、Alt+ホイールで横ズーム後にAltを離すと「ファイル(F)」メニューへフォーカスが
+    /// 飛んでしまう不具合対応)。他のキーと組み合わせている場合(Ctrl+Alt+◯◯等)はここでは何もしない。</summary>
+    private static void MainWindow_SuppressLoneAltMenuFocus(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.System && (e.SystemKey == Key.LeftAlt || e.SystemKey == Key.RightAlt))
+            e.Handled = true;
     }
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)

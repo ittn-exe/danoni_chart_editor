@@ -93,7 +93,16 @@ public sealed class EditorDocument
     {
         get
         {
-            _layoutCache ??= new ChartLayout(CurrentTemplate);
+            if (_layoutCache is null)
+            {
+                _layoutCache = new ChartLayout(CurrentTemplate);
+                // 2026-08-05: プロジェクトファイルに保存された縦横ズームを復元する(ユーザー要望)。
+                // タブ切替等でキャッシュが作り直される都度ここを通るため、常に同じ値へ揃う。
+                if (Project.EditorZoomPxPerTick is { } px)
+                    _layoutCache.PxPerTick = Math.Clamp(px, ChartLayout.MinPxPerTick, ChartLayout.MaxPxPerTick);
+                if (Project.EditorZoomScale is { } zs)
+                    _layoutCache.SetZoom(zs);
+            }
             _layoutCache.SyncWordLaneCount(CurrentTab.WordLanes.Count);
             return _layoutCache;
         }

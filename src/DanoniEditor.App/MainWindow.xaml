@@ -206,13 +206,9 @@
 
                             <Separator Margin="0,12,0,8"/>
                             <TextBlock Text="frzColor" FontWeight="Bold" Margin="0,0,0,2"/>
-                            <TextBlock Text="空欄は自動補完されます(始点終点色/帯色が空欄→setColorの値、判定中が空欄→直前(通常時)の値)。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
                             <StackPanel x:Name="FrzColorPanel"/>
 
                             <Separator Margin="0,12,0,8"/>
-                            <TextBlock Text="単色は#rrggbb形式で入力してください。グラデーション等の詳細記法(色1:色2@linear-gradient 等)もそのまま文字列で入力できます(dos.txt互換の生文字列としてそのまま出力されます)。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -265,8 +261,6 @@
                 <TabItem Header="その他">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
-                            <TextBlock Text="dos_headerの残りパラメータを網羅します。「使用する」にチェックした項目のみdos.txt出力時に書き出されます。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
                             <StackPanel x:Name="ExtraHeadersPanel"/>
                         </StackPanel>
                     </ScrollViewer>
@@ -274,9 +268,6 @@
                 <TabItem x:Name="ColorEditTabItem" Header="色編集">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
-                            <TextBlock Text="色編集モードON中、ノート/フリーズをクリックすると下記の色が着色されます(ncolor_data)。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
-
                             <TextBlock Text="編集対象" FontWeight="Bold" Margin="0,0,0,2"/>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <RadioButton x:Name="NColorSubModeNormalRadio" Content="通常色" GroupName="NColorSubMode"
@@ -301,19 +292,12 @@
                                 <Border x:Name="NColorPreviewSwatch" Height="20" BorderBrush="Black" BorderThickness="1" Margin="0,4,0,12"/>
 
                                 <CheckBox x:Name="NColorAllFlagCheck" Content="即時適用(全体色変化)にする" Checked="NColorAllFlagCheck_Changed" Unchecked="NColorAllFlagCheck_Changed" Margin="0,0,0,4"/>
-                                <TextBlock Text="ONの間に塗った色は、指定フレーム時点で既に出現済みの矢印/フリーズも含めて即座に塗り替わります(allFlg)。OFF(既定)は以後新規出現するものだけに適用されます。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
 
                                 <Separator Margin="0,4,0,8"/>
                                 <Button x:Name="NColorBulkFillButton" Content="一括塗りつぶし(選択中のノート/フリーズ)" Click="NColorBulkFillButton_Click" Margin="0,0,0,4"/>
-                                <TextBlock Text="複数選択したノート/フリーズを、上記の色で塗りつぶします。ノート/フリーズ以外は無視されます。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
                             </StackPanel>
 
                             <StackPanel x:Name="NColorFrzHitPanel" Visibility="Collapsed">
-                                <TextBlock Text="フリーズの判定中(ヒット時)の表示色を個別指定します。対象はフリーズのみです(ノートは無視されます)。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,8"/>
-
                                 <CheckBox x:Name="NColorHitEnabledCheck" Content="端点(Hit)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorHitColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
@@ -334,14 +318,9 @@
 
                                 <Separator Margin="0,4,0,8"/>
                                 <Button x:Name="NColorFrzHitBulkFillButton" Content="一括塗りつぶし(選択中のフリーズ)" Click="NColorFrzHitBulkFillButton_Click" Margin="0,0,0,4"/>
-                                <TextBlock Text="上記でチェックした項目だけを、選択中のフリーズへまとめて設定します。ノートは無視されます。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
                             </StackPanel>
 
                             <StackPanel x:Name="NColorShadowPanel" Visibility="Collapsed">
-                                <TextBlock Text="ノート/フリーズの塗りつぶし色(ArrowShadow/NormalShadow)を指定します。クリックした対象の種類(ノート/フリーズ)に応じて自動的にどちらかが使われます。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,8"/>
-
                                 <TextBlock Text="ノート(ArrowShadow)" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorArrowShadowColorBox" Width="96" TextChanged="NColorShadowField_Changed" LostFocus="NColorArrowShadowColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
@@ -356,22 +335,16 @@
 
                                 <Separator Margin="0,4,0,8"/>
                                 <Button x:Name="NColorShadowBulkFillButton" Content="一括塗りつぶし(選択中のノート/フリーズ)" Click="NColorShadowBulkFillButton_Click" Margin="0,0,0,4"/>
-                                <TextBlock Text="選択中のノート/フリーズを、それぞれの種類に応じた上記の色で塗りつぶします。"
-                                           TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,12"/>
                             </StackPanel>
 
                             <Separator Margin="0,4,0,8"/>
                             <Button x:Name="NColorClearAllButton" Content="ncolor_dataを全て削除" Click="NColorClearAllButton_Click" Foreground="DarkRed"/>
-                            <TextBlock Text="現在の難易度タブの色指定(ncolor_data)を全て削除します(Ctrl+Zで戻せます)。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
                 <TabItem x:Name="MacroTabItem" Header="マクロ">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
-                            <TextBlock Text="レーン入替マクロ(仕様書11章)。一覧には現在の難易度タブのキー種に対応するマクロのみ表示されます(タブを切り替えると一覧も切り替わります)。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
                             <ListBox x:Name="MacroListBox" Height="220" SelectionChanged="MacroListBox_SelectionChanged"
                                      MouseDoubleClick="MacroListBox_MouseDoubleClick"/>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
@@ -380,8 +353,6 @@
                                 <Button x:Name="MacroDeleteButton" Content="削除" Width="60" Margin="4,0,0,0" IsEnabled="False" Click="MacroDeleteButton_Click"/>
                             </StackPanel>
                             <Button x:Name="MacroRunButton" Content="実行(現在の難易度タブに適用)" Margin="0,8,0,0" IsEnabled="False" Click="MacroRunButton_Click"/>
-                            <TextBlock Text="実行すると、現在の難易度タブの全レーンのノート配置(ノート・フリーズ・ncolor_data・コメント/警告)が、マクロの並び替え内容に従って一括で入れ替わります。レーンの定義(キー割り当て等)自体は変わりません。1操作としてUndo(Ctrl+Z)できます。"
-                                       TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -395,8 +366,6 @@
 
                             <Separator Margin="0,12,0,8"/>
                             <TextBlock Text="おにスター(推定値、統一スケール)" FontWeight="Bold" Margin="0,0,0,4"/>
-                            <TextBlock Text="実測データに基づく回帰式からの目安値です。断定的な値ではありません(誤差が大きい場合があります)。"
-                                       FontSize="10" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
                             <Button x:Name="OniStarRecalcButton" Content="算出・再算出" HorizontalAlignment="Left"
                                     Click="OniStarRecalcButton_Click" Margin="0,0,0,8"/>
                             <TextBlock x:Name="OniStarResultText" Text="？？？" FontWeight="Bold" TextWrapping="Wrap"/>
@@ -441,11 +410,19 @@
                             PreviewDragOver="TabControl_PreviewDragOver"
                             Drop="DifficultyTabControl_Drop"/>
             </DockPanel>
-            <ScrollViewer x:Name="ChartScrollViewer" Grid.Row="2"
-                          HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                          ScrollChanged="ChartScrollViewer_ScrollChanged">
-                <local:ChartCanvas x:Name="Canvas"/>
-            </ScrollViewer>
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="48"/>
+                </Grid.ColumnDefinitions>
+                <ScrollViewer x:Name="ChartScrollViewer" Grid.Column="0"
+                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                              ScrollChanged="ChartScrollViewer_ScrollChanged">
+                    <local:ChartCanvas x:Name="Canvas"/>
+                </ScrollViewer>
+                <!-- 2026-08-05: 譜面ビュー全体の概観+クリック/ドラッグでジャンプできるミニマップ -->
+                <local:ChartMinimap x:Name="Minimap" Grid.Column="1"/>
+            </Grid>
         </Grid>
         </Grid>
     </DockPanel>

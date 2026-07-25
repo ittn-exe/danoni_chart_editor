@@ -56,9 +56,11 @@ public sealed class DosExporter
         if (project.ArtistUrl.Length > 0) titleParts.Add(project.ArtistUrl);
         AppendParam(sb, "musicTitle", string.Join(",", titleParts));
 
+        // 2026-08-05: GaugeManualEditAfterExportがONの間はdifData内のborder/recovery/damage/initLife%
+        // (DifDataExtra)も出力しない(ゲージ関連は一切エディタが触れず、ユーザーが後から手で追記する運用のため)。
         var difData = string.Join("$", project.Tabs.Select(t =>
             $"{t.KeyTypeId},{t.DifficultyName},{Num(t.InitialSpeed)}" +
-            (string.IsNullOrEmpty(t.DifDataExtra) ? "" : $",{t.DifDataExtra}")));
+            (project.GaugeManualEditAfterExport || string.IsNullOrEmpty(t.DifDataExtra) ? "" : $",{t.DifDataExtra}")));
         AppendParam(sb, "difData", difData);
 
         // 色設定: 先頭タブが共通値の実体(仕様書6.4.2)。上書きはsetColor2等で追記
@@ -318,9 +320,13 @@ public sealed class DosExporter
     /// <summary>customGauge{N}/gaugeXXX{N}の出力(2026-08-01、GaugeEditorWindow)。
     /// GaugeRawOverrideText(直接入力モード)に空白以外の内容があれば、その内容を
     /// そのまま出力し、GaugeParams/DifficultyTab.GaugeによるUI組み立てロジックは完全に無視する
-    /// (ユーザー確定仕様: 直接入力が常にUI設定より優先)。</summary>
+    /// (ユーザー確定仕様: 直接入力が常にUI設定より優先)。
+    /// 2026-08-05: GaugeManualEditAfterExportがONの間は、直接入力モードを含めゲージ関連の出力を
+    /// 一切行わない(何も書き出さず、ユーザーが書き出し後のdos.txtへ自分で追記する運用のため)。</summary>
     private static void AppendGaugeHeaders(StringBuilder sb, ChartProject project)
     {
+        if (project.GaugeManualEditAfterExport) return;
+
         if (!string.IsNullOrWhiteSpace(project.GaugeRawOverrideText))
         {
             foreach (var rawLine in project.GaugeRawOverrideText.Replace("\r\n", "\n").Split('\n'))

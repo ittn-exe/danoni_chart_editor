@@ -156,13 +156,6 @@ internal sealed class MacroEditorWindow : Window
         var p = new StackPanel { Margin = new Thickness(8) };
         p.Children.Add(Label("対象キー種", section: true));
         p.Children.Add(_keyTypeCombo);
-        p.Children.Add(new TextBlock
-        {
-            Text = "変更すると下記のプレビューがそのキー種のレーン構成でリセットされますわ。",
-            Foreground = Brushes.Gray,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 8),
-        });
         p.Children.Add(Label("マクロ名"));
         p.Children.Add(_macroNameBox);
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };

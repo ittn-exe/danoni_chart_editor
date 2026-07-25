@@ -82,11 +82,6 @@ internal sealed class GaugeCalculatorWindow : Window
         outer.Children.Add(LabeledRow("フリーズ数", _freezeArrowBox));
         outer.Children.Add(LabeledRow("初期ライフ(InitLife%)", _initLifeBox));
         outer.Children.Add(_frzStartJdgCheck);
-        outer.Children.Add(new TextBlock
-        {
-            Text = "通常ノート数・フリーズ数は現在のタブの実データから自動取得します(手動で上書き可能)。",
-            Foreground = Brushes.Gray, FontSize = 10, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0),
-        });
 
         outer.Children.Add(SectionLabel("対象ゲージ名 / モード"));
         outer.Children.Add(LabeledRow("対象ゲージ名(②の表から選択)", _gaugeNameCombo));

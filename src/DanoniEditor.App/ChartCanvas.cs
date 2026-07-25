@@ -392,6 +392,9 @@ public sealed class ChartCanvas : FrameworkElement
     {
         Focusable = true;
         ClipToBounds = true;
+        // 2026-08-05: 譜面ビューにフォーカスがある間はIMEを無効化する。日本語入力ON状態だと
+        // Space等のショートカットキーが変換確定操作に奪われて効かなくなるため(ユーザー要望)。
+        InputMethod.SetIsInputMethodEnabled(this, false);
     }
 
     // =====================================================================
@@ -496,8 +499,10 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// Shift+ホイール=ハイスピ(pxPerTick)、Ctrl+ホイール=作業エリア全体のズーム
-    /// (ChartLayout.ZoomScale。カラム幅・ノート表示サイズがまとめて連動する、仕様書4.3+2026-07-16修正)。
+    /// 2026-08-05再定義(ユーザー確定仕様、統一性重視): Shift+ホイール=縦方向ズーム(ハイスピ/pxPerTick)、
+    /// Alt+ホイール=横方向ズーム(ChartLayout.ZoomScale。カラム幅・ノート表示サイズが連動、仕様書4.3。
+    /// 旧Ctrl単独から移動)、Ctrl+ホイール=スクロール量2倍、Shift+Ctrl+ホイール=スクロール量4倍
+    /// (旧・縦横同時ズームを廃止し、こちらへ用途変更)。修飾キー無しは既定のスクロール(ScrollViewerへ委譲)。
     /// </summary>
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
@@ -506,21 +511,43 @@ public sealed class ChartCanvas : FrameworkElement
         var layout = Document.CurrentLayout;
         double step = e.Delta > 0 ? 1.1 : 1 / 1.1;
 
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        bool alt = Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
+
+        if (shift && ctrl && !alt)
         {
-            // 2026-07-17: カーソル位置を中心に拡大縮小する要望対応。PxPerTick変更前後で
-            // カーソル下のtickの画面上位置が変わらないよう、ScrollViewerの垂直オフセットを補正する。
+            ScrollByMultiplier(e.Delta, 4);
+            e.Handled = true;
+        }
+        else if (ctrl && !shift && !alt)
+        {
+            ScrollByMultiplier(e.Delta, 2);
+            e.Handled = true;
+        }
+        else if (alt && !shift && !ctrl)
+        {
+            // 横方向ズーム(ChartLayout.ZoomScale、旧Ctrl単独から移動)
+            layout.SetZoom(layout.ZoomScale * step);
+            e.Handled = true;
+            InvalidateAll();
+            // 2026-08-05: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
+            Document.Project.EditorZoomScale = layout.ZoomScale;
+        }
+        else if (shift && !ctrl && !alt)
+        {
+            // 縦方向ズーム(pxPerTick)。2026-07-17: カーソル位置を中心に拡大縮小する要望対応。
+            // PxPerTick変更前後でカーソル下のtickの画面上位置が変わらないよう、垂直オフセットを補正する。
             double mouseY = e.GetPosition(this).Y;
             double tickAtCursor = layout.YToTick(mouseY);
             var sv = FindAncestorScrollViewer();
             double oldOffset = sv?.VerticalOffset ?? 0;
 
             layout.PxPerTick = Math.Clamp(layout.PxPerTick * step, ChartLayout.MinPxPerTick, ChartLayout.MaxPxPerTick); // 2026-07-19g: 分解能スケールに追従
-            // 2026-07-17f: Ctrl+Shift+スクロール=縦(ハイスピ)と横(全体ズーム)の同時伸縮
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-                layout.SetZoom(layout.ZoomScale * step);
             e.Handled = true;
             InvalidateAll();
+            // 2026-08-05: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
+            Document.Project.EditorZoomPxPerTick = layout.PxPerTick;
 
             if (sv is not null)
             {
@@ -529,11 +556,19 @@ public sealed class ChartCanvas : FrameworkElement
                 sv.ScrollToVerticalOffset(Math.Max(0, desiredOffset));
             }
         }
-        else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+    }
+
+    /// <summary>2026-08-05: Ctrl/Shift+Ctrl+ホイール用の倍速スクロール。OS既定のホイール1ノッチあたりの
+    /// 行数(SystemParameters.WheelScrollLines)を基準に、その整数倍だけScrollViewerのLineUp/Downを
+    /// 呼ぶ(既定スクロールの内部実装を再利用しつつ、環境ごとの体感速度差もそのまま維持できる)。</summary>
+    private void ScrollByMultiplier(int delta, int multiplier)
+    {
+        var sv = FindAncestorScrollViewer();
+        if (sv is null) return;
+        int lines = Math.Max(1, SystemParameters.WheelScrollLines) * multiplier;
+        for (int i = 0; i < lines; i++)
         {
-            layout.SetZoom(layout.ZoomScale * step);
-            e.Handled = true;
-            InvalidateAll();
+            if (delta > 0) sv.LineUp(); else sv.LineDown();
         }
     }
 
@@ -568,7 +603,8 @@ public sealed class ChartCanvas : FrameworkElement
         return new Size(layout.TotalWidth, h);
     }
 
-    private static long MaxTickInProject(EditorDocument doc)
+    /// <summary>internal化(2026-08-05): ChartMinimapが全体スクロール範囲の算出に再利用するため。</summary>
+    internal static long MaxTickInProject(EditorDocument doc)
     {
         long max = 192 * 8; // 空プロジェクトでも最低8小節ぶんは表示領域を確保
         var tab = doc.CurrentTab;
@@ -1181,6 +1217,12 @@ public sealed class ChartCanvas : FrameworkElement
     public bool MarkerCommentFull { get; set; } = true;
     public int MarkerCommentHeadChars { get; set; } = 4;
 
+    /// <summary>時間情報レーン/マーカーレーンの基準フォントサイズ(2026-08-05、環境設定から適用)。
+    /// ZoomScale=1.0時のptサイズで、実描画時はZoomScaleを掛けて最終サイズを求める(既定値は
+    /// 変更前の固定値8/9を踏襲)。</summary>
+    public double TimeInfoFontSize { get; set; } = 8.0;
+    public double MarkerFontSize { get; set; } = 9.0;
+
     /// <summary>時間情報表示レーン(2026-07-23、TBD 1-1)。マーカーレーンのさらに左側に置く表示専用レーン。
     /// 小節の頭には「小節番号・frame・time」の3行、ノート配置frame(小節頭を除く)には「frame」の1行を表示する。
     /// クリック等の編集操作は持たない(ダブルクリックの再生開始位置指定のみSmartToolController側で対応済み)。</summary>
@@ -1188,7 +1230,7 @@ public sealed class ChartCanvas : FrameworkElement
     {
         var col = layout.Column(ColumnKind.TimeInfo);
         double x = col.X + 2;
-        double fontSize = Math.Max(6, 8 * layout.ZoomScale);
+        double fontSize = Math.Max(6, TimeInfoFontSize * layout.ZoomScale);
 
         // 小節の頭: 小節番号・frame・time(既存の小節線描画と同じ走査ロジック、2026-07-23に小節線側から移設)。
         // 2026-07-23追記: ズームアウト等で隣の小節との間隔が3行ぶんの高さを下回る(＝行が重なる)場合は、
@@ -1291,7 +1333,7 @@ public sealed class ChartCanvas : FrameworkElement
             var label = MarkerCommentFull || m.Comment.Length <= MarkerCommentHeadChars
                 ? m.Comment
                 : m.Comment[..MarkerCommentHeadChars] + "…";
-            DrawEventTag(dc, col, layout.TickToY(m.Tick), MarkerBrush, label, pointLeft: false, layout.ZoomScale);
+            DrawEventTag(dc, col, layout.TickToY(m.Tick), MarkerBrush, label, pointLeft: false, layout.ZoomScale, MarkerFontSize);
         }
     }
 
@@ -1384,7 +1426,9 @@ public sealed class ChartCanvas : FrameworkElement
     /// マーカー(pointLeft:false)のラベルは、以前は常にcol右側に描画しており隣接カラム(小節レーン)へ
     /// はみ出していたバグを修正: マーカーレーン自身の幅にクリップして収める(2026-07-16h)。
     /// </summary>
-    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale)
+    /// <summary>fontSizeBase=ZoomScale=1.0時の基準フォントサイズ(pt)。マーカータグは環境設定の
+    /// MarkerFontSizeを渡す(2026-08-05)。それ以外(speed/boost/BPM/歌詞)は従来通り既定値9を使う。</summary>
+    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9)
     {
         const double w = 20, h = 9;
         double cx = col.CenterX;
@@ -1409,7 +1453,7 @@ public sealed class ChartCanvas : FrameworkElement
 
         if (!string.IsNullOrEmpty(label))
         {
-            double fontSize = Math.Max(7, 9 * zoomScale);
+            double fontSize = Math.Max(7, fontSizeBase * zoomScale);
             var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight, Typeface, fontSize, Brushes.White, 1.0);
 

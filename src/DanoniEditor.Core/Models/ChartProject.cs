@@ -43,6 +43,13 @@ public sealed class ChartProject
     /// dos.txtには出力されないエディタ専用の再生設定だが、プロジェクトファイルには永続化する。</summary>
     public double? PlaybackStartFrame { get; set; }
 
+    /// <summary>譜面ビューの縦方向ズーム(ChartLayout.PxPerTick、Shift+ホイール)・横方向ズーム
+    /// (ChartLayout.ZoomScale、Alt+ホイール)の保存値(2026-08-05要望対応)。dos.txtには出力されない
+    /// エディタ専用の表示設定だが、プロジェクトファイルには永続化し次回オープン時に復元する。
+    /// null=未設定(エディタ既定値を使用、旧プロジェクトファイルとの後方互換)。</summary>
+    public double? EditorZoomPxPerTick { get; set; }
+    public double? EditorZoomScale { get; set; }
+
     /// <summary>その他のヘッダーパラメータ(仕様書6.4.4)。「使用する」チェックONのもののみ格納。</summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = [];
 
@@ -62,6 +69,13 @@ public sealed class ChartProject
     /// 生テキスト、複数行可)で完全に置き換えられ、GaugeParams/DifficultyTab.Gaugeによる
     /// UI構築ロジックは無視される(過去資産からのコピペ用途、プロジェクト全体で1つ)。</summary>
     public string? GaugeRawOverrideText { get; set; }
+
+    /// <summary>「dos作成後に直接編集する」フラグ(2026-08-05、ユーザー確定仕様、プロジェクト全体で1つ)。
+    /// trueの間、エクスポート時にゲージ関連の出力(difData内のborder/recovery/damage/initLife%、
+    /// customGauge系・gaugeXXX系ヘッダー、GaugeRawOverrideTextによる直接入力を含む)を一切行わない。
+    /// エディタでは編集せず、書き出し後のdos.txtへユーザー自身がテキストエディタ等で直接追記する
+    /// 運用を想定した機能のため、GaugeEditorWindow側の①②③④は本フラグON中すべて無効化する。</summary>
+    public bool GaugeManualEditAfterExport { get; set; } = false;
 
     public TimingEngine CreateTimingEngine() =>
         new(StartNumber, BpmEvents, TimeSignatures);
