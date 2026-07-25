@@ -120,15 +120,22 @@ public partial class MainWindow : Window
     /// </summary>
     private bool _initialized;
 
+    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-08-06、複数ウィンドウ対応でクラッシュ
+    /// フラグ・自動保存manifestをインスタンス単位に分離するために追加)。App.xaml.csで生成された
+    /// ものをそのまま受け取り、自動保存の書き込み(WriteSlot)時に持ち主として渡す。</summary>
+    private readonly string _instanceId;
+
     /// <summary>既定コンストラクタ(設定・テンプレートは自前で読み込む)。App.xaml.cs以外から
     /// 直接生成する場合はこちらを使う。</summary>
-    public MainWindow() : this(null, null) { }
+    public MainWindow() : this(null, null, Guid.NewGuid().ToString("N")) { }
 
     /// <summary>2026-07-28: スプラッシュウィンドウからの起動用。設定・テンプレートを事前に読み込んで
     /// 渡せるようにし、App.OnStartup側の進捗表示と実際の読込処理を1:1にする
-    /// (省略時は従来通りここで読み込む)。</summary>
-    public MainWindow(AppSettings? preloadedSettings, TemplateRepository? preloadedTemplates)
+    /// (省略時は従来通りここで読み込む)。2026-08-06: instanceIdはApp.xaml.csが発行した
+    /// クラッシュフラグ・自動保存manifestの持ち主IDをそのまま受け取る。</summary>
+    public MainWindow(AppSettings? preloadedSettings, TemplateRepository? preloadedTemplates, string instanceId)
     {
+        _instanceId = instanceId;
         InitializeComponent();
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
         _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-30: settings.jsonとは独立したファイル
@@ -252,15 +259,35 @@ public partial class MainWindow : Window
     {
         _appSettings.WindowMaximized = WindowState == WindowState.Maximized;
 
-        // 最大化中はRestoreBoundsが「解除した時に戻る非最大化時の位置サイズ」を保持している
+        // 最大化中はRestoreBoundsが「解除した時に戻る非最大化時の位置サイズ」を保持しているが、
+        // ウィンドウが一度もNormal状態を経ずに最大化された場合(起動直後にRestoreWindowPlacementの
+        // Loadedハンドラで直接最大化した場合等)、RestoreBoundsがRect.Empty(Left/Top=+∞、
+        // Width/Height=-∞)を返すことがある(2026-08-06実データで確認)。この無限大値をそのまま
+        // AppSettingsへ書き込むと、保存時にSystem.Text.Jsonが「positive and negative infinity
+        // cannot be written as valid JSON」で例外を投げ、正常保存・正常終了したはずのセッションが
+        // 予期しないエラーダイアログ経由でクラッシュ扱いされてしまう不具合の原因になっていた。
+        // 有限値でない場合は、現在のウィンドウの実際のLeft/Top/Width/Height(最大化時は画面いっぱいの
+        // 値になる)へフォールバックする。
         var bounds = WindowState == WindowState.Maximized ? RestoreBounds : new Rect(Left, Top, Width, Height);
-        _appSettings.WindowLeft = bounds.Left;
-        _appSettings.WindowTop = bounds.Top;
-        _appSettings.WindowWidth = bounds.Width;
-        _appSettings.WindowHeight = bounds.Height;
+        if (!IsFiniteRect(bounds)) bounds = new Rect(Left, Top, Width, Height);
+
+        if (IsFiniteRect(bounds))
+        {
+            _appSettings.WindowLeft = bounds.Left;
+            _appSettings.WindowTop = bounds.Top;
+            _appSettings.WindowWidth = bounds.Width;
+            _appSettings.WindowHeight = bounds.Height;
+        }
+        // どちらも有限でなければ(通常は起こらない想定)前回保存済みの値をそのまま残し、位置情報の
+        // 更新のみスキップする(最大化状態のフラグ自体は上で更新済み)。
 
         _appSettings.Save(AppPaths.SettingsFilePath);
     }
+
+    /// <summary>Rectの4成分が全て有限値(NaN・±Infinityでない)かどうか(2026-08-06、
+    /// Window.RestoreBoundsがRect.Emptyを返すケースの検出用)。</summary>
+    private static bool IsFiniteRect(Rect r) =>
+        double.IsFinite(r.Left) && double.IsFinite(r.Top) && double.IsFinite(r.Width) && double.IsFinite(r.Height);
 
     private void ApplyDisplaySettingsToCanvas()
     {
@@ -1354,7 +1381,7 @@ public partial class MainWindow : Window
             {
                 var name = string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName;
                 var json = ProjectSerializer.Serialize(s.Document.Project);
-                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, s.FilePath, name, json);
+                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, _instanceId, s.FilePath, name, json);
             }
             catch
             {
@@ -1379,7 +1406,7 @@ public partial class MainWindow : Window
             {
                 var name = string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName;
                 var json = ProjectSerializer.Serialize(s.Document.Project);
-                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, s.FilePath, name, json);
+                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, _instanceId, s.FilePath, name, json);
                 saved++;
             }
             catch { /* 1件失敗しても他セッションの保存は続ける */ }

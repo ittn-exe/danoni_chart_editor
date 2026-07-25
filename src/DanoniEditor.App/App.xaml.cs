@@ -7,6 +7,11 @@ namespace DanoniEditor.App;
 
 public partial class App : Application
 {
+    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-08-06、複数ウィンドウ対応でクラッシュ
+    /// フラグをインスタンス単位に分離するために追加)。OnStartupで生成し、OnExitでの自分自身の
+    /// フラグ削除に使う。</summary>
+    private string? _instanceId;
+
     /// <summary>
     /// 2026-07-28要望: 起動の立ち上がりが重く感じるため、スプラッシュウィンドウ(プログレスバー+
     /// 現在の処理内容のテキスト表示)を出す。WPFの起動処理はUIスレッド上で同期的に進むため、
@@ -35,12 +40,20 @@ public partial class App : Application
             splash.Report("環境設定を読み込み中...", 15);
             var settings = AppSettings.Load(AppPaths.SettingsFilePath);
 
-            // 2026-07-25: クラッシュ復旧(TBD)。MainWindow構築前に「前回のフラグ」を読み取ってから
-            // 今回分のフラグを立てる(以降の処理中に万一落ちても次回検知できるように早めに立てる)。
-            // フラグが残っていた=前回は正常終了しなかった、とみなしmanifestを復旧候補として保持する。
-            bool crashSuspected = AutoSaveManager.IsCrashFlagSet(AppPaths.AutoSaveDir);
-            var recoverableSlots = crashSuspected ? AutoSaveManager.LoadManifest(AppPaths.AutoSaveDir) : [];
-            AutoSaveManager.SetCrashFlag(AppPaths.AutoSaveDir);
+            // 2026-07-25: クラッシュ復旧(TBD)。2026-08-06: 「新しいウィンドウ」機能で同一exeが
+            // 複数プロセス同時実行され得るため、このプロセス専用のインスタンスIDを発行し、
+            // フラグ・manifestの持ち主として使う。他プロセス(まだ正常に開いている別ウィンドウ)の
+            // フラグに記録されたPIDが実際に生きているかで「本当にクラッシュしたインスタンス」だけを
+            // 判定し、そのインスタンスに属するセッションだけを復旧候補として保持する。
+            _instanceId = Guid.NewGuid().ToString("N");
+            var aliveInstanceIds = AutoSaveManager.GetAliveInstanceIds(AppPaths.AutoSaveDir);
+            var manifest = AutoSaveManager.LoadManifest(AppPaths.AutoSaveDir);
+            var recoverableSlots = manifest.Where(s => !aliveInstanceIds.Contains(s.InstanceId)).ToList();
+            bool crashSuspected = recoverableSlots.Count > 0;
+            // 生きていないインスタンスの古いフラグはここで掃除しておく(次回以降の走査を汚さないため)。
+            var deadInstanceIds = recoverableSlots.Select(s => s.InstanceId).Distinct();
+            AutoSaveManager.PurgeDeadInstanceFlags(AppPaths.AutoSaveDir, deadInstanceIds);
+            AutoSaveManager.SetCrashFlag(AppPaths.AutoSaveDir, _instanceId, Environment.ProcessId);
 
             // 2026-08-05: 統計情報(環境設定 > 統計情報)。起動の都度カウントし、クラッシュ検出時も
             // ここで加算しておく(この後MainWindowへ渡るsettingsインスタンスがそのまま_appSettingsになる)。
@@ -55,7 +68,7 @@ public partial class App : Application
             var templates = new TemplateRepository(templateDir);
 
             splash.Report("メイン画面を構築中...", 75);
-            var main = new MainWindow(settings, templates);
+            var main = new MainWindow(settings, templates, _instanceId);
 
             splash.Report("起動完了", 100);
             MainWindow = main;
@@ -79,10 +92,11 @@ public partial class App : Application
     }
 
     /// <summary>2026-07-25: 正常終了時のみ到達する(OnClosingでe.Cancel=trueにされた場合はここへ来ない)。
-    /// クラッシュフラグを消し、次回起動時に「クラッシュした」と誤検知しないようにする。</summary>
+    /// 自分自身のクラッシュフラグだけを消し、次回起動時に「クラッシュした」と誤検知しないようにする
+    /// (2026-08-06: 他のウィンドウ[プロセス]のフラグには触れない)。</summary>
     protected override void OnExit(ExitEventArgs e)
     {
-        AutoSaveManager.ClearCrashFlag(AppPaths.AutoSaveDir);
+        if (_instanceId is not null) AutoSaveManager.ClearCrashFlag(AppPaths.AutoSaveDir, _instanceId);
         base.OnExit(e);
     }
 
