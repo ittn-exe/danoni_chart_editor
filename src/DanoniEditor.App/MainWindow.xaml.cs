@@ -27,6 +27,9 @@ public partial class MainWindow : Window
     private KeyboardModeController? _keyboardMode;
     /// <summary>キーボードモードON/OFF(Ctrl+,または左パネルのトグルボタン、セッションを跨いで保持)</summary>
     private bool _keyboardModeActive;
+    /// <summary>キーボードモード中、Shift+前進後退で範囲選択している間のアンカー位置(2026-07-26)。
+    /// 選択中でなければnull。Shiftを離して移動すると選択がクリアされ、これもnullに戻る。</summary>
+    private long? _keyboardSelectionAnchorTick;
     /// <summary>色編集モードON/OFF(左パネルのトグルボタン、セッションを跨いで保持、2026-07-23)</summary>
     private bool _colorEditModeActive;
     /// <summary>色編集モードの「即時適用(全体色変化)にする」チェック状態(2026-07-24)。
@@ -47,7 +50,7 @@ public partial class MainWindow : Window
     private EditorDocument? _selectionSubscribedDoc;
     private string? _currentFilePath;
 
-    /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-30)。settings.jsonとは独立した
+    /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-26)。settings.jsonとは独立した
     /// swap_macro.jsonで管理する(AppPaths.LaneSwapMacroFilePath)。</summary>
     private readonly List<LaneSwapMacro> _macros;
 
@@ -82,7 +85,9 @@ public partial class MainWindow : Window
     private bool _suppressProjectTabSelectionEvent;
 
     // --- 音楽ファイル再生(目テスト・プレイテスト用) ---
-    private readonly MediaPlayer _audioPlayer = new();
+    // 2026-07-26f: WPF MediaPlayerから自前のNAudioBgmPlayerへ移行(ハンドクラップのサンプル精度
+    // スケジューリング対応、詳細はNAudioBgmPlayer.cs参照)。
+    private readonly NAudioBgmPlayer _audioPlayer = new();
     private readonly DispatcherTimer _playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(33) }; // ≒30fps同期
 
     /// <summary>自動保存(クラッシュ復旧用、2026-07-25)。間隔・ON/OFFはApplyAutoSaveTimerSettingsで反映。</summary>
@@ -95,11 +100,11 @@ public partial class MainWindow : Window
     /// <summary>音楽ファイル読込済みか(2026-07-17g: 再生ボタン撤去に伴いIsEnabledの代わりに保持)</summary>
     private bool _audioLoaded;
 
-    /// <summary>musicURL欄がユーザーにより編集されたか(2026-07-27)。「読込」ボタンの活性化条件の1つ。
+    /// <summary>musicURL欄がユーザーにより編集されたか(2026-07-26)。「読込」ボタンの活性化条件の1つ。
     /// ドキュメント読込・生成のたびにfalseへリセットする(RefreshProjectPropertiesPanel参照)。</summary>
     private bool _musicUrlDirty;
 
-    /// <summary>音量スライダー/数値入力欄の相互同期中に再帰更新を防ぐガード(2026-07-27)。</summary>
+    /// <summary>音量スライダー/数値入力欄の相互同期中に再帰更新を防ぐガード(2026-07-26)。</summary>
     private bool _suppressVolumeEvents;
 
     // --- 波形表示(2026-07-18) ---
@@ -120,7 +125,7 @@ public partial class MainWindow : Window
     /// </summary>
     private bool _initialized;
 
-    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-08-06、複数ウィンドウ対応でクラッシュ
+    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-07-26、複数ウィンドウ対応でクラッシュ
     /// フラグ・自動保存manifestをインスタンス単位に分離するために追加)。App.xaml.csで生成された
     /// ものをそのまま受け取り、自動保存の書き込み(WriteSlot)時に持ち主として渡す。</summary>
     private readonly string _instanceId;
@@ -129,21 +134,25 @@ public partial class MainWindow : Window
     /// 直接生成する場合はこちらを使う。</summary>
     public MainWindow() : this(null, null, Guid.NewGuid().ToString("N")) { }
 
-    /// <summary>2026-07-28: スプラッシュウィンドウからの起動用。設定・テンプレートを事前に読み込んで
+    /// <summary>2026-07-26: スプラッシュウィンドウからの起動用。設定・テンプレートを事前に読み込んで
     /// 渡せるようにし、App.OnStartup側の進捗表示と実際の読込処理を1:1にする
-    /// (省略時は従来通りここで読み込む)。2026-08-06: instanceIdはApp.xaml.csが発行した
+    /// (省略時は従来通りここで読み込む)。2026-07-26: instanceIdはApp.xaml.csが発行した
     /// クラッシュフラグ・自動保存manifestの持ち主IDをそのまま受け取る。</summary>
     public MainWindow(AppSettings? preloadedSettings, TemplateRepository? preloadedTemplates, string instanceId)
     {
         _instanceId = instanceId;
         InitializeComponent();
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
-        _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-30: settings.jsonとは独立したファイル
+        _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-26: settings.jsonとは独立したファイル
         SnapDivisionCombo.ItemsSource = SnapService.Divisions;
         SnapDivisionCombo.SelectedItem = 16;
 
+        // 2026-07-26: 音楽読込完了(非同期)のたびに全体長(フレーム)をChartCanvas/ChartMinimapへ反映。
+        // ノートを置いていなくても曲の長さぶんスクロールできるようにするための値(要望対応)。
+        _audioPlayer.MediaOpened += AudioPlayer_MediaOpened;
+
         PreviewKeyDown += MainWindow_PreviewKeyDown;
-        // 2026-08-06: Alt+ホイール(譜面ビューの横ズーム)でAltキーを離した際、Windows/WPF標準の
+        // 2026-07-26: Alt+ホイール(譜面ビューの横ズーム)でAltキーを離した際、Windows/WPF標準の
         // 「単独Alt押下→メニューへのアクセスキーフォーカス」機能が働き、メニュー(ファイル(F)等)へ
         // フォーカスが奪われてしまう不具合への対処。単独AltのKeyDown/KeyUpをここで握りつぶし、
         // メニューのアクセスキー処理へ渡らないようにする(Ctrl+Alt等の組み合わせは通常通り通す)。
@@ -173,7 +182,7 @@ public partial class MainWindow : Window
         ApplyAutoSaveTimerSettings(); // 2026-07-25
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
-        NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-08-01
+        NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-07-26
         ApplyDisplaySettingsToCanvas();
 
         // 2026-07-17g: プレイテスト設定(Reverse/ハイスピ/調整オフセット)の初期化
@@ -181,6 +190,8 @@ public partial class MainWindow : Window
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestReverseCheck.IsChecked = _appSettings.PlaytestReverse;
         PlaytestAutoPlayCheck.IsChecked = _appSettings.PlaytestAutoPlay;
+        HandClapCheck.IsChecked = _appSettings.HandClapEnabled; // 2026-07-26
+        HandClapVolumeBox.Text = Math.Round(_appSettings.HandClapVolume * 100).ToString(System.Globalization.CultureInfo.InvariantCulture); // 2026-07-26b
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(System.Globalization.CultureInfo.InvariantCulture);
         PlaytestScaleCombo.ItemsSource = PlaytestScaleValues; // ウィンドウサイズ倍率 x0.5〜3(2026-07-17h)
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
@@ -190,7 +201,7 @@ public partial class MainWindow : Window
         PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(_appSettings.PlaybackSpeed);
         _audioPlayer.SpeedRatio = _appSettings.PlaybackSpeed;
 
-        // 2026-07-27: 音量(0〜100%、スライダー+数値入力欄を相互同期)
+        // 2026-07-26: 音量(0〜100%、スライダー+数値入力欄を相互同期)
         _suppressVolumeEvents = true;
         VolumeSlider.Value = Math.Clamp(_appSettings.PlaybackVolume, 0.0, 1.0) * 100;
         VolumeBox.Text = Math.Round(VolumeSlider.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -211,17 +222,17 @@ public partial class MainWindow : Window
         NColorArrowShadowColorBox.Text = "#000000";
         NColorNormalShadowColorBox.Text = "#000000";
 
-        RefreshMacroList(); // 2026-07-30: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
+        RefreshMacroList(); // 2026-07-26: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
 
-        // 2026-08-05: 終了時のウィンドウ状態(モニタ/最大化/位置サイズ)を復元し、終了時に保存する。
+        // 2026-07-26: 終了時のウィンドウ状態(モニタ/最大化/位置サイズ)を復元し、終了時に保存する。
         RestoreWindowPlacement();
-        Closed += (_, _) => SaveWindowPlacement();
+        Closed += (_, _) => { SaveWindowPlacement(); _audioPlayer.Dispose(); }; // 2026-07-26f
 
         _initialized = true;
     }
 
     // =====================================================================
-    // 終了時のウィンドウ状態の保存/復元(2026-08-05要望対応)
+    // 終了時のウィンドウ状態の保存/復元(2026-07-26要望対応)
     // =====================================================================
 
     /// <summary>起動時、前回終了時の位置・サイズ・最大化状態を復元する。WindowLeft/Topは仮想スクリーン
@@ -248,7 +259,7 @@ public partial class MainWindow : Window
 
         if (_appSettings.WindowMaximized)
         {
-            // 2026-08-05: WindowState=Maximizedを起動直後に直接指定すると、Left/Topで指定した
+            // 2026-07-26: WindowState=Maximizedを起動直後に直接指定すると、Left/Topで指定した
             // モニタではなくプライマリ画面側で最大化されることがあるため、Loadedまで遅延させる。
             Loaded += (_, _) => WindowState = WindowState.Maximized;
         }
@@ -262,7 +273,7 @@ public partial class MainWindow : Window
         // 最大化中はRestoreBoundsが「解除した時に戻る非最大化時の位置サイズ」を保持しているが、
         // ウィンドウが一度もNormal状態を経ずに最大化された場合(起動直後にRestoreWindowPlacementの
         // Loadedハンドラで直接最大化した場合等)、RestoreBoundsがRect.Empty(Left/Top=+∞、
-        // Width/Height=-∞)を返すことがある(2026-08-06実データで確認)。この無限大値をそのまま
+        // Width/Height=-∞)を返すことがある(2026-07-26実データで確認)。この無限大値をそのまま
         // AppSettingsへ書き込むと、保存時にSystem.Text.Jsonが「positive and negative infinity
         // cannot be written as valid JSON」で例外を投げ、正常保存・正常終了したはずのセッションが
         // 予期しないエラーダイアログ経由でクラッシュ扱いされてしまう不具合の原因になっていた。
@@ -284,7 +295,7 @@ public partial class MainWindow : Window
         _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
-    /// <summary>Rectの4成分が全て有限値(NaN・±Infinityでない)かどうか(2026-08-06、
+    /// <summary>Rectの4成分が全て有限値(NaN・±Infinityでない)かどうか(2026-07-26、
     /// Window.RestoreBoundsがRect.Emptyを返すケースの検出用)。</summary>
     private static bool IsFiniteRect(Rect r) =>
         double.IsFinite(r.Left) && double.IsFinite(r.Top) && double.IsFinite(r.Width) && double.IsFinite(r.Height);
@@ -301,10 +312,10 @@ public partial class MainWindow : Window
         Canvas.ApplyCursorLineSettings(_appSettings.CursorLineWidth, cursorLineColor, _appSettings.CursorHighlightWidth, cursorHighlightColor);
         Canvas.MarkerCommentFull = _appSettings.MarkerCommentFull;   // 2026-07-19b
         Canvas.MarkerCommentHeadChars = Math.Max(1, _appSettings.MarkerCommentHeadChars);
-        Canvas.TimeInfoFontSize = _appSettings.TimeInfoFontSize;     // 2026-08-05
-        Canvas.MarkerFontSize = _appSettings.MarkerFontSize;         // 2026-08-05
+        Canvas.TimeInfoFontSize = _appSettings.TimeInfoFontSize;     // 2026-07-26
+        Canvas.MarkerFontSize = _appSettings.MarkerFontSize;         // 2026-07-26
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
-        Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-08-01
+        Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-07-26
         Canvas.InvalidateVisual();
     }
 
@@ -314,7 +325,7 @@ public partial class MainWindow : Window
         EnforceAndApplyDisplayToggles();
     }
 
-    /// <summary>「ノート数表示」トグル(2026-08-01)。他のトグルとの排他制約は無いため単純に反映するのみ。</summary>
+    /// <summary>「ノート数表示」トグル(2026-07-26)。他のトグルとの排他制約は無いため単純に反映するのみ。</summary>
     private void NoteCountToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (!_initialized) return;
@@ -356,7 +367,7 @@ public partial class MainWindow : Window
     /// <summary>上部パネルの「表示設定...」ボタン(従来動作互換: 表示カテゴリを開く)</summary>
     private void DisplaySettings_Click(object sender, RoutedEventArgs e) => OpenPreferences(0);
 
-    /// <summary>「設定」メニュー→「ゲージ設定...」(2026-08-01、customGauge/gaugeXXX専用ウィンドウ)</summary>
+    /// <summary>右パネル「プロジェクト」タブの「ゲージ設定...」ボタン(customGauge/gaugeXXX専用ウィンドウ)</summary>
     private void OpenGaugeEditor_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null)
@@ -394,6 +405,7 @@ public partial class MainWindow : Window
         if (win.ShowDialog() != true || win.Result is null) return;
         _appSettings = win.Result;
         _appSettings.Save(AppPaths.SettingsFilePath);
+        _handClapPlayer = null; // ノート音の選択ファイルが変わった可能性があるため再読込させる
         ApplyAutoSaveTimerSettings(); // 2026-07-25
         ApplyDisplaySettingsToCanvas();
         if (_document is not null) _document.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 2026-07-19b
@@ -407,7 +419,7 @@ public partial class MainWindow : Window
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
-        UpdateMusicUrlLoadButtonState(); // 2026-07-27: 機能ON/OFF切替を「読込」ボタンの活性状態へ即反映
+        UpdateMusicUrlLoadButtonState(); // 2026-07-26: 機能ON/OFF切替を「読込」ボタンの活性状態へ即反映
         Canvas.InvalidateVisual();
     }
 
@@ -491,16 +503,16 @@ public partial class MainWindow : Window
         try
         {
             var project = ProjectSerializer.Load(path);
-            // 2026-08-03: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
+            // 2026-07-26: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
             // 表示する仕様のため、開いた時点の実際のファイル名で同期する(ファイルがリネームされていた
             // 場合や、保存時ProjectName同期が無かった旧バージョンで保存されたファイルにも対応)。
             project.ProjectName = Path.GetFileNameWithoutExtension(path);
             AddSession(new EditorDocument(project, _templates), path); // 2026-07-20: 新規プロジェクトタブとして追加
-            // 2026-07-27: musicURL設定済みのITTNエディタ形式プロジェクトを開いた際、機能ONなら自動読込を試みる
+            // 2026-07-26: musicURL設定済みのITTNエディタ形式プロジェクトを開いた際、機能ONなら自動読込を試みる
             // (ローカルAudioFilePathからの復元(ResetAudioForDocument、AddSession内で実行済み)が
             // 既に成功している場合はTryLoadMusicFromUrl内の_audioLoadedガードで何もしない)。
             TryLoadMusicFromUrl(autoTriggered: true);
-            // 2026-07-28: 開いたファイルを「最近開いたファイル」の先頭へ記録する
+            // 2026-07-26: 開いたファイルを「最近開いたファイル」の先頭へ記録する
             _appSettings.AddRecentFile(path);
             _appSettings.Save(AppPaths.SettingsFilePath);
         }
@@ -511,7 +523,7 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    // 最近開いたファイル(2026-07-28、ファイル > 最近開いたファイル)
+    // 最近開いたファイル(2026-07-26、ファイル > 最近開いたファイル)
     // =====================================================================
 
     /// <summary>サブメニューを開くたびに項目を動的再構築する。存在しなくなったファイルは
@@ -583,7 +595,7 @@ public partial class MainWindow : Window
 
         try
         {
-            // 2026-08-03: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
+            // 2026-07-26: タイトルバー・プロジェクトタブは「プロジェクトファイル名(拡張子除く)」を
             // 表示する仕様のため、保存確定時にProject.ProjectNameを実際の保存先ファイル名へ同期する
             // (従来はNewProject_Click等で設定した"untitled"のまま更新されず、保存後も表示が
             // 変わらない不具合になっていた)。
@@ -599,9 +611,9 @@ public partial class MainWindow : Window
             RefreshProjectTabBarLabelOnly(); // プロジェクトタブの表示名も同期
             ProjectTitleText.Text = $"{_document.Project.ProjectName} ({_document.Project.MusicTitle})";
             StatusText.Text = $"保存しました: {Path.GetFileName(path)}";
-            // 2026-07-28: 保存先も「最近開いたファイル」の先頭へ記録する(初回保存のパス確定時も含む)
+            // 2026-07-26: 保存先も「最近開いたファイル」の先頭へ記録する(初回保存のパス確定時も含む)
             _appSettings.AddRecentFile(path);
-            _appSettings.StatProjectSaveCount++; // 2026-08-05: 統計情報(手動保存回数)
+            _appSettings.StatProjectSaveCount++; // 2026-07-26: 統計情報(手動保存回数)
             _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
@@ -635,7 +647,7 @@ public partial class MainWindow : Window
             var text = exporter.Export(_document.Project, includeEditorMetadata: true);
             File.WriteAllText(dlg.FileName, text);
             StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
-            _appSettings.StatDosExportCount++; // 2026-08-05: 統計情報(dosエクスポート回数)
+            _appSettings.StatDosExportCount++; // 2026-07-26: 統計情報(dosエクスポート回数)
             _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
@@ -685,7 +697,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>FUJIエディタファイルをインポートする。ImportFuji_ClickとD&D(2026-07-20)の共通処理。
-    /// 2026-08-05再設計(ユーザー確定仕様、difDataへの参照範囲縮小+「1回で済ませたい」): キー種
+    /// 2026-07-26再設計(ユーザー確定仕様、difDataへの参照範囲縮小+「1回で済ませたい」): キー種
     /// (difDataからは自動検出せずテンプレートフォルダの一覧から選択)と難易度名(選んだキー種に一致する
     /// difData候補+「後で設定する」「今設定する」)を、1つのウィンドウ(FujiImportSetupDialog)でまとめて
     /// 選ばせる。「後で設定する」を選んだ場合も、それ自体は正常な選択のため確認ダイアログは出さない。</summary>
@@ -967,8 +979,8 @@ public partial class MainWindow : Window
         RefreshSelectedObjectPanel();
         RefreshColorPanel();
         RefreshExtraHeadersPanel();
-        RefreshMacroList(); // 2026-07-30: 現在タブのKeyTypeIdに応じて「実行」ボタンの有効/無効が変わるため
-        RefreshAnalysisPanel(); // 2026-08-05: 分析タブ(ITTNアナライザー/おにスター)
+        RefreshMacroList(); // 2026-07-26: 現在タブのKeyTypeIdに応じて「実行」ボタンの有効/無効が変わるため
+        RefreshAnalysisPanel(); // 2026-07-26: 分析タブ(ITTNアナライザー/おにスター)
     }
 
     /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
@@ -1010,6 +1022,7 @@ public partial class MainWindow : Window
         if (index < 0 || index >= _sessions.Count || index == _activeSessionIndex) return;
         if (_visualTestActive) StopVisualTest(returnToStart: false);
         SyncActiveSessionBeforeSwitch();
+        _keyboardSelectionAnchorTick = null; // 2026-07-26: 他タブのtick基準を持ち越さない
 
         _activeSessionIndex = index;
         var s = _sessions[index];
@@ -1105,7 +1118,7 @@ public partial class MainWindow : Window
 
         UpdateWindowTitle();
         RefreshProjectTabBar();
-        RefreshMacroList(); // 2026-07-30: ドキュメント無しの間は一覧を空にし「実行」を無効化する
+        RefreshMacroList(); // 2026-07-26: ドキュメント無しの間は一覧を空にし「実行」を無効化する
     }
 
     // =====================================================================
@@ -1122,6 +1135,8 @@ public partial class MainWindow : Window
         _waveformPeaks = null; // 波形キャッシュは曲に紐づくためクリア(2026-07-18)
         _waveformPath = null;
         Canvas.Waveform = null;
+        Canvas.AudioTotalFrames = null; // 2026-07-26: 曲切替時はいったんクリア(未読込なら8小節下限に戻る)
+        Minimap.AudioTotalFrames = null;
 
         if (!string.IsNullOrEmpty(doc.Project.AudioFilePath) && File.Exists(doc.Project.AudioFilePath))
         {
@@ -1152,13 +1167,15 @@ public partial class MainWindow : Window
     {
         try
         {
-            _audioPlayer.Open(new Uri(path, UriKind.Absolute));
+            Canvas.AudioTotalFrames = null; // 2026-07-26: 読込完了(MediaOpened)まではいったんクリア
+            Minimap.AudioTotalFrames = null;
+            _audioPlayer.Open(path);
             _document!.Project.AudioFilePath = path;
             AudioFileText.Text = Path.GetFileName(path);
             AudioFileText.FontStyle = FontStyles.Normal;
             _audioLoaded = true;
             if (WaveformToggle.IsChecked == true) EnsureWaveformDecoded(); // 2026-07-18
-            UpdateMusicUrlLoadButtonState(); // 2026-07-27: 読込完了で「読込」ボタンをグレーアウトする
+            UpdateMusicUrlLoadButtonState(); // 2026-07-26: 読込完了で「読込」ボタンをグレーアウトする
         }
         catch (Exception ex)
         {
@@ -1166,8 +1183,20 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>2026-07-26: Open()は非同期のため、実際に全体長(Duration)が判明したタイミングで拾って
+    /// ChartCanvas/ChartMinimapへ反映する(ノート未配置でも曲の長さぶんスクロールできるようにするための値)。</summary>
+    private void AudioPlayer_MediaOpened()
+    {
+        double? totalFrames = _audioPlayer.Duration is { } d ? d.TotalSeconds * 60.0 : null;
+        Canvas.AudioTotalFrames = totalFrames;
+        Minimap.AudioTotalFrames = totalFrames;
+        Canvas.InvalidateMeasure();
+        Canvas.InvalidateVisual();
+        Minimap.InvalidateVisual();
+    }
+
     // =====================================================================
-    // musicURLからの楽曲取得(2026-07-27確定仕様)。環境設定でON時のみ有効。指定フォルダを
+    // musicURLからの楽曲取得(2026-07-26確定仕様)。環境設定でON時のみ有効。指定フォルダを
     // カレントディレクトリとして扱い、そこからProject.MusicUrlのファイル名で楽曲を読み込む。
     // =====================================================================
 
@@ -1391,7 +1420,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>2026-08-05: 予期しない例外を検出した際の緊急保存(App.OnDispatcherUnhandledException/
+    /// <summary>2026-07-26: 予期しない例外を検出した際の緊急保存(App.OnDispatcherUnhandledException/
     /// AppDomain.UnhandledExceptionから呼ばれる)。変更のある全セッションを自動保存スロットへ
     /// 書き込む(AutoSaveTimer_Tickと同じ仕組みを流用)。AutoSaveEnabled設定に関わらず常に実行する
     /// (緊急時なので環境設定は問わない)。戻り値は実際に保存できたセッション数。</summary>
@@ -1451,7 +1480,7 @@ public partial class MainWindow : Window
 
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
     {
-        if (_document is null || !_audioPlayer.NaturalDuration.HasTimeSpan) return;
+        if (_document is null || _audioPlayer.Duration is null) return;
         var pos = _audioPlayer.Position;
         AudioTimeText.Text = pos.ToString(@"mm\:ss\.ff");
 
@@ -1459,6 +1488,9 @@ public partial class MainWindow : Window
         var engine = _document.Project.CreateTimingEngine();
         Canvas.PlaybackTick = engine.FrameToTick(frame);
         Canvas.InvalidateVisual();
+
+        // 2026-07-26f: ハンドクラップの発音判定・PCM重ね合わせは_audioPlayer(NAudioBgmPlayer)自身の
+        // レンダースレッド内で直接行われるため、ここでの処理は不要になった(StartVisualTest参照)。
 
         // 2026-07-17f: 目視テスト中の追従スクロール(未解決事項§2-1、方式はAppSettingsで選択)
         // 2026-07-22: 譜面ビューReverse時はラインが画面上方向へ進むため、寄せる側の端を入れ替える
@@ -1494,7 +1526,7 @@ public partial class MainWindow : Window
 
     /// <summary>選択中の難易度タブを閉じる(2026-07-17: 「タブを閉じるができない」要望対応)。
     /// 最低1タブは残す(0件になるとCurrentTab等が参照できなくなるため)。</summary>
-    /// <summary>「新規譜面を追加」ボタン(2026-08-02要望対応)。新規プロジェクト作成時と同じダイアログ
+    /// <summary>「新規譜面を追加」ボタン(2026-07-26要望対応)。新規プロジェクト作成時と同じダイアログ
     /// (NewProjectDialog)を再利用し、キー種・難易度名を指定してカレントプロジェクトへタブを追加する。
     /// BPMはプロジェクト全体で共通の値のためダイアログ上の入力は使用しない(タブ追加では変更しない)。</summary>
     private void AddDifficultyTab_Click(object sender, RoutedEventArgs e)
@@ -1634,10 +1666,10 @@ public partial class MainWindow : Window
         Canvas.InvalidateVisual();
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
-        RefreshMacroList(); // 2026-07-30: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
-        RefreshAnalysisPanel(); // 2026-08-05: タブが変わればTotalRating等も変わるため結果表示をリセットする
+        RefreshMacroList(); // 2026-07-26: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
+        RefreshAnalysisPanel(); // 2026-07-26: タブが変わればTotalRating等も変わるため結果表示をリセットする
 
-        // 2026-08-02: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
+        // 2026-07-26: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
         // カテゴリのキー種別一覧で設定した値。一覧に無いキー種はOFF扱い)。PlaytestReverseCheck.IsChecked代入は
         // PlaytestSetting_Changed経由でAppSettings.PlaytestReverseへも反映・保存される。
         bool reverseDefault = _appSettings.PlaytestReverseByKeyType.TryGetValue(_document.CurrentTab.KeyTypeId, out var rev) && rev;
@@ -1660,7 +1692,7 @@ public partial class MainWindow : Window
     private static List<string> DefaultSetColors(int groupCount) =>
         Enumerable.Range(0, groupCount).Select(i => DefaultSetColorPalette[i % DefaultSetColorPalette.Length]).ToList();
 
-    /// <summary>2026-07-27確定仕様: frzColorは色グループ数に関わらず常に4スロット固定
+    /// <summary>2026-07-26確定仕様: frzColorは色グループ数に関わらず常に4スロット固定
     /// (danoniplus本体の仕様通り。従来の「色グループ数×4」は誤りだった)。</summary>
     private static List<string> DefaultFrzColors() => [.. DefaultFrzColorSlots];
 
@@ -1673,7 +1705,7 @@ public partial class MainWindow : Window
         return tab.SetColorOverride;
     }
 
-    /// <summary>tab.FrzColorOverrideを常に4件になるよう保証し、そのリスト参照を返す(2026-07-27:
+    /// <summary>tab.FrzColorOverrideを常に4件になるよう保証し、そのリスト参照を返す(2026-07-26:
     /// 色グループ数に関わらず固定4スロット)。</summary>
     private static List<string> EnsureFrzColors(DifficultyTab tab)
     {
@@ -1748,7 +1780,7 @@ public partial class MainWindow : Window
 
         bool editable = isFirstTab || !useCommon;
         var setSource = editable && !isFirstTab ? EnsureSetColors(currentTab, groupCount) : EnsureSetColors(tab0, groupCount);
-        // 2026-07-27: frzColorは色グループ数に関わらず常に4スロット固定の1セットのみ(danoniplus本体の仕様通り)
+        // 2026-07-26: frzColorは色グループ数に関わらず常に4スロット固定の1セットのみ(danoniplus本体の仕様通り)
         var frzSource = editable && !isFirstTab ? EnsureFrzColors(currentTab) : EnsureFrzColors(tab0);
 
         for (int g = 0; g < groupCount; g++)
@@ -1769,7 +1801,7 @@ public partial class MainWindow : Window
         }
         bool frzEditable = editable && !defaultFrzColorUse;
 
-        // 2026-07-27: frzColorは色グループの概念を持たないため、色グループ見出しなしで4スロットのみ表示する
+        // 2026-07-26: frzColorは色グループの概念を持たないため、色グループ見出しなしで4スロットのみ表示する
         for (int s = 0; s < 4; s++)
             AddColorField(FrzColorPanel, FrzSlotLabels[s], s < frzSource.Count ? frzSource[s] : "", frzEditable, ("frz", -1, s));
 
@@ -1794,7 +1826,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            // 2026-07-27: frzColorは色グループを持たない固定4スロットのため、slotがそのままインデックス
+            // 2026-07-26: frzColorは色グループを持たない固定4スロットのため、slotがそのままインデックス
             if (targetTab.FrzColorOverride is null || slot >= targetTab.FrzColorOverride.Count) return;
             if (targetTab.FrzColorOverride[slot] == box.Text) return;
             targetTab.FrzColorOverride[slot] = box.Text;
@@ -1836,7 +1868,7 @@ public partial class MainWindow : Window
         ExtraHeadersPanel.Children.Clear();
         var headers = _document.Project.ExtraHeaders;
 
-        // 2026-07-27: チェックボックスの羅列で視認性が悪いとの要望対応。大項目(Category)ごとに
+        // 2026-07-26: チェックボックスの羅列で視認性が悪いとの要望対応。大項目(Category)ごとに
         // Expanderで折りたたむ。既定では「そのカテゴリ内に既に設定済みの項目が1つでもあれば展開、
         // 無ければ折りたたみ」とし、見落とし防止と一覧性のバランスを取る。
         string? lastCategory = null;
@@ -2004,7 +2036,7 @@ public partial class MainWindow : Window
     // =====================================================================
 
     /// <summary>ダンおに本体の「レベル計算ツール++」アルゴリズム(danoni_main.jsのcalcLevelを移植した
-    /// DifficultyLevelCalculator、2026-08-01)で現在タブのツール値(難易度、参考値)を算出する。
+    /// DifficultyLevelCalculator、2026-07-26)で現在タブのツール値(難易度、参考値)を算出する。
     /// フレーム値は本体の実データと同じ整数フレームに丸めてから渡す(TicksPerBeat等tick単位のままでは
     /// 「10フレーム未満」等の閾値判定が本体と一致しなくなるため)。</summary>
     private string CalculateToolValueLabel(DifficultyTab tab)
@@ -2054,7 +2086,7 @@ public partial class MainWindow : Window
         UpdateRequiredFieldWarning(MusicTitleBox, MusicTitleWarning);
         UpdateRequiredFieldWarning(DifficultyNameBox, DifficultyNameWarning);
 
-        // 2026-07-27: ドキュメント読込・タブ切替のたびに「読込」ボタンの活性状態をリセットする
+        // 2026-07-26: ドキュメント読込・タブ切替のたびに「読込」ボタンの活性状態をリセットする
         // (このビューでmusicURLを編集していない状態からスタート)
         _musicUrlDirty = false;
         UpdateMusicUrlLoadButtonState();
@@ -2091,7 +2123,7 @@ public partial class MainWindow : Window
         else if (box == MusicUrlBox)
         {
             p.MusicUrl = box.Text;
-            // 2026-07-27: musicURLを編集したら「読込」ボタンを有効化する(機能ON・未読込が前提)
+            // 2026-07-26: musicURLを編集したら「読込」ボタンを有効化する(機能ON・未読込が前提)
             _musicUrlDirty = true;
             UpdateMusicUrlLoadButtonState();
         }
@@ -2207,7 +2239,7 @@ public partial class MainWindow : Window
             ObjectMultiSelectText.Text = $"{sel.Count}個のオブジェクトを選択中(複数選択時は個別編集非対応。移動・削除はキャンバス上の操作をご利用くださいませ)";
             ObjectMultiSelectText.Visibility = Visibility.Visible;
             ObjectDetailPanel.Visibility = Visibility.Collapsed;
-            // 2026-07-31: 複数選択時は右パネルを自動切替しない(単体オブジェクトクリック時のみ切替える方針)。
+            // 2026-07-26: 複数選択時は右パネルを自動切替しない(単体オブジェクトクリック時のみ切替える方針)。
             // 複数選択のたびに③タブへ切り替わるのが煩わしいというフィードバックへの対応。
             return;
         }
@@ -2370,7 +2402,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>右パネルの単一行入力欄でEnterキーを押した際、LostFocusを待たずに即座に値を確定させる
-    /// (2026-08-04要望対応)。フォーカスを次のコントロールへ移すことで既存のLostFocusハンドラを
+    /// (2026-07-26要望対応)。フォーカスを次のコントロールへ移すことで既存のLostFocusハンドラを
     /// そのまま起動させる方式(コミット処理自体は複製しない)。複数行入力(AcceptsReturn=true、
     /// ObjectCommentBox等)は対象外とし、Enterは通常通り改行として機能させる。</summary>
     private void CommitOnEnter_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -2487,7 +2519,7 @@ public partial class MainWindow : Window
     private static bool IsAnnotatableKind(ObjectKind kind) =>
         kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody;
 
-    /// <summary>拍子(TimeSignature)の分子/分母編集(2026-08-03要望対応)。既存のPlaceTimeSignatureActionは
+    /// <summary>拍子(TimeSignature)の分子/分母編集(2026-07-26要望対応)。既存のPlaceTimeSignatureActionは
     /// 「同じ小節番号の既存拍子を削除→新しい拍子を追加」を1操作でUndo対応しているため、そのまま
     /// 「編集」用途にも流用できる(小節番号自体は不変、値だけが変わる)。</summary>
     private void ObjectTimeSignature_LostFocus(object sender, RoutedEventArgs e)
@@ -2710,7 +2742,11 @@ public partial class MainWindow : Window
     }
 
     private void SnapToggle_Changed(object sender, RoutedEventArgs e) => ApplySnapToDocument();
-    private void SnapDivision_Changed(object sender, SelectionChangedEventArgs e) => ApplySnapToDocument();
+    private void SnapDivision_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        ApplySnapToDocument();
+        SnapKeyboardCursorToNearestGrid(); // 2026-07-26: 上部パネルのプルダウンからの分解能変更も対象に含める
+    }
 
     private void ApplySnapToDocument()
     {
@@ -2754,7 +2790,24 @@ public partial class MainWindow : Window
         SnapEnabledCheck.IsChecked = true;
         _document.Snap.Division = division.Value;
         SnapDivisionCombo.SelectedItem = division.Value;
+        SnapKeyboardCursorToNearestGrid();
         Canvas.InvalidateVisual();
+    }
+
+    /// <summary>キーボードモード中は「再生開始ライン」(PlaybackStartFrame)がそのままカーソル位置を
+    /// 兼ねている。グリッド分解能を変えた瞬間、カーソルが旧グリッドには沿っていても新グリッドには
+    /// 沿っていない「半端な位置」のまま取り残されてしまうため、常に現在位置から最も近い新グリッド線へ
+    /// スナップし直す(2026-07-26要望対応、Ctrl+数字ショートカット/上部パネルのプルダウン両方から呼ぶ)。</summary>
+    private void SnapKeyboardCursorToNearestGrid()
+    {
+        if (_document is null || !_keyboardModeActive || _document.Project.PlaybackStartFrame is not { } f) return;
+        var engine = _document.Project.CreateTimingEngine();
+        long cur = (long)Math.Round(engine.FrameToTick(f));
+        long step = _document.Snap.GridTicks;
+        long snapped = Math.Max(0, (long)Math.Round((double)cur / step) * step);
+        _document.Project.PlaybackStartFrame = engine.TickToFrame(snapped);
+        ScrollKeyboardCursorIntoView();
+        _document.NotifyChanged(markModified: false);
     }
 
     // =====================================================================
@@ -2766,14 +2819,14 @@ public partial class MainWindow : Window
         var rect = new Rect(ChartScrollViewer.HorizontalOffset, ChartScrollViewer.VerticalOffset,
             ChartScrollViewer.ViewportWidth, ChartScrollViewer.ViewportHeight);
         Canvas.UpdateViewport(rect);
-        Minimap.InvalidateVisual(); // 2026-08-05: 現在の表示範囲インジケータを最新化
+        Minimap.InvalidateVisual(); // 2026-07-26: 現在の表示範囲インジケータを最新化
     }
 
     // =====================================================================
     // ショートカット(仕様書13章): Ctrl+S/E/Z/Y
     // =====================================================================
 
-    /// <summary>統計情報(2026-08-05、Undo/Redo実行回数、両方合計)。実際に履歴を消費した場合
+    /// <summary>統計情報(2026-07-26、Undo/Redo実行回数、両方合計)。実際に履歴を消費した場合
     /// (何も無い状態でCtrl+Z/Yを空押ししただけの場合は増やさない)のみカウントする。</summary>
     private void RecordUndoRedoStatIfChanged(bool didSomething)
     {
@@ -2783,7 +2836,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>単独のAltキー押下/解放を握りつぶし、メニューへのアクセスキーフォーカス移動を防ぐ
-    /// (2026-08-06、Alt+ホイールで横ズーム後にAltを離すと「ファイル(F)」メニューへフォーカスが
+    /// (2026-07-26、Alt+ホイールで横ズーム後にAltを離すと「ファイル(F)」メニューへフォーカスが
     /// 飛んでしまう不具合対応)。他のキーと組み合わせている場合(Ctrl+Alt+◯◯等)はここでは何もしない。</summary>
     private static void MainWindow_SuppressLoneAltMenuFocus(object sender, KeyEventArgs e)
     {
@@ -2819,13 +2872,15 @@ public partial class MainWindow : Window
             else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
             else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
             // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
-            // 2026-07-26: 譜面ビューReverse時は「画面上の見た目方向」を維持するため時間方向を反転する
-            // (←=常に画面上方向、→=常に画面下方向。修飾なし←/→やキーボードモードの全移動キーと同一方針。
-            // HandleKeyboardModeKeyの解説コメント参照)。
+            // 2026-07-26: 既定(環境設定「表示」のKeyboardModeLeftRightMode="visual")では譜面ビューReverse時に
+            // 「画面上の見た目方向」を維持するため時間方向を反転する(←=常に画面上方向、→=常に画面下方向。
+            // 修飾なし←/→やキーボードモードの全移動キーと同一方針。HandleKeyboardModeKeyの解説コメント参照)。
+            // 2026-07-26: "time"モードでは常に←=後退・→=前進に固定し、Reverse中は画面上の方向が逆になる。
             else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Left)
             {
                 int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
-                _keyboardMode.MoveCursorByMeasure(_appSettings.ChartViewReverse ? amount : -amount);
+                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
+                _keyboardMode.MoveCursorByMeasure(timeMode ? -amount : (_appSettings.ChartViewReverse ? amount : -amount));
                 ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
@@ -2833,7 +2888,8 @@ public partial class MainWindow : Window
             else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
             {
                 int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
-                _keyboardMode.MoveCursorByMeasure(_appSettings.ChartViewReverse ? -amount : amount);
+                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
+                _keyboardMode.MoveCursorByMeasure(timeMode ? amount : (_appSettings.ChartViewReverse ? -amount : amount));
                 ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
                 e.Handled = true;
@@ -2905,7 +2961,7 @@ public partial class MainWindow : Window
                 ToggleVisualTest();
                 e.Handled = true; // 再生ボタン等のフォーカス誤発火防止(要望メモ07-15の注意点)
                 break;
-            case Key.Escape: // 選択解除(2026-08-04要望対応: マウス操作だけでは解除手段が無かったため新設)
+            case Key.Escape: // 選択解除(2026-07-26要望対応: マウス操作だけでは解除手段が無かったため新設)
                 if (_controller is not null && _controller.ClearSelection()) Canvas.InvalidateVisual();
                 e.Handled = true;
                 break;
@@ -2981,7 +3037,7 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    // 右パネル: マクロ(レーン入替マクロ、仕様書11章、2026-07-30)
+    // 右パネル: マクロ(レーン入替マクロ、仕様書11章、2026-07-26)
     // =====================================================================
 
     /// <summary>マクロ一覧の表示用ラッパー(「キー種 - マクロ名」形式、テンプレート一覧と同じ書式)</summary>
@@ -2993,7 +3049,7 @@ public partial class MainWindow : Window
     private void SaveMacros() => LaneSwapMacroFile.Save(AppPaths.LaneSwapMacroFilePath, _macros);
 
     /// <summary>右パネルの一覧は「現在開いている難易度タブのキー種に対応するものだけ」表示する
-    /// (2026-07-30要望。タブ切替でキー種が変わればここも切り替わる)。ドキュメント未オープン時は
+    /// (2026-07-26要望。タブ切替でキー種が変わればここも切り替わる)。ドキュメント未オープン時は
     /// キー種を判定できないため空表示にする。</summary>
     private void RefreshMacroList()
     {
@@ -3066,20 +3122,20 @@ public partial class MainWindow : Window
     }
 
     /// <summary>マクロ実行(仕様書11.1)。現在の難易度タブへ順列を適用する。1操作としてUndo履歴に積む
-    /// (ユーザー確定仕様、2026-07-30)。</summary>
+    /// (ユーザー確定仕様、2026-07-26)。</summary>
     private void MacroRunButton_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null || MacroListBox.SelectedItem is not MacroListEntry entry) return;
         _document.Execute(new ApplyLaneSwapMacroAction(entry.Macro.LaneMapping, entry.Macro.MacroName));
         StatusText.Text = $"マクロ実行: {entry.Macro.MacroName}";
-        _appSettings.StatMacroRunCount++; // 2026-08-05: 統計情報
+        _appSettings.StatMacroRunCount++; // 2026-07-26: 統計情報
         _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
     // =====================================================================
-    // 右パネル: 分析(ITTNアナライザー/おにスター、2026-08-05、隠し機能、
+    // 右パネル: 分析(ITTNアナライザー/おにスター、2026-07-26、隠し機能、
     // docs/progress_and_tbd_2026-07-25.md §2-1/§2-2対応)
-    // 2026-08-05要望対応: 実績進捗・解禁条件は右パネルに一切表示しない(統計情報ウィンドウ側で
+    // 2026-07-26要望対応: 実績進捗・解禁条件は右パネルに一切表示しない(統計情報ウィンドウ側で
     // 閲覧する)。右パネルは「未解禁の間はタブごと非表示、解禁したら普通に使えるだけ」のシンプルな
     // 二値表示にする(譜面編集に必要なものだけを表示する方針)。
     // =====================================================================
@@ -3118,7 +3174,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>分析タブの表示状態を、AppSettingsの解禁カウンタに応じて更新する。アナライザーが
-    /// 未解禁の間はタブ自体を非表示にする(進捗・解禁条件は右パネルに表示しない方針、2026-08-05)。
+    /// 未解禁の間はタブ自体を非表示にする(進捗・解禁条件は右パネルに表示しない方針、2026-07-26)。
     /// タブ切替・ドキュメント読込のたびに呼ばれるため、算出結果自体は都度クリアする
     /// (タブが変われば対象の譜面が変わり、前回の結果は無意味になるため)。</summary>
     private void RefreshAnalysisPanel()
@@ -3129,7 +3185,7 @@ public partial class MainWindow : Window
         OniStarResultText.Text = "？？？";
     }
 
-    /// <summary>「分析を実行」ボタン(2026-08-05)。現在の難易度タブをIttnAnalyzer(analyze.js忠実移植、
+    /// <summary>「分析を実行」ボタン(2026-07-26)。現在の難易度タブをIttnAnalyzer(analyze.js忠実移植、
     /// docs/progress_and_tbd_2026-07-25.md §1-2/1-3)で解析し、レーダー6軸・JACK/ALT/MOV・
     /// baseRating/totalRating/toolScaleRatingをそのまま表示する。</summary>
     private void AnalyzerRunButton_Click(object sender, RoutedEventArgs e)
@@ -3157,11 +3213,11 @@ public partial class MainWindow : Window
             $"toolScaleRating : {result.ToolScaleRating:F2}";
     }
 
-    /// <summary>「算出・再算出」ボタン(2026-08-05)。押すたびにAppSettings.StatOniStarRecalcPressesを
+    /// <summary>「算出・再算出」ボタン(2026-07-26)。押すたびにAppSettings.StatOniStarRecalcPressesを
     /// 加算・保存し、解禁閾値(10回)に達していればIttnAnalyzer→OniStarEstimatorで統一スケールの
     /// 推定値(60%信頼区間つき)を表示する。未解禁の間は押しても結果は表示しない
     /// (進捗も表示しない、隠し機能、docs/progress_and_tbd_2026-07-25.md §2-2)。
-    /// 2026-08-05要望対応: ☆/★表記への変換は行わない(統一スケールの数値をそのまま表示、
+    /// 2026-07-26要望対応: ☆/★表記への変換は行わない(統一スケールの数値をそのまま表示、
     /// 最終的な表記は今後の「おにスター」表記側で行う想定)。</summary>
     private void OniStarRecalcButton_Click(object sender, RoutedEventArgs e)
     {
@@ -3517,11 +3573,12 @@ public partial class MainWindow : Window
     {
         _keyboardModeActive = !_keyboardModeActive;
         KeyboardModeToggle.IsChecked = _keyboardModeActive;
+        _keyboardSelectionAnchorTick = null; // 2026-07-26: モード切替時は範囲選択の状態を持ち越さない
         if (_keyboardModeActive) _keyboardMode?.EnterMode();
         Canvas.KeyboardModeActive = _keyboardModeActive; // 2026-07-22: レーンラベル2行目表示の切替
         Canvas.InvalidateVisual();
         StatusText.Text = _keyboardModeActive
-            ? "キーボードモード: ON(↑=後退/↓=前進、Space=前進/B=後退、←=1小節戻る(小節頭なら1つ前へ)、→=1小節先へ、Ctrl+←/→=2小節、Shift+Ctrl+←/→=4小節、Backspaceでカーソル位置削除。Ctrl+,で解除)"
+            ? "キーボードモード: ON(↑=後退/↓=前進、Space=前進/B=後退、←=1小節戻る(小節頭なら1つ前へ)、→=1小節先へ、Ctrl+←/→=2小節、Shift+Ctrl+←/→=4小節、Shift+移動で範囲内の全レーンを選択、Enterで目視テスト、Backspaceでカーソル位置削除。Ctrl+,で解除)"
             : "キーボードモード: OFF";
     }
 
@@ -3529,7 +3586,7 @@ public partial class MainWindow : Window
     /// 渡してはいけない)場合はtrueを返す。</summary>
     /// <summary>キーボードモード中、現在位置ライン(PlaybackStartFrame)が画面外に出た場合、
     /// tick0側(通常表示=画面上部、Reverse表示=画面下部)から1小節分進んだ位置へラインが来るよう
-    /// スクロールする(2026-07-27確定仕様)。既に画面内に収まっている間は何もしない。
+    /// スクロールする(2026-07-26確定仕様)。既に画面内に収まっている間は何もしない。
     /// 1小節分の高さはカーソル位置が属する小節の拍子(SignatureAt)を基準に算出する。</summary>
     private void ScrollKeyboardCursorIntoView()
     {
@@ -3566,48 +3623,84 @@ public partial class MainWindow : Window
         // - DAW風2段階の「戻る」挙動(小節途中→現在の小節頭、小節頭→1つ前の小節頭)は
         //   「時間的に戻る側のキー」に付随する(通常時=←、Reverse時=→)。
         bool rev = _appSettings.ChartViewReverse;
+        // 2026-07-26: Space/Bキーの方向解釈方式(環境設定「表示」)。既定は従来通り見た目方向固定
+        // ("visual")。"time"を選ぶと時間(tick)基準に固定され、Reverse中は画面上の方向が逆になる
+        // (前進=常に画面上、後退=常に画面下)。↑/↓は対象外(常に見た目方向固定のまま)。
+        bool spaceBTimeMode = _appSettings.KeyboardModeSpaceBMode == "time";
+        // 2026-07-26: ←/→キーの方向解釈方式(環境設定「表示」、Space/Bと同じ考え方)。
+        bool leftRightTimeMode = _appSettings.KeyboardModeLeftRightMode == "time";
+        // 2026-07-26: Shift+前進後退キーで「移動元〜移動先」の範囲にある全レーンのノート・フリーズを
+        // 選択する(要望対応)。Shiftを押したまま連続で移動すると、最初に押した瞬間の位置を
+        // アンカーに固定したまま範囲を伸縮させる(通常のテキストエディタのShift+矢印と同じ挙動)。
+        // Shiftを離して(=修飾無しで)移動した場合は、選択そのものは維持したまま「範囲選択モード」
+        // (アンカー)だけを終了する(2026-07-26再要望対応: 選択済みオブジェクトを保ったまま
+        // 前進後退できるように、という指示でClearSelection呼び出しを撤廃)。選択を明示的に解除したい
+        // 場合はEscape(既存機能)を使う。
+        bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        void MoveCursorTracked(Action move)
+        {
+            long before = _keyboardMode.CursorTick;
+            move();
+            if (shift)
+            {
+                _keyboardSelectionAnchorTick ??= before;
+                _controller?.SelectRangeAllLanes(_keyboardSelectionAnchorTick.Value, _keyboardMode.CursorTick);
+            }
+            else if (_keyboardSelectionAnchorTick is not null)
+            {
+                _keyboardSelectionAnchorTick = null; // アンカーのみ解除、選択済みオブジェクトはそのまま維持
+            }
+            ScrollKeyboardCursorIntoView();
+            Canvas.InvalidateVisual();
+        }
         switch (e.Key)
         {
             case Key.Up: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
-                _keyboardMode.MoveCursor(forward: rev);
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: rev));
                 e.Handled = true;
                 return true;
-            case Key.Space: // 画面下へ1グリッド(通常=進む、Reverse=戻る)
-                _keyboardMode.MoveCursor(forward: !rev);
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+            case Key.Space: // 既定(見た目固定): 画面下へ1グリッド(通常=進む、Reverse=戻る)。
+                            // "time"モード時は常に前進(Reverse中は画面上へ)。
+                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: spaceBTimeMode || !rev));
                 e.Handled = true;
                 return true;
-            case Key.Down: // 画面下へ1グリッド(通常=進む、Reverse=戻る)
-                _keyboardMode.MoveCursor(forward: !rev);
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+            case Key.Down: // 画面下へ1グリッド(通常=進む、Reverse=戻る、Space/Bのモード設定の対象外)
+                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !rev));
                 e.Handled = true;
                 return true;
-            case Key.B: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
-                _keyboardMode.MoveCursor(forward: rev);
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+            case Key.B: // 既定(見た目固定): 画面上へ1グリッド(通常=戻る、Reverse=進む)。
+                        // "time"モード時は常に後退(Reverse中は画面下へ)。
+                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !spaceBTimeMode && rev));
                 e.Handled = true;
                 return true;
-            case Key.Left: // 2026-07-22: 画面上へ1小節移動(修飾なし)。通常=戻る(2段階挙動)、Reverse=進む
-                if (rev) _keyboardMode.MoveCursorByMeasure(1);
-                else _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+            case Key.Left: // 既定(見た目固定): 画面上へ1小節移動(通常=戻る[2段階]、Reverse=進む)。
+                            // "time"モード時は常に後退(2段階、Reverse中は画面下方向へ)。
+                MoveCursorTracked(() =>
+                {
+                    bool timeBackward = leftRightTimeMode || !rev;
+                    if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                    else _keyboardMode.MoveCursorByMeasure(1);
+                });
                 e.Handled = true;
                 return true;
-            case Key.Right: // 2026-07-21: 画面下へ1小節移動(修飾なし)。通常=進む、Reverse=戻る(2段階挙動)
-                if (rev) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
-                else _keyboardMode.MoveCursorByMeasure(1);
-                ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+            case Key.Right: // 既定(見た目固定): 画面下へ1小節移動(通常=進む、Reverse=戻る[2段階])。
+                            // "time"モード時は常に前進(Reverse中は画面上方向へ)。
+                MoveCursorTracked(() =>
+                {
+                    bool timeBackward = !leftRightTimeMode && rev;
+                    if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                    else _keyboardMode.MoveCursorByMeasure(1);
+                });
                 e.Handled = true;
                 return true;
             case Key.Back:
                 if (_keyboardMode.DeleteAtCursor()) Canvas.InvalidateVisual();
+                e.Handled = true;
+                return true;
+            case Key.Enter: // 2026-07-26: キーボードモード中の目視テスト開始/終了ボタン
+                // (マウスモードのSpaceに相当。キーボードモード中はSpaceがカーソル前進に
+                // 割り当て済みのため、代わりにEnterへ割り当てる)。
+                ToggleVisualTest();
                 e.Handled = true;
                 return true;
         }
@@ -3618,13 +3711,12 @@ public partial class MainWindow : Window
         var laneMap = KeyLabelMapper.BuildKeyMap(template.Lanes.Count, l => template.Lanes[l].KeyboardInputKeys);
         if (laneMap.TryGetValue(e.Key, out int lane))
         {
-            bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
             bool changed = shift
                 ? _keyboardMode.ToggleFreezeAtCursor(lane, DateTime.UtcNow)
                 : _keyboardMode.ToggleNoteAtCursor(lane, DateTime.UtcNow);
             if (changed)
             {
-                // 2026-07-27: ノート/フリーズ入力でカーソルが進んだ場合も画面外に出うるためスクロール判定
+                // 2026-07-26: ノート/フリーズ入力でカーソルが進んだ場合も画面外に出うるためスクロール判定
                 ScrollKeyboardCursorIntoView();
                 Canvas.InvalidateVisual();
             }
@@ -3694,6 +3786,21 @@ public partial class MainWindow : Window
             return;
         }
         double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+
+        // 2026-07-26f: ハンドクラップ用にノート出現frame一覧を作り直し、_audioPlayer(NAudioBgmPlayer)へ
+        // 登録する(発音判定・PCM重ね合わせはBGMのレンダースレッド内で直接行われる)。
+        if (_appSettings.HandClapEnabled && HandClapPlayer.Available)
+        {
+            var engine = _document.Project.CreateTimingEngine();
+            var allFrames = HandClapPlayer.ComputeNoteFrames(_document.CurrentTab, engine);
+            var frames = allFrames.Where(f => f >= startFrame).ToList();
+            _audioPlayer.SetClapSchedule(HandClapPlayer, frames, _appSettings.HandClapVolume);
+        }
+        else
+        {
+            _audioPlayer.SetClapSchedule(null, null, _appSettings.HandClapVolume);
+        }
+
         _audioPlayer.Position = TimeSpan.FromSeconds(startFrame / 60.0);
         _audioPlayer.Play();
         _playbackTimer.Start();
@@ -3711,6 +3818,7 @@ public partial class MainWindow : Window
         Canvas.PlaybackTick = null;
         Canvas.InvalidateVisual();
         AudioTimeText.Text = "-";
+        _audioPlayer.SetClapSchedule(null, null, _appSettings.HandClapVolume); // 2026-07-26f
 
         if (!returnToStart || _document is null) return;
         ReturnScrollToStartFrame();
@@ -3754,6 +3862,46 @@ public partial class MainWindow : Window
         _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
+    // =====================================================================
+    // ノート音
+    // =====================================================================
+
+    /// <summary>環境設定「テスト再生 > 全般」で選択中の音声ファイル(./sounds内)を一度だけ
+    /// 読み込むプレイヤー(遅延初期化)。選択ファイルが環境設定で変更された場合は
+    /// OpenPreferences側でこのキャッシュをnullへ戻し、次回アクセス時に再読込させる。</summary>
+    private HandClapPlayer? _handClapPlayer;
+    private HandClapPlayer HandClapPlayer
+    {
+        get
+        {
+            if (_handClapPlayer is not null) return _handClapPlayer;
+            var soundsDir = AppPaths.FindAssetDir("sounds");
+            var path = soundsDir is null ? "" : Path.Combine(soundsDir, _appSettings.NoteSoundFileName);
+            _handClapPlayer = new HandClapPlayer(path);
+            return _handClapPlayer;
+        }
+    }
+
+    private void HandClap_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _appSettings.HandClapEnabled = HandClapCheck.IsChecked == true;
+
+        if (double.TryParse(HandClapVolumeBox.Text, out var pct))
+        {
+            pct = Math.Clamp(pct, 0, 100);
+            _appSettings.HandClapVolume = pct / 100.0;
+            HandClapVolumeBox.Text = Math.Round(pct).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            HandClapVolumeBox.Text = Math.Round(_appSettings.HandClapVolume * 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        _audioPlayer.SetClapVolume(_appSettings.HandClapVolume); // 2026-07-26f: 即時反映
+
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
     /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)</summary>
     private static double PlaybackSpeedValues_Nearest(double v) => Math.Clamp(Math.Round(v * 10) / 10, 0.1, 2.0);
 
@@ -3766,7 +3914,7 @@ public partial class MainWindow : Window
         _audioPlayer.SpeedRatio = v; // 目視テスト側。プレイテスト側はStartPlaytest時に都度渡す
     }
 
-    /// <summary>音量(0〜100%)を確定させる共通処理(2026-07-27)。スライダー・数値入力欄どちらの
+    /// <summary>音量(0〜100%)を確定させる共通処理(2026-07-26)。スライダー・数値入力欄どちらの
     /// 変更でも呼ばれ、もう片方への反映・MediaPlayer.Volumeへの適用・設定保存をまとめて行う。</summary>
     private void ApplyVolumePercent(double percent)
     {
@@ -3877,7 +4025,7 @@ public partial class MainWindow : Window
         }
         if (_visualTestActive) StopVisualTest(returnToStart: false); // 目視テスト中なら止めてから
 
-        _appSettings.StatPlaytestLaunchCount++; // 2026-08-05: 統計情報
+        _appSettings.StatPlaytestLaunchCount++; // 2026-07-26: 統計情報
         _appSettings.Save(AppPaths.SettingsFilePath);
 
         var win = new PlaytestWindow(
@@ -3889,15 +4037,14 @@ public partial class MainWindow : Window
             _appSettings.PlaytestWindowScale,
             _appSettings.PlaytestAutoPlay,
             _appSettings.PlaytestQuitKeyDelete,
-            _appSettings.PlaytestQuitKeyBackSpace,
             _appSettings.PlaytestQuitKeyEscape,
             _appSettings.PlaybackSpeed,
             _appSettings.PlaybackVolume, // 2026-07-21: UIの音量設定をプレイテストにも反映
-            _appSettings) // 2026-08-03: ウィンドウ幅設定(環境設定「プレイテスト」)の解決に使う
+            _appSettings) // 2026-07-26: ウィンドウ幅設定(環境設定「プレイテスト」)の解決に使う
         { Owner = this };
         win.ShowDialog();
 
-        // 2026-08-05: 統計情報(手動プレイ中に打鍵で消えたノート数の累計)
+        // 2026-07-26: 統計情報(手動プレイ中に打鍵で消えたノート数の累計)
         if (win.NotesClearedByKeypress > 0)
         {
             _appSettings.StatPlaytestNotesCleared += win.NotesClearedByKeypress;

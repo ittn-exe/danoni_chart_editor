@@ -5,7 +5,7 @@ using DanoniEditor.Core.Models;
 
 namespace DanoniEditor.App;
 
-/// <summary>難易度名の決め方(2026-08-05)</summary>
+/// <summary>難易度名の決め方(2026-07-26)</summary>
 internal enum FujiDifficultyNameMode { SetLater, SetNow, FromDifData }
 
 /// <summary>難易度名選択の結果。Name/InitialSpeedはSetLater時は空文字/null。</summary>
@@ -16,12 +16,12 @@ internal readonly record struct FujiImportSetupResult(string KeyTypeId, FujiDiff
 
 /// <summary>
 /// FUJIインポート時、キー種と難易度名を1つのウィンドウでまとめて決めるダイアログ
-/// (2026-08-05再設計、ユーザー確定仕様「1回で済ませたい」)。
+/// (2026-07-26再設計、ユーザー確定仕様「1回で済ませたい」)。
 /// - キー種: difDataからは完全に無視する(difData[0]の表記は一切参照しない)。
 ///   テンプレートフォルダに存在するキー種一覧からユーザーが選んだ値のみを取り込み処理に用いる。
 /// - 難易度名: difDataの全行(difData[1])をキー種欄の値に関わらず候補として拾い、
 ///   「後で設定する」(空のまま取り込み)・「今設定する」(選択中のみ現れる入力欄に手入力)と
-///   並べて選ばせる(2026-08-06: キー種による絞り込みは廃止)。
+///   並べて選ばせる(2026-07-26: キー種による絞り込みは廃止)。
 /// </summary>
 internal static class FujiImportSetupDialog
 {
@@ -70,7 +70,7 @@ internal static class FujiImportSetupDialog
 
         void RefreshNameItems()
         {
-            // 2026-08-06: キー種(difData[0])は取り込み処理では完全に無視する(ダイアログで選んだ値のみ使用)。
+            // 2026-07-26: キー種(difData[0])は取り込み処理では完全に無視する(ダイアログで選んだ値のみ使用)。
             // 難易度名(difData[1])はキー種欄の表記に関わらず全行を候補として拾う。
             var items = new List<NameItem>
             {

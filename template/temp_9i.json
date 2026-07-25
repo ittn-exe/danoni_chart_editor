@@ -133,5 +133,24 @@
       "rotationAngle": 180,
       "engineLaneNum": 3
     }
+  ],
+  "extraPatterns": [
+    {
+      "name": "danoniplus本家keyCtrl9i_1相当",
+      "blank": 52.5,
+      "divideCnt": 9,
+      "posMax": 9,
+      "laneOverrides": [
+        { "keyAssign": "A", "colorGroup": 2, "posIndex": 0, "scrollDirection": "down", "noteGraphic": "monar", "rotationAngle": 0 },
+        { "keyAssign": "S", "colorGroup": 2, "posIndex": 1, "scrollDirection": "down", "noteGraphic": "giko", "rotationAngle": 0 },
+        { "keyAssign": "D", "colorGroup": 2, "posIndex": 2, "scrollDirection": "down", "noteGraphic": "c", "rotationAngle": 0 },
+        { "keyAssign": "F", "colorGroup": 2, "posIndex": 3, "scrollDirection": "down", "noteGraphic": "morara", "rotationAngle": 0 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 4, "scrollDirection": "down", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": "←", "colorGroup": 0, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "↓", "colorGroup": 0, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "↑", "colorGroup": 0, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "→", "colorGroup": 0, "posIndex": 8, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 }
+      ]
+    }
   ]
 }

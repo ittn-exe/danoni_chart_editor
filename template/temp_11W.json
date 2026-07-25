@@ -2,58 +2,16 @@
   "keyTypeId": "11W",
   "keyTypeName": "11Wkey",
   "keyCount": 11,
-  "comment": "",
+  "comment": null,
   "blank": 55,
   "divideCnt": 5,
   "posMax": 13,
   "lanes": [
     {
-      "laneId": "left",
-      "dataName": "left",
-      "frzDataNameOverride": null,
-      "displayOrder": 0,
-      "keyAssign": "S",
-      "keyboardInputKeys": "S",
-      "colorGroup": 0,
-      "posIndex": 6,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": 0,
-      "engineLaneNum": 4
-    },
-    {
-      "laneId": "leftdia",
-      "dataName": "leftdia",
-      "frzDataNameOverride": "frzLdia",
-      "displayOrder": 1,
-      "keyAssign": "D",
-      "keyboardInputKeys": "D",
-      "colorGroup": 1,
-      "posIndex": 7,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": -45,
-      "engineLaneNum": 5
-    },
-    {
-      "laneId": "down",
-      "dataName": "down",
-      "frzDataNameOverride": null,
-      "displayOrder": 2,
-      "keyAssign": "F",
-      "keyboardInputKeys": "F",
-      "colorGroup": 0,
-      "posIndex": 8,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": -90,
-      "engineLaneNum": 6
-    },
-    {
       "laneId": "sleft",
       "dataName": "sleft",
       "frzDataNameOverride": "sfrzLeft",
-      "displayOrder": 3,
+      "displayOrder": 0,
       "keyAssign": [
         "1",
         "2"
@@ -64,7 +22,57 @@
       "scrollDirection": "up",
       "noteGraphic": "giko",
       "rotationAngle": 0,
-      "engineLaneNum": 0
+      "engineLaneNum": 0,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 0
+    },
+    {
+      "laneId": "left",
+      "dataName": "left",
+      "frzDataNameOverride": null,
+      "displayOrder": 1,
+      "keyAssign": "S",
+      "keyboardInputKeys": "S",
+      "colorGroup": 0,
+      "posIndex": 6,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 0,
+      "engineLaneNum": 4,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 1
+    },
+    {
+      "laneId": "leftdia",
+      "dataName": "leftdia",
+      "frzDataNameOverride": "frzLdia",
+      "displayOrder": 2,
+      "keyAssign": "D",
+      "keyboardInputKeys": "D",
+      "colorGroup": 1,
+      "posIndex": 7,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": -45,
+      "engineLaneNum": 5,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 2
+    },
+    {
+      "laneId": "down",
+      "dataName": "down",
+      "frzDataNameOverride": null,
+      "displayOrder": 3,
+      "keyAssign": "F",
+      "keyboardInputKeys": "F",
+      "colorGroup": 0,
+      "posIndex": 8,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": -90,
+      "engineLaneNum": 6,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 3
     },
     {
       "laneId": "sdown",
@@ -78,7 +86,9 @@
       "scrollDirection": "up",
       "noteGraphic": "arrow",
       "rotationAngle": 135,
-      "engineLaneNum": 1
+      "engineLaneNum": 1,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 4
     },
     {
       "laneId": "space",
@@ -92,7 +102,9 @@
       "scrollDirection": "down",
       "noteGraphic": "onigiri",
       "rotationAngle": 0,
-      "engineLaneNum": 7
+      "engineLaneNum": 7,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 5
     },
     {
       "laneId": "sup",
@@ -106,13 +118,63 @@
       "scrollDirection": "up",
       "noteGraphic": "arrow",
       "rotationAngle": 45,
-      "engineLaneNum": 2
+      "engineLaneNum": 2,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 6
+    },
+    {
+      "laneId": "up",
+      "dataName": "up",
+      "frzDataNameOverride": null,
+      "displayOrder": 7,
+      "keyAssign": "J",
+      "keyboardInputKeys": "J",
+      "colorGroup": 0,
+      "posIndex": 10,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 90,
+      "engineLaneNum": 8,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 7
+    },
+    {
+      "laneId": "rightdia",
+      "dataName": "rightdia",
+      "frzDataNameOverride": "frzRdia",
+      "displayOrder": 8,
+      "keyAssign": "K",
+      "keyboardInputKeys": "K",
+      "colorGroup": 1,
+      "posIndex": 11,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 135,
+      "engineLaneNum": 9,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 8
+    },
+    {
+      "laneId": "right",
+      "dataName": "right",
+      "frzDataNameOverride": null,
+      "displayOrder": 9,
+      "keyAssign": "L",
+      "keyboardInputKeys": "L",
+      "colorGroup": 0,
+      "posIndex": 12,
+      "scrollDirection": "down",
+      "noteGraphic": "arrow",
+      "rotationAngle": 180,
+      "engineLaneNum": 10,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 9
     },
     {
       "laneId": "sright",
       "dataName": "sright",
       "frzDataNameOverride": "sfrzRight",
-      "displayOrder": 7,
+      "displayOrder": 10,
       "keyAssign": [
         "0",
         "-"
@@ -123,49 +185,10 @@
       "scrollDirection": "up",
       "noteGraphic": "iyo",
       "rotationAngle": 0,
-      "engineLaneNum": 3
-    },
-    {
-      "laneId": "up",
-      "dataName": "up",
-      "frzDataNameOverride": null,
-      "displayOrder": 8,
-      "keyAssign": "J",
-      "keyboardInputKeys": "J",
-      "colorGroup": 0,
-      "posIndex": 10,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": 90,
-      "engineLaneNum": 8
-    },
-    {
-      "laneId": "rightdia",
-      "dataName": "rightdia",
-      "frzDataNameOverride": "frzRdia",
-      "displayOrder": 9,
-      "keyAssign": "K",
-      "keyboardInputKeys": "K",
-      "colorGroup": 1,
-      "posIndex": 11,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": 135,
-      "engineLaneNum": 9
-    },
-    {
-      "laneId": "right",
-      "dataName": "right",
-      "frzDataNameOverride": null,
-      "displayOrder": 10,
-      "keyAssign": "L",
-      "keyboardInputKeys": "L",
-      "colorGroup": 0,
-      "posIndex": 12,
-      "scrollDirection": "down",
-      "noteGraphic": "arrow",
-      "rotationAngle": 180,
-      "engineLaneNum": 10
+      "engineLaneNum": 3,
+      "fujiLaneNum": null,
+      "effectiveFujiLane": 10
     }
-  ]
+  ],
+  "extraPatterns": []
 }

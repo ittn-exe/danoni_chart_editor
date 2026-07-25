@@ -2,7 +2,7 @@ using DanoniEditor.Core.Models;
 
 namespace DanoniEditor.Editing;
 
-/// <summary>統計情報(2026-08-05、環境設定 > 統計情報)向けの操作カテゴリ。
+/// <summary>統計情報(2026-07-26、環境設定 > 統計情報)向けの操作カテゴリ。
 /// EditorDocument.StatRecordedイベントの引数として使う。</summary>
 public enum EditorStatKind
 {
@@ -96,7 +96,7 @@ public sealed class EditorDocument
             if (_layoutCache is null)
             {
                 _layoutCache = new ChartLayout(CurrentTemplate);
-                // 2026-08-05: プロジェクトファイルに保存された縦横ズームを復元する(ユーザー要望)。
+                // 2026-07-26: プロジェクトファイルに保存された縦横ズームを復元する(ユーザー要望)。
                 // タブ切替等でキャッシュが作り直される都度ここを通るため、常に同じ値へ揃う。
                 if (Project.EditorZoomPxPerTick is { } px)
                     _layoutCache.PxPerTick = Math.Clamp(px, ChartLayout.MinPxPerTick, ChartLayout.MaxPxPerTick);
@@ -162,7 +162,7 @@ public sealed class EditorDocument
         NotifyChanged();
     }
 
-    /// <summary>2026-08-05: 統計情報(環境設定 > 統計情報)向けの操作カウント通知。
+    /// <summary>2026-07-26: 統計情報(環境設定 > 統計情報)向けの操作カウント通知。
     /// SmartToolControllerが該当する操作を行うたびに呼ぶ。永続化(AppSettings)はApp層の責務
     /// (このイベントを購読して加算・保存する)。Editing層はAppSettingsを参照しないための橋渡し。</summary>
     public event Action<EditorStatKind, int>? StatRecorded;

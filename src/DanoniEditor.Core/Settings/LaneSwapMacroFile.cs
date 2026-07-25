@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace DanoniEditor.Core.Settings;
 
 /// <summary>
-/// レーン入替マクロ(仕様書11章)の永続化(2026-07-30)。settings.json(AppSettings)とは独立した
+/// レーン入替マクロ(仕様書11章)の永続化(2026-07-26)。settings.json(AppSettings)とは独立した
 /// swap_macro.json(同じ./settingsフォルダ内、AppPaths.LaneSwapMacroFilePath)で管理する。
 /// マクロはプロジェクト・設定とは別ライフサイクルで増減するため、専用ファイルに切り出した。
 /// </summary>

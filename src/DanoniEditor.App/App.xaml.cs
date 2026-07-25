@@ -7,13 +7,13 @@ namespace DanoniEditor.App;
 
 public partial class App : Application
 {
-    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-08-06、複数ウィンドウ対応でクラッシュ
+    /// <summary>このプロセス(ウィンドウ)自身を識別するID(2026-07-26、複数ウィンドウ対応でクラッシュ
     /// フラグをインスタンス単位に分離するために追加)。OnStartupで生成し、OnExitでの自分自身の
     /// フラグ削除に使う。</summary>
     private string? _instanceId;
 
     /// <summary>
-    /// 2026-07-28要望: 起動の立ち上がりが重く感じるため、スプラッシュウィンドウ(プログレスバー+
+    /// 2026-07-26要望: 起動の立ち上がりが重く感じるため、スプラッシュウィンドウ(プログレスバー+
     /// 現在の処理内容のテキスト表示)を出す。WPFの起動処理はUIスレッド上で同期的に進むため、
     /// 各段階でSplashWindow.Report(実処理の直前に呼ぶ)を挟むことで、進捗表示と実際の重い処理
     /// (設定読込・テンプレート確認・MainWindow構築=InitializeComponent)を1:1に対応させる。
@@ -22,7 +22,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // 2026-08-05: Sonar同様の「クラッシュを検出して現在のデータを保存するか選べる」機能。
+        // 2026-07-26: Sonar同様の「クラッシュを検出して現在のデータを保存するか選べる」機能。
         // UIスレッドの未処理例外はDispatcherUnhandledExceptionで捕捉できるため、強制終了する前に
         // 緊急保存するかどうかをユーザーに選ばせる。非UIスレッドの致命的例外(AppDomain側)は
         // ダイアログを介さず可能な限り静かに緊急保存だけ試みる(復旧を試みても続行は保証できないため)。
@@ -40,7 +40,7 @@ public partial class App : Application
             splash.Report("環境設定を読み込み中...", 15);
             var settings = AppSettings.Load(AppPaths.SettingsFilePath);
 
-            // 2026-07-25: クラッシュ復旧(TBD)。2026-08-06: 「新しいウィンドウ」機能で同一exeが
+            // 2026-07-25: クラッシュ復旧(TBD)。2026-07-26: 「新しいウィンドウ」機能で同一exeが
             // 複数プロセス同時実行され得るため、このプロセス専用のインスタンスIDを発行し、
             // フラグ・manifestの持ち主として使う。他プロセス(まだ正常に開いている別ウィンドウ)の
             // フラグに記録されたPIDが実際に生きているかで「本当にクラッシュしたインスタンス」だけを
@@ -55,7 +55,7 @@ public partial class App : Application
             AutoSaveManager.PurgeDeadInstanceFlags(AppPaths.AutoSaveDir, deadInstanceIds);
             AutoSaveManager.SetCrashFlag(AppPaths.AutoSaveDir, _instanceId, Environment.ProcessId);
 
-            // 2026-08-05: 統計情報(環境設定 > 統計情報)。起動の都度カウントし、クラッシュ検出時も
+            // 2026-07-26: 統計情報(環境設定 > 統計情報)。起動の都度カウントし、クラッシュ検出時も
             // ここで加算しておく(この後MainWindowへ渡るsettingsインスタンスがそのまま_appSettingsになる)。
             settings.StatAppLaunchCount++;
             if (crashSuspected) settings.StatCrashCount++;
@@ -93,14 +93,14 @@ public partial class App : Application
 
     /// <summary>2026-07-25: 正常終了時のみ到達する(OnClosingでe.Cancel=trueにされた場合はここへ来ない)。
     /// 自分自身のクラッシュフラグだけを消し、次回起動時に「クラッシュした」と誤検知しないようにする
-    /// (2026-08-06: 他のウィンドウ[プロセス]のフラグには触れない)。</summary>
+    /// (2026-07-26: 他のウィンドウ[プロセス]のフラグには触れない)。</summary>
     protected override void OnExit(ExitEventArgs e)
     {
         if (_instanceId is not null) AutoSaveManager.ClearCrashFlag(AppPaths.AutoSaveDir, _instanceId);
         base.OnExit(e);
     }
 
-    /// <summary>2026-08-05: UIスレッドで未処理例外が発生した際のハンドラ。強制終了する前に、
+    /// <summary>2026-07-26: UIスレッドで未処理例外が発生した際のハンドラ。強制終了する前に、
     /// 編集中データを緊急保存するかどうかをユーザーに選ばせる(Sonar等と同様の挙動)。
     /// 保存する/しないに関わらず、この後は状態が不定なため常にアプリを終了する
     /// (「はい」を選んでも処理続行はしない。緊急保存したデータは次回起動時のクラッシュ復旧フローで

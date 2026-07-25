@@ -245,5 +245,32 @@
       "rotationAngle": 180,
       "engineLaneNum": 16
     }
+  ],
+  "extraPatterns": [
+    {
+      "name": "danoniplus本家keyCtrl17_1相当",
+      "blank": 45,
+      "divideCnt": 9,
+      "posMax": 17,
+      "laneOverrides": [
+        { "keyAssign": "A", "colorGroup": 0, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "Z", "colorGroup": 1, "posIndex": 9, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -22.5 },
+        { "keyAssign": "S", "colorGroup": 0, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -45 },
+        { "keyAssign": "X", "colorGroup": 1, "posIndex": 10, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -67.5 },
+        { "keyAssign": "D", "colorGroup": 0, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "C", "colorGroup": 1, "posIndex": 11, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -112.5 },
+        { "keyAssign": "F", "colorGroup": 0, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -135 },
+        { "keyAssign": "V", "colorGroup": 1, "posIndex": 12, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -157.5 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": "N", "colorGroup": 3, "posIndex": 13, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 22.5 },
+        { "keyAssign": "J", "colorGroup": 4, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 45 },
+        { "keyAssign": "M", "colorGroup": 3, "posIndex": 14, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 67.5 },
+        { "keyAssign": "K", "colorGroup": 4, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "<", "colorGroup": 3, "posIndex": 15, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 112.5 },
+        { "keyAssign": "L", "colorGroup": 4, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 135 },
+        { "keyAssign": ">", "colorGroup": 3, "posIndex": 16, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 157.5 },
+        { "keyAssign": ";", "colorGroup": 4, "posIndex": 8, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 }
+      ]
+    }
   ]
 }

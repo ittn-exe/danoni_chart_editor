@@ -6,7 +6,7 @@ using System.Windows.Threading;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// 起動時スプラッシュウィンドウ(2026-07-28要望: 「立ち上がりが重たく感じる」ため、
+/// 起動時スプラッシュウィンドウ(2026-07-26要望: 「立ち上がりが重たく感じる」ため、
 /// プログレスバー+現在の起動処理内容を表示する)。App.OnStartupから使う。
 /// 他の補助ウィンドウ(PreferencesWindow等)と同じく、XAMLを使わず全てコードで組み立てる。
 /// </summary>

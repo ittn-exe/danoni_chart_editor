@@ -79,7 +79,7 @@ public sealed class SmartToolController
     // --- セッション状態(Begin〜Endの間だけ有効) ---
     private PointerButton _button;
     private PointerModifiers _modifiers;
-    /// <summary>左ボタンを離した瞬間の修飾キー状態(2026-08-04)。Ctrl+ドラッグ=複製の判定はこちらを
+    /// <summary>左ボタンを離した瞬間の修飾キー状態(2026-07-26)。Ctrl+ドラッグ=複製の判定はこちらを
     /// 使う(押下時のCtrl状態=_modifiersではなく、離した時点の状態を見る。ドラッグ中に気が変わって
     /// Ctrlを離しても最終判断に反映されるようにするため)。既定値はBegin時の_modifiersと同じにしておき、
     /// End()が(WPF側の都合等で)呼ばれない特殊ケースでも未初期化のPointerModifiers.Noneにならないようにする。</summary>
@@ -224,7 +224,7 @@ public sealed class SmartToolController
     /// <summary>指定レーンの指定tickに、通常ノート・フリーズの端点(始点/終点)・フリーズの帯範囲内
     /// (始点〜終点、両端含む)のいずれかが実際に存在するか。IsEmptyForPlacement専用の厳密判定
     /// (2026-07-25)。HitAtと異なりピクセル距離を一切見ない。
-    /// 2026-08-05修正: 帯範囲チェックが無く端点ぴったりのtickしか「占有」と判定していなかったため、
+    /// 2026-07-26修正: 帯範囲チェックが無く端点ぴったりのtickしか「占有」と判定していなかったため、
     /// フリーズの帯中央付近をクリックすると「空セル」と誤判定され、選択/掴み移動より先に新規ノート
     /// 配置(TryHandleEmptyLeftPress)が押下時点で即実行されてしまっていた(帯でのクリック選択・
     /// ドラッグ移動が機能しなくなる副作用)。通常ノートはフリーズと重ねて置けない仕様のため、
@@ -248,7 +248,7 @@ public sealed class SmartToolController
 
         if (col.Kind == ColumnKind.Marker)
         {
-            // 2026-08-05: CurrentTick機能(シングルクリックでの位置記録)は撤去。参照先が無くなった
+            // 2026-07-26: CurrentTick機能(シングルクリックでの位置記録)は撤去。参照先が無くなった
             // (Pasteの基準点は既に再生開始フレームへ移行済み)ため、Shift+クリックのマーカー配置のみ残す。
             // Shift無しの単純クリックは何もしない(空振り、ダブルクリックの再生開始フレーム設定と競合しない)。
             if (shift)
@@ -340,7 +340,7 @@ public sealed class SmartToolController
     // セッション終了
     // =====================================================================
 
-    /// <summary>endModifiers=ボタンを離した瞬間の修飾キー状態(2026-08-04、省略時は押下時の状態を維持)。
+    /// <summary>endModifiers=ボタンを離した瞬間の修飾キー状態(2026-07-26、省略時は押下時の状態を維持)。
     /// Ctrl+ドラッグ=複製(FinishMove参照)の判定に使う。それ以外の判定(範囲選択への追加等)は
     /// 従来通り押下時の_modifiersを使う(この引数は複製判定専用)。</summary>
     public void End(PointerPos pos, PointerModifiers? endModifiers = null)
@@ -658,7 +658,7 @@ public sealed class SmartToolController
         long tickDelta = SnappedTickAt(_lastPos) - SnappedTickAt(_startPos);
         if (laneDelta == 0 && tickDelta == 0) return;
 
-        // 2026-08-04要望対応: 左ボタンを離した瞬間にCtrlが押されていれば、移動ではなく
+        // 2026-07-26要望対応: 左ボタンを離した瞬間にCtrlが押されていれば、移動ではなく
         // 移動先への複製として扱う(ドラッグ開始時ではなく終了時のCtrl状態で判定=ドラッグ中に
         // 気が変わった場合に対応できるようにするため、_endModifiersを見る)。
         if (_endModifiers.HasFlag(PointerModifiers.Ctrl))
@@ -765,7 +765,7 @@ public sealed class SmartToolController
         return true;
     }
 
-    /// <summary>選択状態を解除する(Escapeキー、2026-08-04要望対応)。スマートツールのマウス操作
+    /// <summary>選択状態を解除する(Escapeキー、2026-07-26要望対応)。スマートツールのマウス操作
     /// だけでは選択を解除する手段が無かった(空セルクリックは配置、既存オブジェクトクリックは
     /// 選択の置き換えになり「何もない状態に戻す」操作が存在しなかった)ための新設。
     /// 選択が既に空ならfalse(データを変えない=Undo対象外)。</summary>
@@ -773,6 +773,29 @@ public sealed class SmartToolController
     {
         if (_doc.Selection.Count == 0) return false;
         _doc.Selection.Clear();
+        _doc.NotifyChanged(markModified: false);
+        return true;
+    }
+
+    /// <summary>キーボードモード中のShift+前進後退でのレンジ選択(2026-07-26要望対応)。指定tick範囲
+    /// [tickA,tickB](順不同)にある全レーンのノート・フリーズ始点を選択する(既存選択は置き換え)。
+    /// Shift+移動のたびに呼び直される想定で、常に選択状態を範囲どおりに作り直す(範囲内が0件でも
+    /// 「選択をクリアして範囲を示す」操作として扱いtrueを返す)。</summary>
+    public bool SelectRangeAllLanes(long tickA, long tickB)
+    {
+        long tMin = Math.Min(tickA, tickB), tMax = Math.Max(tickA, tickB);
+        var tab = _doc.CurrentTab;
+        var refs = new List<ObjectRef>();
+        for (int lane = 0; lane < tab.Lanes.Count; lane++)
+        {
+            foreach (var t in tab.Lanes[lane].Notes)
+                if (t >= tMin && t <= tMax) refs.Add(new ObjectRef(ObjectKind.Note, lane, t));
+            foreach (var f in tab.Lanes[lane].Freezes)
+                if (f.StartTick >= tMin && f.StartTick <= tMax) refs.Add(new ObjectRef(ObjectKind.FreezeStart, lane, f.StartTick));
+        }
+
+        _doc.Selection.Clear();
+        foreach (var r in refs) _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false);
         return true;
     }
@@ -857,7 +880,7 @@ public sealed class SmartToolController
     /// <summary>選択中オブジェクトを切り取る(Ctrl+X = コピー + 選択削除、13章)。
     /// コピー自体はUndo対象外(クリップボードはドキュメント状態ではない)だが、
     /// 削除は既存のDeleteSelection(1ジェスチャ=1Undoアクション)がそのまま使われる。
-    /// 2026-08-05: 統計情報(Copy/Cut)を別カウントにするため、CopySelection()は呼ばず
+    /// 2026-07-26: 統計情報(Copy/Cut)を別カウントにするため、CopySelection()は呼ばず
     /// TrySetClipboard()を直接使う(CutはCopy統計にカウントしない)。</summary>
     public bool CutSelection()
     {
@@ -879,12 +902,12 @@ public sealed class SmartToolController
 
     /// <summary>クリップボードの内容を貼り付ける(Ctrl+V)。
     /// tick基準点は再生開始フレーム(Project.PlaybackStartFrame、マーカー/時間情報レーンのダブルクリックで
-    /// 設定される「現在の再生開始位置」、仕様書7.4)。2026-08-04: 従来はCurrentTick(シングルクリックで
+    /// 設定される「現在の再生開始位置」、仕様書7.4)。2026-07-26: 従来はCurrentTick(シングルクリックで
     /// 設定される位置)基準だったが、プレイテストの開始位置と揃えたいという要望により変更した。
     /// 一度も設定されていなければtick0を基準にする。laneはコピー時の元レーンをそのまま使い、
     /// 現在のテンプレートのレーン数に収まらない対象はスキップする(キー種違いのプロジェクトへ
     /// 貼り付けた場合など)。貼り付け後は新規オブジェクトを選択状態にし、そのままグループ移動
-    /// (6.3.2)で位置調整できるようにする。2026-08-05: 「frame情報以外は全て保持してコピペしたい」
+    /// (6.3.2)で位置調整できるようにする。2026-07-26: 「frame情報以外は全て保持してコピペしたい」
     /// との要望対応で、通常ノート/フリーズのColorOverrides(ncolor_data個別色)・Annotations
     /// (コメント・警告)もコピー元のClipboardEntryから貼り付け先へ複製する(AddSidecarActions参照)。
     /// 1回の呼び出し=1Undoアクション。</summary>
@@ -1035,7 +1058,7 @@ public sealed class SmartToolController
     }
 
     /// <summary>ClipboardEntryが持つColorOverride/Annotationのスナップショットを、貼り付け先の
-    /// lane/tickへ複製するアクションをactionsへ追記する(2026-08-05、Paste専用)。どちらも無ければ何もしない。</summary>
+    /// lane/tickへ複製するアクションをactionsへ追記する(2026-07-26、Paste専用)。どちらも無ければ何もしない。</summary>
     private static void AddSidecarActions(List<IEditAction> actions, ClipboardEntry e, int lane, long tick)
     {
         if (e.ColorOverride is { } color) actions.Add(new AddColorOverrideAction(lane, tick, color));
@@ -1043,7 +1066,7 @@ public sealed class SmartToolController
     }
 
     /// <summary>指定レーン・tickの通常ノート/フリーズ(始点tickで同定)が持つColorOverrides/Annotationsを
-    /// クリップボード用のスナップショット(tick等の同定情報を除いた値のみ)へ変換する(2026-08-05)。
+    /// クリップボード用のスナップショット(tick等の同定情報を除いた値のみ)へ変換する(2026-07-26)。
     /// どちらも無ければ両方null。</summary>
     private (ClipboardColor? Color, ClipboardAnnotation? Annotation) FindColorAndAnnotation(int lane, long tick)
     {

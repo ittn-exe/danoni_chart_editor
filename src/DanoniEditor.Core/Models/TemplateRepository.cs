@@ -27,7 +27,7 @@ public sealed class TemplateRepository
             .Select(p => Path.GetFileNameWithoutExtension(p)["temp_".Length..])
             .OrderBy(s => s, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>指定キー種のキャッシュを破棄する(2026-07-29、テンプレート編集ウィンドウでの保存直後に
+    /// <summary>指定キー種のキャッシュを破棄する(2026-07-26、テンプレート編集ウィンドウでの保存直後に
     /// 呼び、次回Get呼び出し時にディスクの最新内容を再読込させる)。</summary>
     public void Invalidate(string keyTypeId) => _cache.Remove(keyTypeId);
 }

@@ -28,7 +28,7 @@ public static class ColorDefaults
 
     /// <summary>
     /// フリーズアローの既定色(端点/帯、hex)を解決する(仕様書6.4.2 frzColor)。
-    /// 2026-07-27確定仕様: frzColorはsetColorと異なり色グループ数に関わらず常に4スロット
+    /// 2026-07-26確定仕様: frzColorはsetColorと異なり色グループ数に関わらず常に4スロット
     /// ([0]通常端点 [1]通常帯 [2]判定中端点 [3]判定中帯)の1セットのみ(danoniplus本体の仕様通り、
     /// 従来の「色グループごとに4スロット」実装は誤りだった)。
     /// defaultFrzColorUse=trueの間は本体側の既定フリーズアロー色セットが使われ、frzColorの値自体が
@@ -55,7 +55,7 @@ public static class ColorDefaults
 
     /// <summary>
     /// フリーズアローのヒット時(判定中)の既定色(端点/帯、hex)を解決する(2026-07-24、frzHitColor編集
-    /// モード用)。2026-07-27: FrzColorOverrideは常に4スロット([0]通常端点 [1]通常帯 [2]ヒット時端点
+    /// モード用)。2026-07-26: FrzColorOverrideは常に4スロット([0]通常端点 [1]通常帯 [2]ヒット時端点
     /// [3]ヒット時帯)の1セットのみ(色グループ数に関わらず、上記ResolveFrzColorsHex参照)。
     /// 値が無いスロットは通常時(Normal/NormalBar)の解決値へフォールバックする。
     /// </summary>

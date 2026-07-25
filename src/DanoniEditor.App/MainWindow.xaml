@@ -10,7 +10,7 @@
             <MenuItem Header="ファイル(_F)">
                 <MenuItem Header="新規プロジェクト(_N)" Click="NewProject_Click"/>
                 <MenuItem Header="開く(_O)..." Click="OpenProject_Click"/>
-                <!-- 2026-07-28: 最近開いたファイル(ITTNエディタ形式)。項目はSubmenuOpened時に動的構築。
+                <!-- 2026-07-26: 最近開いたファイル(ITTNエディタ形式)。項目はSubmenuOpened時に動的構築。
                      ダミー子項目は「▶」矢印を出すためのプレースホルダ(空だとWPFが子持ちメニューと認識せず開かない)。 -->
                 <MenuItem x:Name="RecentFilesMenu" Header="最近開いたファイル(_R)" SubmenuOpened="RecentFilesMenu_SubmenuOpened">
                     <MenuItem Header="(履歴なし)"/>
@@ -35,7 +35,6 @@
             <!-- 2026-07-19: 設定メニュー(環境設定ウィンドウ、仕様書14章) -->
             <MenuItem Header="設定(_S)">
                 <MenuItem Header="環境設定(_P)..." Click="OpenPreferences_Click"/>
-                <MenuItem Header="ゲージ設定(_G)..." Click="OpenGaugeEditor_Click"/>
                 <!-- 2026-07-23: 歌詞表示レーンの管理(TBD 4、word_data) -->
                 <MenuItem Header="歌詞レーンの管理(_W)..." Click="OpenWordLaneManager_Click"/>
             </MenuItem>
@@ -71,7 +70,17 @@
                          Space(目視テスト開始/終了)・Ctrl+Space(現在位置で終了)のキー操作に一本化する。 -->
                     <TextBlock Text="[Space]目視テスト" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="Gray"/>
                     <TextBlock x:Name="AudioTimeText" Text="-" VerticalAlignment="Center" Margin="0,0,16,0"/>
-                    <!-- 2026-07-27: 音量設定(スライダー+数値入力欄、相互同期)。値はAppSettingsに永続化 -->
+                    <!-- ノート音(既定OFF)。ONの間、目視テスト・プレイテストでノートが存在する
+                         frameを通過するたびに、環境設定「テスト再生 > 全般」で選択した./sounds内の
+                         音声ファイルを鳴らす -->
+                    <CheckBox x:Name="HandClapCheck" Content="ノート音" VerticalAlignment="Center" Margin="0,0,4,0"
+                              Checked="HandClap_Changed" Unchecked="HandClap_Changed"
+                              ToolTip="ONの間、目視テスト・プレイテストでノートが存在するframeを通過するたびに、環境設定「テスト再生 &gt; 全般」で選択した音を鳴らす"/>
+                    <!-- ノート音の音量調整 -->
+                    <TextBox x:Name="HandClapVolumeBox" Width="36" VerticalAlignment="Center" Margin="0,0,2,0"
+                             LostFocus="HandClap_Changed"/>
+                    <TextBlock Text="%" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <!-- 2026-07-26: 音量設定(スライダー+数値入力欄、相互同期)。値はAppSettingsに永続化 -->
                     <TextBlock Text="音量:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                     <Slider x:Name="VolumeSlider" Width="90" Minimum="0" Maximum="100" VerticalAlignment="Center"
                             Margin="0,0,4,0" ValueChanged="VolumeSlider_ValueChanged"/>
@@ -105,7 +114,7 @@
                          IsCheckedはXAMLで固定値を書かず(起動時クラッシュ回避のため)、コード側で設定する。 -->
                     <ToggleButton x:Name="ShowHighlightGridToggle" Content="強調表示" Width="80" Margin="0,0,4,0"
                                   Checked="ShowHighlightGridToggle_Changed" Unchecked="ShowHighlightGridToggle_Changed"/>
-                    <!-- 2026-08-01: レーンラベル欄へのノート数リアルタイム表示(要望対応、既定OFF) -->
+                    <!-- 2026-07-26: レーンラベル欄へのノート数リアルタイム表示(要望対応、既定OFF) -->
                     <ToggleButton x:Name="NoteCountToggle" Content="ノート数表示" Width="90" Margin="0,0,4,0"
                                   Checked="NoteCountToggle_Changed" Unchecked="NoteCountToggle_Changed"
                                   ToolTip="レーンラベル欄に各レーンのノート数(通常+フリーズ)を表示する"/>
@@ -127,7 +136,7 @@
                               ToolTip="ncolor_data個別色編集モード" Click="ColorEditModeToggle_Click"/>
             </StackPanel>
         </Border>
-        <!-- 2026-08-03: 譜面ビューと右パネルの境界線をドラッグでリサイズできるようにする要望対応。
+        <!-- 2026-07-26: 譜面ビューと右パネルの境界線をドラッグでリサイズできるようにする要望対応。
              中央(譜面ビュー)+境界線+右パネルの3カラムGridでラップする(それ以外のDockPanel構成は不変)。 -->
         <Grid>
             <Grid.ColumnDefinitions>
@@ -153,6 +162,8 @@
                             <TextBlock Text="BPM" Margin="0,8,0,2"/>
                             <TextBox x:Name="BpmBox" LostFocus="ProjectNumericField_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
 
+                            <Button Content="ゲージ設定..." Margin="0,8,0,0" HorizontalAlignment="Left" Click="OpenGaugeEditor_Click"/>
+
                             <TextBlock Text="StartNumber" Margin="0,8,0,2"/>
                             <TextBox x:Name="StartNumberBox" LostFocus="ProjectNumericField_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
 
@@ -164,7 +175,7 @@
 
                             <TextBlock Text="musicURL" Margin="0,8,0,2"/>
                             <DockPanel LastChildFill="True">
-                                <!-- 2026-07-27: musicURLからの楽曲取得(環境設定でON時のみ有効)。機能OFF時・読込済み時はグレーアウト -->
+                                <!-- 2026-07-26: musicURLからの楽曲取得(環境設定でON時のみ有効)。機能OFF時・読込済み時はグレーアウト -->
                                 <Button x:Name="MusicUrlLoadButton" DockPanel.Dock="Right" Content="読込" Width="50" Margin="4,0,0,0"
                                         Click="MusicUrlLoadButton_Click" IsEnabled="False"/>
                                 <TextBox x:Name="MusicUrlBox" TextChanged="ProjectStringField_Changed"/>
@@ -186,7 +197,7 @@
                             <TextBlock Text="初期speed" Margin="0,8,0,2"/>
                             <TextBox x:Name="InitialSpeedBox" LostFocus="ProjectNumericField_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
 
-                            <!-- 2026-08-01: ダンおに本体の「レベル計算ツール++」アルゴリズムを移植した参考値。
+                            <!-- 2026-07-26: ダンおに本体の「レベル計算ツール++」アルゴリズムを移植した参考値。
                                  タブ切替・プロパティ再読込のたびに再計算する(編集の都度リアルタイムではない)。 -->
                             <TextBlock Text="ツール値(難易度、参考値)" Margin="0,8,0,2"/>
                             <TextBlock x:Name="ToolValueText" Text="-" FontWeight="Bold"/>
@@ -232,7 +243,7 @@
                                 <TextBlock x:Name="ObjectValueLabel" Text="Value" Margin="0,8,0,2" Visibility="Collapsed"/>
                                 <TextBox x:Name="ObjectValueBox" LostFocus="ObjectValue_LostFocus" Visibility="Collapsed" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
 
-                                <!-- 2026-08-03: 拍子(TimeSignature)の分子/分母編集(要望対応) -->
+                                <!-- 2026-07-26: 拍子(TimeSignature)の分子/分母編集(要望対応) -->
                                 <TextBlock x:Name="ObjectSigNumeratorLabel" Text="拍子(分子)" Margin="0,8,0,2" Visibility="Collapsed"/>
                                 <TextBox x:Name="ObjectSigNumeratorBox" LostFocus="ObjectTimeSignature_LostFocus" Visibility="Collapsed" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
                                 <TextBlock x:Name="ObjectSigDenominatorLabel" Text="拍子(分母)" Margin="0,8,0,2" Visibility="Collapsed"/>
@@ -399,7 +410,7 @@
                 <!-- 2026-07-17: 「タブを閉じる」ができず難易度タブを削除できないとの要望対応。
                      選択中のタブを閉じる(最低1タブは残す)。 -->
                 <Button DockPanel.Dock="Right" Content="タブを閉じる" Width="90" Click="CloseCurrentTab_Click"/>
-                <!-- 2026-08-02: 新規譜面(難易度タブ)追加。新規プロジェクト作成時と同じダイアログで
+                <!-- 2026-07-26: 新規譜面(難易度タブ)追加。新規プロジェクト作成時と同じダイアログで
                      キー種・難易度名を指定し、カレントプロジェクトへタブを追加する -->
                 <Button DockPanel.Dock="Right" Content="新規譜面を追加" Width="100" Click="AddDifficultyTab_Click"/>
                 <TabControl x:Name="DifficultyTabControl"
@@ -420,7 +431,7 @@
                               ScrollChanged="ChartScrollViewer_ScrollChanged">
                     <local:ChartCanvas x:Name="Canvas"/>
                 </ScrollViewer>
-                <!-- 2026-08-05: 譜面ビュー全体の概観+クリック/ドラッグでジャンプできるミニマップ -->
+                <!-- 2026-07-26: 譜面ビュー全体の概観+クリック/ドラッグでジャンプできるミニマップ -->
                 <local:ChartMinimap x:Name="Minimap" Grid.Column="1"/>
             </Grid>
         </Grid>

@@ -9,7 +9,7 @@ using DanoniEditor.Core.Settings;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// レーン入替マクロ(仕様書11章)の作成・編集ウィンドウ(2026-07-30)。
+/// レーン入替マクロ(仕様書11章)の作成・編集ウィンドウ(2026-07-26)。
 /// - 左パネル: 対象キー種(選ぶと上下のレーンプレビューがそのキー種の構成で組み直される)・マクロ名
 /// - 上段: 「元のレーン」プレビュー(選択キー種のテンプレート順、並び替え不可。基準として常時表示)
 /// - 下段: 「入れ替え後」プレビュー(D&Dで並び替え可能)。ここの左からの並びがそのまま
@@ -29,7 +29,7 @@ internal sealed class MacroEditorWindow : Window
     private readonly LaneRowPanel _mappedRow = new(draggable: true);
 
     private KeyTemplate? _currentTemplate;
-    private string? _lastConfirmedKeyTypeId; // 2026-07-31: キー種変更確認ダイアログ用(直前に実際に適用されていたキー種)
+    private string? _lastConfirmedKeyTypeId; // 2026-07-26: キー種変更確認ダイアログ用(直前に実際に適用されていたキー種)
     private bool _suppressKeyTypeConfirm; // 初期構築中: SelectionChangedは発火してよいが確認ダイアログは出さない
     private bool _suppressKeyTypeChangeEntirely; // キャンセル時の選択巻き戻し用: SelectionChangedの処理自体を丸ごとスキップする
 
@@ -81,7 +81,7 @@ internal sealed class MacroEditorWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Height = 84,
-            Background = Brushes.Black, // 2026-07-30: 明るい色見本の視認性対応
+            Background = Brushes.Black, // 2026-07-26: 明るい色見本の視認性対応
         });
         centerPanel.Children.Add(new TextBlock
         {
@@ -98,7 +98,7 @@ internal sealed class MacroEditorWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Height = 84,
-            Background = Brushes.Black, // 2026-07-30: 明るい色見本の視認性対応
+            Background = Brushes.Black, // 2026-07-26: 明るい色見本の視認性対応
         });
         root.Children.Add(centerPanel);
 
@@ -120,7 +120,7 @@ internal sealed class MacroEditorWindow : Window
     }
 
     /// <summary>
-    /// 対象キー種コンボの変更ハンドラ(2026-07-31)。変更すると下段プレビューの入れ替え内容が
+    /// 対象キー種コンボの変更ハンドラ(2026-07-26)。変更すると下段プレビューの入れ替え内容が
     /// 無条件にリセットされてしまう事故を防ぐため、既にレーン構成が読み込まれている状態からの
     /// 変更時は確認ダイアログを出す。キャンセルした場合は選択を直前のキー種へ戻すが、この巻き戻し
     /// 自体は「キー種変更」ではなく単なる取り消しなので、_suppressKeyTypeChangeEntirelyを立てて
@@ -222,7 +222,7 @@ internal sealed class MacroEditorWindow : Window
         public LaneRowPanel(bool draggable)
         {
             Orientation = Orientation.Horizontal;
-            Background = Brushes.Black; // 2026-07-30: 明るい色見本の視認性対応
+            Background = Brushes.Black; // 2026-07-26: 明るい色見本の視認性対応
             if (!draggable) return;
             AllowDrop = true;
             PreviewMouseLeftButtonDown += OnPreviewMouseLeftButtonDown;
@@ -262,7 +262,7 @@ internal sealed class MacroEditorWindow : Window
             {
                 Text = lane.LaneId,
                 FontSize = 10,
-                Foreground = Brushes.White, // 2026-07-30: 背景を黒にしたため白文字に変更
+                Foreground = Brushes.White, // 2026-07-26: 背景を黒にしたため白文字に変更
                 HorizontalAlignment = HorizontalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });

@@ -9,7 +9,7 @@ namespace DanoniEditor.App;
 /// 歌詞レーン(WordLanes、仕様dos-e0003-wordData、2026-07-23、TBD 4)の管理ウィンドウ。
 /// カレント難易度タブに対して、ユーザーが任意に歌詞レーンを追加/名前変更/Reverse切替/削除できる。
 /// 他のウィンドウ(テンプレ編集・マクロ編集等)と異なり「保存確定」方式ではなく、各操作を
-/// 即座にDifficultyTab.WordLanesへ反映する。2026-07-31: 追加/改名/Reverse切替/削除いずれも
+/// 即座にDifficultyTab.WordLanesへ反映する。2026-07-26: 追加/改名/Reverse切替/削除いずれも
 /// EditorDocument.Execute経由でUndoStackに積む(=通常の編集操作と同様にCtrl+Zで取り消せる)。
 /// レーン削除のUndoは、削除時点のレーン内容(歌詞エントリを含む)を丸ごと復元する
 /// (削除操作そのものを取り消す。DeleteWordLaneAction参照)。
@@ -111,7 +111,7 @@ internal sealed class WordLaneManagerWindow : Window
                         "歌詞レーンの削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                     if (confirm != MessageBoxResult.Yes) return;
                 }
-                // 2026-07-31: DeleteWordLaneActionへ委譲(削除時点の内容を丸ごと保持し、Undoで復元する)。
+                // 2026-07-26: DeleteWordLaneActionへ委譲(削除時点の内容を丸ごと保持し、Undoで復元する)。
                 // 後続レーンのindexが詰まる関係上、Word系の選択状態はアクション内でクリアする。
                 _doc.Execute(new DeleteWordLaneAction(idx));
                 _onChanged();

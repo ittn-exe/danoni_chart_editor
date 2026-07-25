@@ -21,6 +21,16 @@ public sealed class KeyTemplate
 
     public required IReadOnlyList<LaneDef> Lanes { get; init; }
 
+    /// <summary>キー種の追加パターン(2026-07-26e要望対応、danoniplus本家の「キーパターン」概念)。
+    /// 本家では同じキー種(例: 11key)に対して複数の物理キー配置・色・回転・ステップゾーン位置の組が
+    /// 定義され得るが(danoni_constants.jsのkeyCtrl11_0/keyCtrl11_1等)、譜面データの実体(chara)自体は
+    /// パターンに依存しない共通のもの。ここでは「パターン0」を既存のLanes等の基底フィールドとして扱い、
+    /// パターン1以降だけをExtraPatternsに追加データとして持つ(既存テンプレートとの後方互換のため、
+    /// 未指定時は空配列=従来通りパターン0のみのキー種として読み込める)。
+    /// プレイテスト画面の見た目・キー入力にのみ影響し、エディタ本体の譜面ビューの列並び・データ名・
+    /// FUJI互換番号・キーボードモード入力キーには一切影響しない(2026-07-26e考察の確定仕様)。</summary>
+    public IReadOnlyList<KeyPattern> ExtraPatterns { get; init; } = [];
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -50,6 +60,90 @@ public sealed class KeyTemplate
 
     /// <summary>ステップゾーンY座標(全キー種共通固定値、g_posObj.stepY)</summary>
     public const double StepY = 70;
+
+    /// <summary>パターン込みの通し件数(パターン0 + ExtraPatterns)。パターン選択UIの選択肢件数等に使う。</summary>
+    [JsonIgnore]
+    public int PatternCount => 1 + ExtraPatterns.Count;
+
+    /// <summary>指定パターン番号(0=既定パターン)を適用した「実効テンプレート」を返す(2026-07-26e)。
+    /// パターン0またはExtraPatternsの範囲外を指定した場合はthisをそのまま返す(コピーしない)。
+    /// プレイテスト画面がこのメソッドで得たテンプレートを使って座標計算・キーマップ構築を行うことで、
+    /// パターン差し替えロジックをここに集約する。</summary>
+    public KeyTemplate WithPattern(int patternIndex)
+    {
+        if (patternIndex <= 0 || patternIndex > ExtraPatterns.Count) return this;
+        var pattern = ExtraPatterns[patternIndex - 1];
+        if (pattern.LaneOverrides.Count != Lanes.Count)
+            throw new InvalidDataException(
+                $"テンプレート'{KeyTypeId}'のパターン{patternIndex}のレーン件数({pattern.LaneOverrides.Count})が" +
+                $"本体のレーン件数({Lanes.Count})と一致しませんの");
+
+        var lanes = Lanes.Select((lane, i) =>
+        {
+            var o = pattern.LaneOverrides[i];
+            return new LaneDef
+            {
+                LaneId = lane.LaneId,
+                DataName = lane.DataName,
+                FrzDataNameOverride = lane.FrzDataNameOverride,
+                DisplayOrder = lane.DisplayOrder,
+                KeyAssign = o.KeyAssign,
+                KeyboardInputKeys = lane.KeyboardInputKeys,
+                ColorGroup = o.ColorGroup,
+                PosIndex = o.PosIndex,
+                ScrollDirection = o.ScrollDirection,
+                NoteGraphic = o.NoteGraphic,
+                RotationAngle = o.RotationAngle,
+                EngineLaneNum = lane.EngineLaneNum,
+                FujiLaneNum = lane.FujiLaneNum,
+            };
+        }).ToList();
+
+        return new KeyTemplate
+        {
+            KeyTypeId = KeyTypeId,
+            KeyTypeName = KeyTypeName,
+            KeyCount = KeyCount,
+            Comment = Comment,
+            Blank = pattern.Blank,
+            DivideCnt = pattern.DivideCnt,
+            PosMax = pattern.PosMax,
+            Lanes = lanes,
+            ExtraPatterns = ExtraPatterns,
+        };
+    }
+}
+
+/// <summary>キー種の追加パターン1件分(2026-07-26e、danoniplus本家の「キーパターン」概念)。
+/// LaneOverridesはKeyTemplate.Lanesと同じ件数・同じ並びで1:1(インデックス)対応する。</summary>
+public sealed class KeyPattern
+{
+    /// <summary>パターンの表示名(任意、未指定可)。本家に正式名称が無いパターンも多いため、
+    /// UI側では未指定時「パターンN」のように自動採番して表示する。</summary>
+    public string? Name { get; init; }
+
+    public required double Blank { get; init; }
+    public required double DivideCnt { get; init; }
+    public required double PosMax { get; init; }
+
+    public required IReadOnlyList<LanePatternOverride> LaneOverrides { get; init; }
+}
+
+/// <summary>パターンごとのレーン上書き値1件分(2026-07-26e)。LaneId/DataName等のレーンの素性は
+/// パターン非依存のためここには含めず、KeyTemplate.Lanesの対応するインデックス側を参照する。</summary>
+public sealed class LanePatternOverride
+{
+    [JsonConverter(typeof(KeyAssignConverter))]
+    public required IReadOnlyList<string> KeyAssign { get; init; }
+
+    public required int ColorGroup { get; init; }
+    public required double PosIndex { get; init; }
+
+    /// <summary>スクロール方向: "down"(標準) / "up"(折返し上段等の逆行)</summary>
+    public required string ScrollDirection { get; init; }
+
+    public required string NoteGraphic { get; init; }
+    public required double RotationAngle { get; init; }
 }
 
 /// <summary>レーン定義(仕様書4.2)</summary>

@@ -7,12 +7,12 @@ using DanoniEditor.Core.Models;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-08-01、2026-08-05再設計)。
+/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-07-26、2026-07-26再設計)。
 /// 設定メニューから開く。ChartProjectを直接編集するのではなく編集用コピー(VM)上で作業し、
 /// 「保存」時にのみ project.Tabs[].Gauge / project.GaugeParams / project.GaugeRawOverrideText へ反映する
 /// (テンプレ編集・マクロ編集ウィンドウと同じ「保存確定まではキャンセル可能」の方針)。
 ///
-/// 2026-08-05再設計(ユーザー確定仕様): danoni_main.js(resetCustomGauge/getGaugeSetting)を確認した結果、
+/// 2026-07-26再設計(ユーザー確定仕様): danoni_main.js(resetCustomGauge/getGaugeSetting)を確認した結果、
 /// 「difDataのborder/recovery/damage/initLife%(本体ゲージ)」と「customGauge/gaugeXXX(切替候補ゲージ)」は
 /// 排他ではなく併存する別機能だと判明したため、「対象の譜面(タブ)を選び、その譜面の設定をまとめて行う」
 /// UIへ再構成した。TabControl(_tabGaugeTabs)がその「対象譜面選択」を兼ねる(GaugeCalculatorWindowが
@@ -25,7 +25,7 @@ namespace DanoniEditor.App;
 /// 「ゲージ別パラメータ」表(旧②、名前の新規作成/削除も含む)として残す。
 /// 「直接入力モード」(旧③、過去資産からのコピペ用)は末尾に残置。空でなければ本体ゲージ・切替候補ゲージ
 /// いずれも完全に無視してこのテキストをそのままdos.txtへ出力する(DosExporter.AppendGaugeHeaders参照)。
-/// 「dos作成後に直接編集する」(2026-08-05)がON中は、上記すべてを無効化しエクスポートも一切行わない。
+/// 「dos作成後に直接編集する」(2026-07-26)がON中は、上記すべてを無効化しエクスポートも一切行わない。
 /// </summary>
 internal sealed class GaugeEditorWindow : Window
 {
@@ -34,7 +34,7 @@ internal sealed class GaugeEditorWindow : Window
     private readonly ChartProject _project;
     private readonly List<TabGaugeVm> _tabVms;
     private readonly List<ParamRowVm> _paramRows;
-    /// <summary>本体ゲージ(difData直接指定)のタブごとの入力値(2026-08-05再設計、旧・生CSV欄を
+    /// <summary>本体ゲージ(difData直接指定)のタブごとの入力値(2026-07-26再設計、旧・生CSV欄を
     /// フィールドごとの入力欄+チェックボックスへ分解したもの)</summary>
     private readonly List<DifDataExtraVm> _difDataVms;
 
@@ -60,7 +60,7 @@ internal sealed class GaugeEditorWindow : Window
 
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
 
-    /// <summary>「dos作成後に直接編集する」フラグ(2026-08-05)。ON中は①②③④すべて無効化し、
+    /// <summary>「dos作成後に直接編集する」フラグ(2026-07-26)。ON中は①②③④すべて無効化し、
     /// エクスポート時もゲージ関連ヘッダーを一切出力しない(ChartProject.GaugeManualEditAfterExport参照)。</summary>
     private readonly CheckBox _manualEditAfterExport = new()
     {
@@ -73,7 +73,7 @@ internal sealed class GaugeEditorWindow : Window
     private readonly StackPanel _paramTablePanel = new();
     private readonly Button _addParamButton = new() { Content = "ゲージ名を追加", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
 
-    /// <summary>2026-08-01: ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。
+    /// <summary>2026-07-26: ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。
     /// 既に開いている場合は再利用してActivate()するのみにする。</summary>
     private GaugeCalculatorWindow? _calculatorWindow;
 
@@ -179,7 +179,7 @@ internal sealed class GaugeEditorWindow : Window
         Closed += (_, _) => _calculatorWindow?.Close();
     }
 
-    /// <summary>「ゲージ計算機を開く...」ボタン(2026-08-01)。モードレスウィンドウとして開き、
+    /// <summary>「ゲージ計算機を開く...」ボタン(2026-07-26)。モードレスウィンドウとして開き、
     /// 既に開いている場合は前面に出すだけにする(複数出さない)。</summary>
     private void OpenCalculator_Click(object sender, RoutedEventArgs e)
     {
@@ -203,14 +203,14 @@ internal sealed class GaugeEditorWindow : Window
     private void UpdateRawActiveState()
     {
         bool manualEdit = _manualEditAfterExport.IsChecked == true;
-        // 2026-08-05再設計: _tabGaugeTabsが「対象譜面選択+本体ゲージ+切替候補ゲージ」をすべて
+        // 2026-07-26再設計: _tabGaugeTabsが「対象譜面選択+本体ゲージ+切替候補ゲージ」をすべて
         // 内包するため、これを無効化するだけで両方まとめて無効化される。
         bool rawActive = !manualEdit && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
         _rawActiveNotice.Visibility = rawActive ? Visibility.Visible : Visibility.Collapsed;
         _tabGaugeTabs.IsEnabled = !manualEdit && !rawActive;
         _paramTablePanel.IsEnabled = !manualEdit && !rawActive;
         _addParamButton.IsEnabled = !manualEdit && !rawActive;
-        // 2026-08-05: 「dos作成後に直接編集する」がON中は直接入力モードも無効化する
+        // 2026-07-26: 「dos作成後に直接編集する」がON中は直接入力モードも無効化する
         // (エディタでは一切触らせない、というユーザー確定仕様のため)。
         _rawOverrideBox.IsEnabled = !manualEdit;
     }
@@ -246,7 +246,7 @@ internal sealed class GaugeEditorWindow : Window
     }
 
     // =====================================================================
-    // 本体ゲージ(difData直接指定、旧④、2026-08-05再設計でタブパネル内へ統合)
+    // 本体ゲージ(difData直接指定、旧④、2026-07-26再設計でタブパネル内へ統合)
     // =====================================================================
 
     /// <summary>本体ゲージ(difDataのborder/recovery/damage/initLife%)のタブごとの入力値。
@@ -290,7 +290,7 @@ internal sealed class GaugeEditorWindow : Window
         }
     }
 
-    /// <summary>本体ゲージ(difData)の入力欄一式を組み立てる(2026-08-05)。</summary>
+    /// <summary>本体ゲージ(difData)の入力欄一式を組み立てる(2026-07-26)。</summary>
     private FrameworkElement BuildDifDataExtraFields(int tabIndex)
     {
         var vm = _difDataVms[tabIndex];
@@ -562,7 +562,7 @@ internal sealed class GaugeEditorWindow : Window
 
         _project.GaugeRawOverrideText = rawText;
 
-        // 2026-08-05: 本体ゲージ(difData直接指定、名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
+        // 2026-07-26: 本体ゲージ(difData直接指定、名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
         // 直接入力モード(customGauge/gaugeXXX)とは無関係な別ヘッダーのため、rawTextの有無を問わず常に反映する。
         for (int i = 0; i < _project.Tabs.Count; i++)
         {
@@ -570,7 +570,7 @@ internal sealed class GaugeEditorWindow : Window
             _project.Tabs[i].DifDataExtra = string.IsNullOrEmpty(csv) ? null : csv;
         }
 
-        // 2026-08-05: 「dos作成後に直接編集する」フラグの書き戻し(プロジェクト全体で1つ)。
+        // 2026-07-26: 「dos作成後に直接編集する」フラグの書き戻し(プロジェクト全体で1つ)。
         _project.GaugeManualEditAfterExport = _manualEditAfterExport.IsChecked == true;
 
         Saved = true;

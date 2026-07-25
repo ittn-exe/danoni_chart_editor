@@ -77,7 +77,7 @@ public sealed class ChartCanvas : FrameworkElement
             }
             else
             {
-                // 2026-08-03: pngが無い場合、同名のsvgがあればラスタライズして使う(要望対応)。
+                // 2026-07-26: pngが無い場合、同名のsvgがあればラスタライズして使う(要望対応)。
                 // pngが優先(既存素材との互換性維持)、svgはpng不在時のみのフォールバック。
                 var svgPath = Path.Combine(ImgDir, $"{noteGraphic}.svg");
                 if (File.Exists(svgPath)) image = TryRasterizeSvg(svgPath);
@@ -226,7 +226,7 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>ノート強調グリッドの色。</summary>
     public Color HighlightLineColor { get; set; } = Color.FromRgb(0xFF, 0xD4, 0x00);
 
-    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-08-02要望対応、既定OFF)。
+    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-07-26要望対応、既定OFF)。
     /// ONの場合、フリーズの終点位置には強調グリッド(横棒)を描かない(始点は従来通り描く)。</summary>
     public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
 
@@ -263,6 +263,13 @@ public sealed class ChartCanvas : FrameworkElement
 
     /// <summary>波形ピークキャッシュ(MainWindowがバックグラウンドデコード後に設定)。null=未読込</summary>
     public WaveformPeaks? Waveform { get; set; }
+
+    /// <summary>読み込み済み音楽ファイルの全体長(フレーム、60fps基準、2026-07-26要望対応)。
+    /// MainWindowが音楽読込完了(MediaOpened)のたびに設定する。null=未読込、または長さ不明。
+    /// 「サビから制作」等、ノートを置く前でも曲の長さぶんスクロールできるようにするための値
+    /// (MaxTickInProjectで既存の「ノートの最大tick」「空プロジェクトの最低8小節」と比較し、
+    /// より大きい方を採用する)。</summary>
+    public double? AudioTotalFrames { get; set; }
 
     /// <summary>波形表示ON/OFF(譜面ビュー背景の最下層に描画)</summary>
     public bool ShowWaveform { get; set; }
@@ -392,7 +399,7 @@ public sealed class ChartCanvas : FrameworkElement
     {
         Focusable = true;
         ClipToBounds = true;
-        // 2026-08-05: 譜面ビューにフォーカスがある間はIMEを無効化する。日本語入力ON状態だと
+        // 2026-07-26: 譜面ビューにフォーカスがある間はIMEを無効化する。日本語入力ON状態だと
         // Space等のショートカットキーが変換確定操作に奪われて効かなくなるため(ユーザー要望)。
         InputMethod.SetIsInputMethodEnabled(this, false);
     }
@@ -482,7 +489,7 @@ public sealed class ChartCanvas : FrameworkElement
         base.OnMouseLeftButtonUp(e);
         if (StartNumberEditMode) { SnUp(e); return; }
         if (Controller is null) return;
-        // 2026-08-04: Ctrl+ドラッグ=複製の判定はボタンを離した瞬間のCtrl状態で行うため、
+        // 2026-07-26: Ctrl+ドラッグ=複製の判定はボタンを離した瞬間のCtrl状態で行うため、
         // ここで最新のModifiersOf(e)を渡す(押下時の状態のまま固定しない)。
         Controller.End(PosOf(e.GetPosition(this)), ModifiersOf(e));
         ReleaseMouseCapture();
@@ -499,7 +506,7 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// 2026-08-05再定義(ユーザー確定仕様、統一性重視): Shift+ホイール=縦方向ズーム(ハイスピ/pxPerTick)、
+    /// 2026-07-26再定義(ユーザー確定仕様、統一性重視): Shift+ホイール=縦方向ズーム(ハイスピ/pxPerTick)、
     /// Alt+ホイール=横方向ズーム(ChartLayout.ZoomScale。カラム幅・ノート表示サイズが連動、仕様書4.3。
     /// 旧Ctrl単独から移動)、Ctrl+ホイール=スクロール量2倍、Shift+Ctrl+ホイール=スクロール量4倍
     /// (旧・縦横同時ズームを廃止し、こちらへ用途変更)。修飾キー無しは既定のスクロール(ScrollViewerへ委譲)。
@@ -531,7 +538,7 @@ public sealed class ChartCanvas : FrameworkElement
             layout.SetZoom(layout.ZoomScale * step);
             e.Handled = true;
             InvalidateAll();
-            // 2026-08-05: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
+            // 2026-07-26: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
             Document.Project.EditorZoomScale = layout.ZoomScale;
         }
         else if (shift && !ctrl && !alt)
@@ -546,7 +553,7 @@ public sealed class ChartCanvas : FrameworkElement
             layout.PxPerTick = Math.Clamp(layout.PxPerTick * step, ChartLayout.MinPxPerTick, ChartLayout.MaxPxPerTick); // 2026-07-19g: 分解能スケールに追従
             e.Handled = true;
             InvalidateAll();
-            // 2026-08-05: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
+            // 2026-07-26: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
             Document.Project.EditorZoomPxPerTick = layout.PxPerTick;
 
             if (sv is not null)
@@ -558,7 +565,7 @@ public sealed class ChartCanvas : FrameworkElement
         }
     }
 
-    /// <summary>2026-08-05: Ctrl/Shift+Ctrl+ホイール用の倍速スクロール。OS既定のホイール1ノッチあたりの
+    /// <summary>2026-07-26: Ctrl/Shift+Ctrl+ホイール用の倍速スクロール。OS既定のホイール1ノッチあたりの
     /// 行数(SystemParameters.WheelScrollLines)を基準に、その整数倍だけScrollViewerのLineUp/Downを
     /// 呼ぶ(既定スクロールの内部実装を再利用しつつ、環境ごとの体感速度差もそのまま維持できる)。</summary>
     private void ScrollByMultiplier(int delta, int multiplier)
@@ -595,7 +602,7 @@ public sealed class ChartCanvas : FrameworkElement
     {
         if (Document is null) return new Size(0, 0);
         var layout = Document.CurrentLayout;
-        long maxTick = MaxTickInProject(Document);
+        long maxTick = MaxTickInProject(Document, AudioTotalFrames);
         double h = layout.ContentHeight(maxTick); // Reverseの影響を受けない素の高さ(スクロール範囲自体は不変)
         // 2026-07-22: マウス操作(YToTick)がOnRenderの前に発生するケースに備え、ここでも反転基準を更新しておく。
         layout.Reverse = Reverse;
@@ -603,8 +610,11 @@ public sealed class ChartCanvas : FrameworkElement
         return new Size(layout.TotalWidth, h);
     }
 
-    /// <summary>internal化(2026-08-05): ChartMinimapが全体スクロール範囲の算出に再利用するため。</summary>
-    internal static long MaxTickInProject(EditorDocument doc)
+    /// <summary>internal化(2026-07-26): ChartMinimapが全体スクロール範囲の算出に再利用するため。
+    /// audioTotalFrames(2026-07-26追加): 読込済み音楽の全長(フレーム)。指定があれば、ノートを
+    /// まだ置いていない範囲でも曲の長さぶんスクロールできるよう、最大tickの下限に加味する
+    /// (「サビから制作」等、末尾から作り始めるスタイルへの対応)。</summary>
+    internal static long MaxTickInProject(EditorDocument doc, double? audioTotalFrames = null)
     {
         long max = 192 * 8; // 空プロジェクトでも最低8小節ぶんは表示領域を確保
         var tab = doc.CurrentTab;
@@ -617,6 +627,12 @@ public sealed class ChartCanvas : FrameworkElement
         foreach (var e in tab.BoostEvents) max = Math.Max(max, e.Tick);
         foreach (var e in doc.Project.BpmEvents) max = Math.Max(max, e.Tick);
         foreach (var m in doc.Project.Markers) max = Math.Max(max, m.Tick);
+        if (audioTotalFrames is { } totalFrames && totalFrames > 0)
+        {
+            var engine = doc.Project.CreateTimingEngine();
+            long audioTick = (long)Math.Ceiling(engine.FrameToTick(totalFrames));
+            max = Math.Max(max, audioTick);
+        }
         return max;
     }
 
@@ -637,7 +653,7 @@ public sealed class ChartCanvas : FrameworkElement
         // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)。RefreshContentHeightは反転基準の
         // コンテンツ高さを最新化する(Reverse=false時は参照されないが常に呼んでおいて問題ない)。
         layout.Reverse = Reverse;
-        layout.RefreshContentHeight(MaxTickInProject(Document));
+        layout.RefreshContentHeight(MaxTickInProject(Document, AudioTotalFrames));
 
         var viewport = ViewportRect.IsEmpty ? new Rect(0, 0, layout.TotalWidth, Math.Max(RenderSize.Height, 600)) : ViewportRect;
         double yTop = Math.Max(0, viewport.Top - 32);   // 少し余裕を持ってカリング
@@ -674,7 +690,7 @@ public sealed class ChartCanvas : FrameworkElement
     /// MainWindow.ToggleKeyboardModeから反映される。</summary>
     public bool KeyboardModeActive { get; set; }
 
-    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-08-01、要望対応、既定OFF)。
+    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-07-26、要望対応、既定OFF)。
     /// AppSettings.ShowLaneNoteCountから反映される(MainWindow.ApplyDisplaySettingsToCanvas参照)。</summary>
     public bool ShowLaneNoteCount { get; set; }
 
@@ -960,7 +976,7 @@ public sealed class ChartCanvas : FrameworkElement
             // (DosImporter/DosExporterと同じ簡略化、2026-07-24開示済み)。
             Color arrowShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "setShadowColor"), Colors.Black);
             Color normalShadowDefault = TryParseColor(ColorDefaults.ResolveShadowHex(project, laneDef.ColorGroup, "frzShadowColor"), Colors.Black);
-            // 2026-07-27確定仕様: shadow画像はデフォルトOFF(setShadowColor/frzShadowColor等、色関係の
+            // 2026-07-26確定仕様: shadow画像はデフォルトOFF(setShadowColor/frzShadowColor等、色関係の
             // 指定が実際にある場合のみ利用する)。従来はshadow画像素材(arrowShadow.png等)が存在する限り
             // 常時描画しており、指定が無いのに既定の黒塗りが表示されてしまっていた。
             // ここでは「その他ヘッダー」でsetShadowColor/frzShadowColorが明示的に使用設定されているか
@@ -983,7 +999,7 @@ public sealed class ChartCanvas : FrameworkElement
                     edgeColor = fOver?.HitColor is { } hc ? ParseDisplayColor(hc, frzHitNoteColor) : frzHitNoteColor;
                     bandColor = fOver?.HitBarColor is { } hbc ? ParseDisplayColor(hbc, frzHitBandColor) : frzHitBandColor;
                     shadowColor = fOver?.HitShadowColor is { } hsc ? ParseDisplayColor(hsc, normalShadowDefault) : normalShadowDefault;
-                    // 2026-07-27: HitShadowは専用ヘッダーが無いためfrzShadowColorの指定有無で判定する
+                    // 2026-07-26: HitShadowは専用ヘッダーが無いためfrzShadowColorの指定有無で判定する
                     showFreezeShadow = normalShadowHeaderSpecified || fOver?.HitShadowColor is not null;
                 }
                 else
@@ -1005,7 +1021,7 @@ public sealed class ChartCanvas : FrameworkElement
                 {
                     // 2026-07-25: 塗りつぶし色の画像(あれば)を本体画像より先に描き、下地として重ねる
                     // (本体側の見た目に合わせ、塗りつぶしを背面レイヤーとして扱う)。
-                    // 2026-07-27: 色関係の指定(frzShadowColor/ncolor_data)が実際にある場合のみ描画する。
+                    // 2026-07-26: 色関係の指定(frzShadowColor/ncolor_data)が実際にある場合のみ描画する。
                     if (shadowImage is not null && showFreezeShadow)
                     {
                         DrawNoteImage(dc, shadowImage, laneDef, cx, y1, layout.NoteSize, shadowColor);
@@ -1027,7 +1043,7 @@ public sealed class ChartCanvas : FrameworkElement
                 if (ShowHighlightGrid)
                 {
                     // 強調グリッド: 始点・終点それぞれの位置に横棒を描く(2026-07-16h、2026-07-16jで独立トグル化)。
-                    // 2026-08-02: 終点は密集時に非常に見づらいとの指摘対応で、設定でON/OFFできるようにした
+                    // 2026-07-26: 終点は密集時に非常に見づらいとの指摘対応で、設定でON/OFFできるようにした
                     // (既定は従来通り描画する=OFF)。
                     dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y1 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                     if (!ExcludeFreezeEndFromHighlight)
@@ -1046,7 +1062,7 @@ public sealed class ChartCanvas : FrameworkElement
                 colorOverrides.TryGetValue(t, out var nOver);
                 var noteColor = nOver?.Color is { } nc ? ParseDisplayColor(nc, ((SolidColorBrush)brush).Color) : ((SolidColorBrush)brush).Color;
                 var noteShadowColor = nOver?.ShadowColor is { } nsc ? ParseDisplayColor(nsc, arrowShadowDefault) : arrowShadowDefault;
-                // 2026-07-27: setShadowColor/ncolor_dataの指定が実際にある場合のみshadow画像を表示する(既定OFF)。
+                // 2026-07-26: setShadowColor/ncolor_dataの指定が実際にある場合のみshadow画像を表示する(既定OFF)。
                 bool showNoteShadow = arrowShadowHeaderSpecified || nOver?.ShadowColor is not null;
                 // 2026-07-16j: 独立トグル化。ノート画像(or ベクターフォールバック)と強調グリッドは
                 // 排他ではなく、それぞれのフラグに応じて重ねて描く。
@@ -1103,7 +1119,7 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     // =====================================================================
-    // テンプレート編集/マクロ編集ウィンドウ共通のレーンプレビュー描画(2026-07-30)。
+    // テンプレート編集/マクロ編集ウィンドウ共通のレーンプレビュー描画(2026-07-26)。
     // 実際の譜面ビュー描画(DrawNoteImage、rotationAngle反映込み)をそのまま再利用し、
     // 色はcolorGroupに応じて要望の見本色(setColor=#9999ff,#ccffff,#ffffff,#ffff99,#ff9966)を
     // 循環で割り当てる(実際のsetColor設定とは無関係な、編集時の見分け用サンプル色)。
@@ -1128,7 +1144,7 @@ public sealed class ChartCanvas : FrameworkElement
         if (image is not null)
             DrawNoteImage(dc, image, laneDef, cx, cy, size, tint);
         else
-            dc.DrawRectangle(Freeze(new SolidColorBrush(tint)), new Pen(Brushes.Gray, 0.5), // 2026-07-30: 背景が黒のため視認性を優先
+            dc.DrawRectangle(Freeze(new SolidColorBrush(tint)), new Pen(Brushes.Gray, 0.5), // 2026-07-26: 背景が黒のため視認性を優先
                 new Rect(cx - size / 2, cy - size / 2, size, size));
     }
 
@@ -1145,7 +1161,7 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// フリーズの表示色(仕様書6.4.2 frzColor)。2026-07-27確定仕様: 色グループ数に関わらず常に4スロット
+    /// フリーズの表示色(仕様書6.4.2 frzColor)。2026-07-26確定仕様: 色グループ数に関わらず常に4スロット
     /// [0]始点終点(通常) [1]帯(通常) [2]始点終点(判定中) [3]帯(判定中) の1セットのみ(danoniplus本体の
     /// 仕様通り。従来の「色グループごとに4スロット」実装は誤りだった)。tab自身のFrzColorOverrideが
     /// 無ければ1タブ目(共通値の実体)へ、さらに個々のスロットが空欄ならこのレーンのsetColorの値へ
@@ -1168,7 +1184,7 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     /// <summary>「その他ヘッダー」でheaderKey(setShadowColor/frzShadowColor等)が実際に使用設定されている
-    /// (=空でない値が入っている)かどうか(2026-07-27、shadow画像デフォルトOFF対応)。</summary>
+    /// (=空でない値が入っている)かどうか(2026-07-26、shadow画像デフォルトOFF対応)。</summary>
     private static bool HasNonEmptyHeader(ChartProject project, string headerKey) =>
         project.ExtraHeaders.TryGetValue(headerKey, out var v) && !string.IsNullOrWhiteSpace(v);
 
@@ -1217,7 +1233,7 @@ public sealed class ChartCanvas : FrameworkElement
     public bool MarkerCommentFull { get; set; } = true;
     public int MarkerCommentHeadChars { get; set; } = 4;
 
-    /// <summary>時間情報レーン/マーカーレーンの基準フォントサイズ(2026-08-05、環境設定から適用)。
+    /// <summary>時間情報レーン/マーカーレーンの基準フォントサイズ(2026-07-26、環境設定から適用)。
     /// ZoomScale=1.0時のptサイズで、実描画時はZoomScaleを掛けて最終サイズを求める(既定値は
     /// 変更前の固定値8/9を踏襲)。</summary>
     public double TimeInfoFontSize { get; set; } = 8.0;
@@ -1355,7 +1371,7 @@ public sealed class ChartCanvas : FrameworkElement
     /// 固定ヘッダーのXAML要素は作らず、viewport(スクロール位置)に追従してOnRenderのたびに
     /// その位置へ描き直す方式(ChartCanvas全体が1枚のCanvasで、ScrollViewerが外側にあるため)。
     /// </summary>
-    /// <summary>2026-08-01: レーンラベル欄のノート数表示(要望対応)。マウスモード中はラベルの次の行に、
+    /// <summary>2026-07-26: レーンラベル欄のノート数表示(要望対応)。マウスモード中はラベルの次の行に、
     /// キーボードモード中(既に2行使用中)はレーンラベル(1行目)をノート数表示に置き換える。</summary>
     private static readonly Brush NoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0xD5, 0x4F)));
 
@@ -1427,7 +1443,7 @@ public sealed class ChartCanvas : FrameworkElement
     /// はみ出していたバグを修正: マーカーレーン自身の幅にクリップして収める(2026-07-16h)。
     /// </summary>
     /// <summary>fontSizeBase=ZoomScale=1.0時の基準フォントサイズ(pt)。マーカータグは環境設定の
-    /// MarkerFontSizeを渡す(2026-08-05)。それ以外(speed/boost/BPM/歌詞)は従来通り既定値9を使う。</summary>
+    /// MarkerFontSizeを渡す(2026-07-26)。それ以外(speed/boost/BPM/歌詞)は従来通り既定値9を使う。</summary>
     private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9)
     {
         const double w = 20, h = 9;

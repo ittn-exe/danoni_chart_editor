@@ -26,15 +26,18 @@
   <ItemGroup>
     <Content Include="..\..\template\**\*.json" Link="template\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\img\**\*.png" Link="img\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\img')" />
-    <!-- 2026-08-03: imgフォルダのSVG対応(ノート画像素材としてpngの代わりにsvgを置けるようにする要望) -->
+    <!-- 2026-07-26: imgフォルダのSVG対応(ノート画像素材としてpngの代わりにsvgを置けるようにする要望) -->
     <Content Include="..\..\img\**\*.svg" Link="img\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\img')" />
+    <!-- ノート音素材(./sounds)。同梱のclap.wav含め、ユーザーが追加したwavファイルも
+         同様にexeと同じフォルダへコピーする(環境設定「テスト再生 > 全般」の一覧に反映される)。 -->
+    <Content Include="..\..\sounds\**\*.wav" Link="sounds\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\..\sounds')" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />
     <!-- 2026-07-26: 警告アイコン表示(SystemIcons.Warning)用。WPFプロファイルの共有フレームワークに
          含まれない環境があるため明示参照する -->
     <PackageReference Include="System.Drawing.Common" Version="8.0.7" />
-    <!-- 2026-08-03: imgフォルダのSVGノート画像対応(pngが無い場合にsvgをラスタライズして使用) -->
+    <!-- 2026-07-26: imgフォルダのSVGノート画像対応(pngが無い場合にsvgをラスタライズして使用) -->
     <PackageReference Include="Svg" Version="3.4.7" />
   </ItemGroup>
 </Project>

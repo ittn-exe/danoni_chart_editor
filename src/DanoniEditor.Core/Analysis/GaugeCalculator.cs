@@ -1,7 +1,7 @@
 namespace DanoniEditor.Core.Analysis;
 
 /// <summary>
-/// gauge{ゲージ名}(仕様dos-h0022)の計算機能(2026-08-01、ユーザー要望「ゲージ計算機」)。
+/// gauge{ゲージ名}(仕様dos-h0022)の計算機能(2026-07-26、ユーザー要望「ゲージ計算機」)。
 /// danoniplus本体(`danoni_main.js`)の`getAccuracy`/`calcLifeVal`/`gaugeFormat`をナレッジの本体ソースで
 /// 検証したうえで移植したもの。ユーザー提供の参考ツール(calc.html、Geminiで作成)には
 /// Fixモード(可変フラグ=F)の換算に本体側と食い違う「×100」の処理があったため、これは含めていない

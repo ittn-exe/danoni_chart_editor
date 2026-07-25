@@ -81,6 +81,6 @@
 
 - `docs/ittn_analyzer_integration_handoff.md` — ITTNアナライザー統合の背景・用語整理
 - `docs/progress_and_tbd_2026-07-24_add.md` — 忠実移植/BPM強化の2段階方針、おにスター回帰の方針確定
-- `docs/progress_and_tbd_2026-08-01.md` — β版判断材料としての全体進捗・TBDまとめ(ゲージ設定
+- `docs/progress_and_tbd_2026-07-22.md` — β版判断材料としての全体進捗・TBDまとめ(ゲージ設定
   `GaugeEditorWindow`の実装経緯を含む、本ドキュメント2-3の前提となる現状把握元)
-- `docs/remaining_tbd_2026-07-30.md` — その他ヘッダーUI未整備項目など、本スレッド外のTBD一覧
+- `docs/remaining_tbd_2026-07-22.md` — その他ヘッダーUI未整備項目など、本スレッド外のTBD一覧

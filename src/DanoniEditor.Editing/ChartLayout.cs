@@ -39,7 +39,7 @@ public sealed class ChartLayout
     public const double MarkerColWidth = 30;
     public const double MeasureColWidth = 46;
     public const double EventColWidth = 46;
-    // 2026-08-05: 「0小節目頭を画面中央までスクロールできるようにしたい」との要望対応で24→400へ拡大。
+    // 2026-07-26: 「0小節目頭を画面中央までスクロールできるようにしたい」との要望対応で24→400へ拡大。
     // tick0の描画位置(RawTickToY(0)=TopMargin)がそのままスクロール可能範囲の先頭側の余白にもなるため、
     // ここを広げるだけで先頭を画面中央付近まで持ってこられるようになる(一般的なウィンドウ高さを想定した値)。
     public const double TopMargin = 400;

@@ -10,7 +10,7 @@ using DanoniEditor.Core.Models;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// キー種テンプレート(temp_{keyTypeId}.json)の作成・編集ウィンドウ(2026-07-29)。
+/// キー種テンプレート(temp_{keyTypeId}.json)の作成・編集ウィンドウ(2026-07-26)。
 /// 環境設定「テンプレート」カテゴリから開く。既存ファイルを渡せば編集、nullなら新規作成
 /// (同じウィンドウを引数で使い分ける)。
 /// - 左パネル: テンプレート全体設定(keyTypeId等)。keyCountはレーンタブ数から自動算出。
@@ -33,6 +33,16 @@ internal sealed class TemplateEditorWindow : Window
     private readonly TextBox _posMax = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBlock _laneCountLabel = new() { Margin = new Thickness(0, 8, 0, 0), Foreground = Brushes.Gray };
 
+    // --- キーパターン(2026-07-26e要望対応、danoniplus本家の「キーパターン」概念への対応) ---
+    private readonly ComboBox _patternCombo = new() { Width = 200, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Button _addPatternButton = new() { Content = "パターン追加", Width = 95, Margin = new Thickness(0, 0, 6, 0) };
+    private readonly Button _removePatternButton = new() { Content = "パターン削除", Width = 95, IsEnabled = false };
+    private readonly TextBox _patternNameBox = new() { Width = 200, HorizontalAlignment = HorizontalAlignment.Left, IsEnabled = false };
+    private readonly PatternVM _basePattern = new();
+    private readonly List<PatternVM> _extraPatterns = [];
+    private int _currentPatternIndex;
+    private bool _suppressPatternComboEvent;
+
     private readonly TabControl _laneTabs = new();
     private readonly PreviewStripElement _previewStrip;
     private readonly StackPanel _fujiLaneNumStrip = new() { Orientation = Orientation.Horizontal };
@@ -42,6 +52,11 @@ internal sealed class TemplateEditorWindow : Window
     // --- レーンタブのD&D並び替え ---
     private Point _tabDragStartPoint;
     private int _tabDragSourceIndex = -1;
+
+    // --- keyboardInputKeysのキー入力キャプチャ(2026-07-26、「入力開始→キー押下→指定」フロー) ---
+    private bool _capturingKey;
+    private TextBox? _captureTargetBox;
+    private Button? _captureButton;
 
     /// <summary>保存に成功した場合の保存先パス(呼び出し元がテンプレート一覧を再読込する用)</summary>
     public string? SavedPath { get; private set; }
@@ -77,12 +92,39 @@ internal sealed class TemplateEditorWindow : Window
             e.CancelCommand();
         });
 
+        // 2026-07-26: keyboardInputKeysのキー入力キャプチャ用。Window全体でPreview段階(トンネリング、
+        // 子コントロールより先)に捕まえることで、キャプチャ中はEnter/EscapeがSave/Cancelボタンの
+        // 既定動作(IsDefault/IsCancel)に奪われないようにする。
+        PreviewKeyDown += Window_PreviewKeyDown_KeyCapture;
+
         _laneTabs.AllowDrop = true;
         _laneTabs.PreviewMouseLeftButtonDown += LaneTabs_PreviewMouseLeftButtonDown;
         _laneTabs.PreviewMouseMove += LaneTabs_PreviewMouseMove;
         _laneTabs.PreviewDragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
         _laneTabs.Drop += LaneTabs_Drop;
         _laneTabs.SelectionChanged += (_, _) => _removeLaneButton.IsEnabled = _laneTabs.SelectedItem is not null;
+
+        // 2026-07-26e: blank/divideCnt/posMaxはパターンごとに独立するため、入力の都度
+        // 選択中パターン(ActivePattern)へ即座に書き込む(パターン切替時はLoadPatternFieldsIntoUIで
+        // 表示側を差し替えるだけで、書き込み先は常に「その時点のActivePattern」なので同期漏れが無い)。
+        _blank.TextChanged += (_, _) => ActivePattern.Blank = _blank.Text;
+        _divideCnt.TextChanged += (_, _) => ActivePattern.DivideCnt = _divideCnt.Text;
+        _posMax.TextChanged += (_, _) => ActivePattern.PosMax = _posMax.Text;
+
+        _patternCombo.SelectionChanged += (_, _) =>
+        {
+            if (_suppressPatternComboEvent) return;
+            _currentPatternIndex = Math.Max(0, _patternCombo.SelectedIndex);
+            LoadPatternFieldsIntoUI();
+            UpdatePatternButtonsState();
+        };
+        _addPatternButton.Click += AddPattern_Click;
+        _removePatternButton.Click += RemovePattern_Click;
+        _patternNameBox.TextChanged += (_, _) =>
+        {
+            if (_currentPatternIndex <= 0 || _currentPatternIndex > _extraPatterns.Count) return;
+            _extraPatterns[_currentPatternIndex - 1].Name = _patternNameBox.Text;
+        };
 
         // --- レイアウト ---
         var root = new DockPanel();
@@ -100,7 +142,7 @@ internal sealed class TemplateEditorWindow : Window
         DockPanel.SetDock(errBorder, Dock.Bottom);
         root.Children.Add(errBorder);
 
-        // 2026-07-31: プレビュー帯の下にfujiLaneNum入力欄の帯を追加(要望)。同じScrollViewerに
+        // 2026-07-26: プレビュー帯の下にfujiLaneNum入力欄の帯を追加(要望)。同じScrollViewerに
         // 縦に並べて入れることで、横スクロールが両者で常に同期する。
         var previewAndFujiPanel = new StackPanel { Orientation = Orientation.Vertical };
         previewAndFujiPanel.Children.Add(_previewStrip);
@@ -120,7 +162,7 @@ internal sealed class TemplateEditorWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Height = 130,
-            Background = Brushes.Black, // 2026-07-30: 明るい色見本(#ccffff/#ffffff等)の視認性対応
+            Background = Brushes.Black, // 2026-07-26: 明るい色見本(#ccffff/#ffffff等)の視認性対応
         };
         var previewBorder = new Border
         {
@@ -168,6 +210,7 @@ internal sealed class TemplateEditorWindow : Window
             _divideCnt.Text = "0";
             _posMax.Text = "0";
         }
+        RefreshPatternCombo();
         UpdateLaneCountLabel();
         RefreshPreview();
     }
@@ -186,6 +229,16 @@ internal sealed class TemplateEditorWindow : Window
         p.Children.Add(_keyTypeName);
         p.Children.Add(Label("comment:"));
         p.Children.Add(_comment);
+
+        p.Children.Add(Label("キーパターン(以下の項目はパターンごとに独立)", section: true));
+        p.Children.Add(_patternCombo);
+        var patternButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+        patternButtons.Children.Add(_addPatternButton);
+        patternButtons.Children.Add(_removePatternButton);
+        p.Children.Add(patternButtons);
+        p.Children.Add(Label("パターン名(任意、既定パターンには設定不可):"));
+        p.Children.Add(_patternNameBox);
+
         p.Children.Add(Label("blank(px):"));
         p.Children.Add(_blank);
         p.Children.Add(Label("divideCnt:"));
@@ -211,22 +264,51 @@ internal sealed class TemplateEditorWindow : Window
 
     /// <summary>LaneDefの手編集用ミュータブルコピー。数値項目も文字列のまま保持し、保存時にまとめて検証する
     /// (入力中の一時的な不正値でエラーダイアログが出ないようにするため)。fujiLaneNumは
-    /// プレビュー帯の下の専用欄で編集する(2026-07-31、レーンタブ本体の入力欄一覧には含めない)。
+    /// プレビュー帯の下の専用欄で編集する(2026-07-26、レーンタブ本体の入力欄一覧には含めない)。
     /// 空欄は「未指定(displayOrderを使う)」を表す。</summary>
     private sealed class LaneEditVM
     {
         public string LaneId = "";
         public string DataName = "";
         public string FrzDataNameOverride = "";
-        public string KeyAssign = "";
         public string KeyboardInputKeys = "";
+        public string EngineLaneNum = "0";
+        public string FujiLaneNumText = "";
+
+        /// <summary>パターン0(既定)のプレゼンテーション値(2026-07-26e)</summary>
+        public LanePatternFieldsVM Base = new();
+        /// <summary>パターン1以降の上書き値。インデックス0がパターン1に対応する(2026-07-26e)。</summary>
+        public List<LanePatternFieldsVM> PatternOverrides = [];
+
+        // --- UI参照(パターン切替時の表示更新用、保存対象データではない、2026-07-26e) ---
+        public TextBox? KeyAssignBox;
+        public TextBox? ColorGroupBox;
+        public TextBox? PosIndexBox;
+        public ComboBox? ScrollDirCombo;
+        public ComboBox? NoteGraphicCombo;
+        public TextBox? RotationAngleBox;
+    }
+
+    /// <summary>キーパターンごとに独立するレーンのプレゼンテーション値(2026-07-26e)。
+    /// danoniplus本家のkeyCtrlX_Y/colorX_Y/posX_Y/scrollDirX_Y/stepRtnX_Y相当。</summary>
+    private sealed class LanePatternFieldsVM
+    {
+        public string KeyAssign = "";
         public string ColorGroup = "0";
         public string PosIndex = "0";
         public string ScrollDirection = "down";
         public string NoteGraphic = "arrow";
         public string RotationAngle = "0";
-        public string EngineLaneNum = "0";
-        public string FujiLaneNumText = "";
+    }
+
+    /// <summary>キーパターン1件分のテンプレートレベル設定(2026-07-26e)。blank/divideCnt/posMaxは
+    /// danoniplus本家でもパターンごとに変わり得るため、ここに持たせる。</summary>
+    private sealed class PatternVM
+    {
+        public string Name = "";
+        public string Blank = "50";
+        public string DivideCnt = "0";
+        public string PosMax = "0";
     }
 
     private static LaneEditVM FromLaneDef(LaneDef d) => new()
@@ -234,21 +316,48 @@ internal sealed class TemplateEditorWindow : Window
         LaneId = d.LaneId,
         DataName = d.DataName,
         FrzDataNameOverride = d.FrzDataNameOverride ?? "",
-        KeyAssign = string.Join("/", d.KeyAssign),
         KeyboardInputKeys = string.Join("/", d.KeyboardInputKeys),
-        ColorGroup = d.ColorGroup.ToString(CultureInfo.InvariantCulture),
-        PosIndex = d.PosIndex.ToString(CultureInfo.InvariantCulture),
-        ScrollDirection = d.ScrollDirection,
-        NoteGraphic = d.NoteGraphic,
-        RotationAngle = d.RotationAngle.ToString(CultureInfo.InvariantCulture),
         EngineLaneNum = d.EngineLaneNum.ToString(CultureInfo.InvariantCulture),
         FujiLaneNumText = d.FujiLaneNum?.ToString(CultureInfo.InvariantCulture) ?? "",
+        Base = new LanePatternFieldsVM
+        {
+            KeyAssign = string.Join("/", d.KeyAssign),
+            ColorGroup = d.ColorGroup.ToString(CultureInfo.InvariantCulture),
+            PosIndex = d.PosIndex.ToString(CultureInfo.InvariantCulture),
+            ScrollDirection = d.ScrollDirection,
+            NoteGraphic = d.NoteGraphic,
+            RotationAngle = d.RotationAngle.ToString(CultureInfo.InvariantCulture),
+        },
+    };
+
+    private static LanePatternFieldsVM FromOverride(LanePatternOverride o) => new()
+    {
+        KeyAssign = string.Join("/", o.KeyAssign),
+        ColorGroup = o.ColorGroup.ToString(CultureInfo.InvariantCulture),
+        PosIndex = o.PosIndex.ToString(CultureInfo.InvariantCulture),
+        ScrollDirection = o.ScrollDirection,
+        NoteGraphic = o.NoteGraphic,
+        RotationAngle = o.RotationAngle.ToString(CultureInfo.InvariantCulture),
     };
 
     private static string HeaderText(LaneEditVM vm) => string.IsNullOrWhiteSpace(vm.LaneId) ? "(無名)" : vm.LaneId;
 
+    /// <summary>現在選択中パターンのテンプレートレベル設定(blank/divideCnt/posMax)を返す(2026-07-26e)。</summary>
+    private PatternVM ActivePattern =>
+        _currentPatternIndex <= 0 || _currentPatternIndex > _extraPatterns.Count
+            ? _basePattern : _extraPatterns[_currentPatternIndex - 1];
+
+    /// <summary>指定レーンの、現在選択中パターンにおけるプレゼンテーション値を返す(2026-07-26e)。</summary>
+    private LanePatternFieldsVM ActiveFields(LaneEditVM vm) =>
+        _currentPatternIndex <= 0 || _currentPatternIndex > vm.PatternOverrides.Count
+            ? vm.Base : vm.PatternOverrides[_currentPatternIndex - 1];
+
     private void AddLaneTab(LaneEditVM vm)
     {
+        // 2026-07-26e: 既存パターン数に満たない場合は既定値で埋めておく(新規レーン追加時)。
+        // LoadFromから呼ばれる場合は既に全パターン分埋まっているため、この処理は何もしない。
+        while (vm.PatternOverrides.Count < _extraPatterns.Count) vm.PatternOverrides.Add(new LanePatternFieldsVM());
+
         var tab = BuildLaneTab(vm);
         _laneTabs.Items.Add(tab);
         _laneTabs.SelectedItem = tab;
@@ -270,39 +379,231 @@ internal sealed class TemplateEditorWindow : Window
             return box;
         }
 
+        // 2026-07-26: 「入力開始」ボタン付きのテキスト行。ボタンを押してから任意のキーを押下すると、
+        // Window_PreviewKeyDown_KeyCaptureがそのキーをラベルへ変換してこの欄へ追加する
+        // (テンキーのキーも含め、KeyLabelMapper.LabelForKeyが対応するキーなら何でも拾える)。
+        // 手入力での直接編集(「/」区切りで複数指定等)も従来通り可能。
+        void AddKeyCaptureTextRow(string label, string initial, Action<string> onChange)
+        {
+            grid.Children.Add(Label(label));
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var box = new TextBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Text = initial };
+            box.TextChanged += (_, _) => onChange(box.Text);
+            var captureButton = new Button { Content = "入力開始", Width = 90, Margin = new Thickness(6, 0, 0, 0) };
+            captureButton.Click += (_, _) => BeginKeyCapture(captureButton, box);
+            row.Children.Add(box);
+            row.Children.Add(captureButton);
+            grid.Children.Add(row);
+        }
+
         AddTextRow("laneId:", vm.LaneId, v => { vm.LaneId = v; tab.Header = HeaderText(vm); RefreshPreview(); });
         AddTextRow("dataName:", vm.DataName, v => vm.DataName = v);
         AddTextRow("frzDataNameOverride(空欄=frz+dataNameの規定通り):", vm.FrzDataNameOverride, v => vm.FrzDataNameOverride = v);
-        AddTextRow("keyAssign(複数キーは/区切り、例 E/R):", vm.KeyAssign, v => vm.KeyAssign = v);
-        AddTextRow("keyboardInputKeys(空欄可、複数は/区切り):", vm.KeyboardInputKeys, v => vm.KeyboardInputKeys = v);
-        AddTextRow("colorGroup(整数):", vm.ColorGroup, v => { vm.ColorGroup = v; RefreshPreview(); });
-        AddTextRow("posIndex(数値、小数可):", vm.PosIndex, v => vm.PosIndex = v);
+        // 2026-07-26e: keyAssign以下6項目はキーパターンごとに独立するため、書き込み先を
+        // ActiveFields(vm)経由(=現在選択中パターン)にする。パターン切替時はLoadPatternFieldsIntoUIが
+        // 各コントロールの表示だけを差し替え、コントロール自体は使い回す(vmにUI参照を保持)。
+        vm.KeyAssignBox = AddTextRow("keyAssign(複数キーは/区切り、例 E/R。パターンごとに独立):",
+            ActiveFields(vm).KeyAssign, v => ActiveFields(vm).KeyAssign = v);
+        AddKeyCaptureTextRow("keyboardInputKeys(空欄可、複数は/区切り。「入力開始」→実キー押下でも追加可):",
+            vm.KeyboardInputKeys, v => vm.KeyboardInputKeys = v);
+        vm.ColorGroupBox = AddTextRow("colorGroup(整数、パターンごとに独立):",
+            ActiveFields(vm).ColorGroup, v => { ActiveFields(vm).ColorGroup = v; RefreshPreview(); });
+        vm.PosIndexBox = AddTextRow("posIndex(数値、小数可、パターンごとに独立):",
+            ActiveFields(vm).PosIndex, v => ActiveFields(vm).PosIndex = v);
 
-        grid.Children.Add(Label("scrollDirection:"));
+        grid.Children.Add(Label("scrollDirection(パターンごとに独立):"));
         var scrollCombo = new ComboBox { Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
         scrollCombo.Items.Add("up");
         scrollCombo.Items.Add("down");
-        scrollCombo.SelectedItem = vm.ScrollDirection is "up" or "down" ? vm.ScrollDirection : "down";
-        scrollCombo.SelectionChanged += (_, _) => vm.ScrollDirection = scrollCombo.SelectedItem as string ?? "down";
+        scrollCombo.SelectedItem = ActiveFields(vm).ScrollDirection is "up" or "down" ? ActiveFields(vm).ScrollDirection : "down";
+        scrollCombo.SelectionChanged += (_, _) => ActiveFields(vm).ScrollDirection = scrollCombo.SelectedItem as string ?? "down";
         grid.Children.Add(scrollCombo);
+        vm.ScrollDirCombo = scrollCombo;
 
-        grid.Children.Add(Label("noteGraphic:"));
+        grid.Children.Add(Label("noteGraphic(パターンごとに独立):"));
         var graphicCombo = new ComboBox { Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
         foreach (var g in _noteGraphicOptions) graphicCombo.Items.Add(g);
-        if (!_noteGraphicOptions.Contains(vm.NoteGraphic)) graphicCombo.Items.Add(vm.NoteGraphic);
-        graphicCombo.SelectedItem = vm.NoteGraphic;
+        EnsureGraphicOption(graphicCombo, ActiveFields(vm).NoteGraphic);
+        graphicCombo.SelectedItem = ActiveFields(vm).NoteGraphic;
         graphicCombo.SelectionChanged += (_, _) =>
         {
-            vm.NoteGraphic = graphicCombo.SelectedItem as string ?? vm.NoteGraphic;
+            ActiveFields(vm).NoteGraphic = graphicCombo.SelectedItem as string ?? ActiveFields(vm).NoteGraphic;
             RefreshPreview();
         };
         grid.Children.Add(graphicCombo);
+        vm.NoteGraphicCombo = graphicCombo;
 
-        AddTextRow("rotationAngle(度):", vm.RotationAngle, v => { vm.RotationAngle = v; RefreshPreview(); });
+        vm.RotationAngleBox = AddTextRow("rotationAngle(度、パターンごとに独立):",
+            ActiveFields(vm).RotationAngle, v => { ActiveFields(vm).RotationAngle = v; RefreshPreview(); });
         AddTextRow("engineLaneNum(整数、本体エンジンの内部レーン番号):", vm.EngineLaneNum, v => vm.EngineLaneNum = v);
 
         tab.Content = new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         return tab;
+    }
+
+    // =====================================================================
+    // キーパターン切替(2026-07-26e要望対応)
+    // =====================================================================
+
+    private static void EnsureGraphicOption(ComboBox combo, string value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        if (!combo.Items.Cast<string>().Contains(value)) combo.Items.Add(value);
+    }
+
+    /// <summary>パターン選択コンボの選択肢を作り直す(件数変化時に呼ぶ)。選択中パターン番号は
+    /// 可能な限り維持し、範囲外なら既定パターン(0)へフォールバックする。呼び出し後、
+    /// 表示コントロールも選択中パターンの値へ同期する。</summary>
+    private void RefreshPatternCombo()
+    {
+        _suppressPatternComboEvent = true;
+        _patternCombo.Items.Clear();
+        _patternCombo.Items.Add("パターン0(既定)");
+        for (int i = 0; i < _extraPatterns.Count; i++)
+        {
+            var name = _extraPatterns[i].Name;
+            _patternCombo.Items.Add(string.IsNullOrWhiteSpace(name) ? $"パターン{i + 1}" : $"パターン{i + 1}: {name}");
+        }
+        _currentPatternIndex = Math.Clamp(_currentPatternIndex, 0, _extraPatterns.Count);
+        _patternCombo.SelectedIndex = _currentPatternIndex;
+        _suppressPatternComboEvent = false;
+
+        LoadPatternFieldsIntoUI();
+        UpdatePatternButtonsState();
+    }
+
+    private void UpdatePatternButtonsState()
+    {
+        _removePatternButton.IsEnabled = _currentPatternIndex > 0;
+        _patternNameBox.IsEnabled = _currentPatternIndex > 0;
+        _patternNameBox.Text = _currentPatternIndex > 0 ? _extraPatterns[_currentPatternIndex - 1].Name : "";
+    }
+
+    /// <summary>選択中パターンの値を各コントロールへ反映する(パターン切替の都度呼ぶ)。
+    /// コントロールのText/SelectedItemを書き換えると対応するイベントが再発火するが、
+    /// 書き込み先は常に「その時点のActivePattern/ActiveFields」なので同じ値を書き戻すだけで
+    /// 実害は無い(2026-07-26e)。</summary>
+    private void LoadPatternFieldsIntoUI()
+    {
+        var tp = ActivePattern;
+        _blank.Text = tp.Blank;
+        _divideCnt.Text = tp.DivideCnt;
+        _posMax.Text = tp.PosMax;
+
+        foreach (TabItem item in _laneTabs.Items)
+        {
+            var vm = (LaneEditVM)item.Tag!;
+            var f = ActiveFields(vm);
+            if (vm.KeyAssignBox is not null) vm.KeyAssignBox.Text = f.KeyAssign;
+            if (vm.ColorGroupBox is not null) vm.ColorGroupBox.Text = f.ColorGroup;
+            if (vm.PosIndexBox is not null) vm.PosIndexBox.Text = f.PosIndex;
+            if (vm.ScrollDirCombo is not null) vm.ScrollDirCombo.SelectedItem = f.ScrollDirection;
+            if (vm.NoteGraphicCombo is not null)
+            {
+                EnsureGraphicOption(vm.NoteGraphicCombo, f.NoteGraphic);
+                vm.NoteGraphicCombo.SelectedItem = f.NoteGraphic;
+            }
+            if (vm.RotationAngleBox is not null) vm.RotationAngleBox.Text = f.RotationAngle;
+        }
+        RefreshPreview();
+    }
+
+    /// <summary>現在選択中パターンの値をコピーして新規パターンを追加し、そちらへ切り替える
+    /// (2026-07-26e確定仕様: ゼロから入力させず、差分だけ調整すればよいようにする)。</summary>
+    private void AddPattern_Click(object sender, RoutedEventArgs e)
+    {
+        var src = ActivePattern;
+        _extraPatterns.Add(new PatternVM { Name = "", Blank = src.Blank, DivideCnt = src.DivideCnt, PosMax = src.PosMax });
+
+        foreach (TabItem item in _laneTabs.Items)
+        {
+            var vm = (LaneEditVM)item.Tag!;
+            var f = ActiveFields(vm);
+            vm.PatternOverrides.Add(new LanePatternFieldsVM
+            {
+                KeyAssign = f.KeyAssign,
+                ColorGroup = f.ColorGroup,
+                PosIndex = f.PosIndex,
+                ScrollDirection = f.ScrollDirection,
+                NoteGraphic = f.NoteGraphic,
+                RotationAngle = f.RotationAngle,
+            });
+        }
+
+        _currentPatternIndex = _extraPatterns.Count;
+        RefreshPatternCombo();
+    }
+
+    private void RemovePattern_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentPatternIndex <= 0 || _currentPatternIndex > _extraPatterns.Count) return;
+        int idx = _currentPatternIndex - 1;
+        var name = string.IsNullOrWhiteSpace(_extraPatterns[idx].Name) ? $"パターン{_currentPatternIndex}" : _extraPatterns[idx].Name;
+        var confirm = MessageBox.Show(this, $"'{name}' を削除しますか?", "パターン削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        _extraPatterns.RemoveAt(idx);
+        foreach (TabItem item in _laneTabs.Items)
+        {
+            var vm = (LaneEditVM)item.Tag!;
+            if (idx < vm.PatternOverrides.Count) vm.PatternOverrides.RemoveAt(idx);
+        }
+
+        _currentPatternIndex = 0;
+        RefreshPatternCombo();
+    }
+
+    // =====================================================================
+    // keyboardInputKeysのキー入力キャプチャ(2026-07-26)
+    // =====================================================================
+
+    /// <summary>「入力開始」ボタン押下時。次に押された物理キー1つを対象欄へ追加する待機状態にする。</summary>
+    private void BeginKeyCapture(Button button, TextBox targetBox)
+    {
+        if (_capturingKey) EndKeyCapture(); // 別の欄で入力待ち中だった場合は切り替える
+        _capturingKey = true;
+        _captureTargetBox = targetBox;
+        _captureButton = button;
+        button.Content = "キー入力待ち...(Escで中止)";
+        button.IsEnabled = false;
+        Keyboard.Focus(this); // テキストボックス等にフォーカスが残ってキー入力を横取りしないようにする
+    }
+
+    private void EndKeyCapture()
+    {
+        if (_captureButton is not null) { _captureButton.Content = "入力開始"; _captureButton.IsEnabled = true; }
+        _capturingKey = false;
+        _captureTargetBox = null;
+        _captureButton = null;
+    }
+
+    /// <summary>キー入力待ち状態の間だけ、Window全体でPreview段階のキー押下を横取りする
+    /// (Save/CancelボタンのIsDefault/IsCancel等、通常のショートカットに奪われないようにするため)。
+    /// Escapeは「キー自体の指定」ではなく「キャプチャの中止」として扱う(2026-07-26確定仕様)。</summary>
+    private void Window_PreviewKeyDown_KeyCapture(object sender, KeyEventArgs e)
+    {
+        if (!_capturingKey) return;
+        e.Handled = true;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key; // Alt同時押し時はSystemKey側に実キーが入る
+        if (key == Key.Escape) { EndKeyCapture(); return; }
+
+        var label = KeyLabelMapper.LabelForKey(key);
+        if (label is null)
+        {
+            MessageBox.Show(this, $"このキー({key})は対応表に無いため指定できませんの。", "キー入力",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            EndKeyCapture();
+            return;
+        }
+
+        if (_captureTargetBox is not null)
+        {
+            var keys = SplitKeys(_captureTargetBox.Text);
+            if (!keys.Contains(label)) keys.Add(label);
+            _captureTargetBox.Text = string.Join("/", keys);
+        }
+        EndKeyCapture();
     }
 
     private void RemoveLane_Click(object sender, RoutedEventArgs e)
@@ -378,7 +679,7 @@ internal sealed class TemplateEditorWindow : Window
     }
 
     /// <summary>
-    /// プレビュー帯の下のfujiLaneNum入力欄を、現在のタブ順で再構築する(2026-07-31)。
+    /// プレビュー帯の下のfujiLaneNum入力欄を、現在のタブ順で再構築する(2026-07-26)。
     /// 各TextBoxはタブのLaneEditVMを直接クロージャで捕まえているため、D&Dでタブの並びが
     /// 変わっても値そのものはレーンに紐付いたまま移動する(値を並び替える処理は不要で、
     /// 単に表示順を作り直すだけでよい)。
@@ -404,7 +705,7 @@ internal sealed class TemplateEditorWindow : Window
     }
 
     /// <summary>
-    /// プレビュー帯の描画本体(2026-07-30要望: rotationAngle・colorGroupの反映)。
+    /// プレビュー帯の描画本体(2026-07-26要望: rotationAngle・colorGroupの反映)。
     /// 実際の譜面ビュー描画(ChartCanvas.DrawNoteImage)と同じロジックをそのまま使うため、
     /// rotationAngleの反映は本家準拠でnoteGraphic="arrow"の時のみ(それ以外は固定向きの専用画像)。
     /// 色はcolorGroupに応じて要望の見本色(setColor=#9999ff,#ccffff,#ffffff,#ffff99,#ff9966)を
@@ -424,8 +725,9 @@ internal sealed class TemplateEditorWindow : Window
             foreach (TabItem item in owner._laneTabs.Items)
             {
                 var vm = (LaneEditVM)item.Tag!;
-                double rot = double.TryParse(vm.RotationAngle, NumberStyles.Float, CultureInfo.InvariantCulture, out var r) ? r : 0;
-                string graphic = string.IsNullOrWhiteSpace(vm.NoteGraphic) ? "arrow" : vm.NoteGraphic;
+                var f = owner.ActiveFields(vm); // 2026-07-26e: プレビューも選択中パターンの見た目を表示する
+                double rot = double.TryParse(f.RotationAngle, NumberStyles.Float, CultureInfo.InvariantCulture, out var r) ? r : 0;
+                string graphic = string.IsNullOrWhiteSpace(f.NoteGraphic) ? "arrow" : f.NoteGraphic;
                 var lane = new LaneDef
                 {
                     LaneId = vm.LaneId,
@@ -440,14 +742,14 @@ internal sealed class TemplateEditorWindow : Window
                     EngineLaneNum = 0,
                 };
 
-                int colorGroup = int.TryParse(vm.ColorGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var cg) ? cg : 0;
+                int colorGroup = int.TryParse(f.ColorGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var cg) ? cg : 0;
                 var color = ChartCanvas.PreviewSampleColorForGroup(colorGroup);
 
                 double cy = NoteSize / 2 + 6;
                 ChartCanvas.DrawLaneIcon(dc, lane, x, cy, NoteSize, color);
 
                 var ft = new FormattedText(HeaderText(vm), CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                    new Typeface("Meiryo UI"), 10, Brushes.White, 1.25); // 2026-07-30: 背景を黒にしたため白文字に変更
+                    new Typeface("Meiryo UI"), 10, Brushes.White, 1.25); // 2026-07-26: 背景を黒にしたため白文字に変更
                 dc.DrawText(ft, new Point(x - ft.Width / 2, NoteSize + 8));
 
                 x += CellWidth;
@@ -459,7 +761,7 @@ internal sealed class TemplateEditorWindow : Window
     {
         var imgDir = AppPaths.FindAssetDir("img");
         if (imgDir is null) return ["arrow"];
-        // 2026-08-03: pngに加えてsvgも素材として認識する(要望対応)。同名のpng/svgが両方ある場合は
+        // 2026-07-26: pngに加えてsvgも素材として認識する(要望対応)。同名のpng/svgが両方ある場合は
         // 1項目にまとめる(実際の読込優先順位はChartCanvas.GetNoteImageと同じくpng優先)。
         return Directory.EnumerateFiles(imgDir, "*.png")
             .Concat(Directory.EnumerateFiles(imgDir, "*.svg"))
@@ -480,11 +782,34 @@ internal sealed class TemplateEditorWindow : Window
         _keyTypeId.Text = tpl.KeyTypeId;
         _keyTypeName.Text = tpl.KeyTypeName;
         _comment.Text = tpl.Comment ?? "";
-        _blank.Text = tpl.Blank.ToString(CultureInfo.InvariantCulture);
-        _divideCnt.Text = tpl.DivideCnt.ToString(CultureInfo.InvariantCulture);
-        _posMax.Text = tpl.PosMax.ToString(CultureInfo.InvariantCulture);
-        foreach (var lane in tpl.Lanes.OrderBy(l => l.DisplayOrder))
-            AddLaneTab(FromLaneDef(lane));
+
+        _basePattern.Blank = tpl.Blank.ToString(CultureInfo.InvariantCulture);
+        _basePattern.DivideCnt = tpl.DivideCnt.ToString(CultureInfo.InvariantCulture);
+        _basePattern.PosMax = tpl.PosMax.ToString(CultureInfo.InvariantCulture);
+        _blank.Text = _basePattern.Blank;
+        _divideCnt.Text = _basePattern.DivideCnt;
+        _posMax.Text = _basePattern.PosMax;
+
+        // 2026-07-26e: 追加パターン(ExtraPatterns)を読み込む。tpl.Lanesは保存時にタブ順=displayOrder順で
+        // 書き出されているため、DisplayOrder順に並べ直せば各パターンのLaneOverridesと同じインデックスで
+        // 対応が取れる(KeyTemplate.WithPatternと同じ前提)。
+        _extraPatterns.Clear();
+        foreach (var p in tpl.ExtraPatterns)
+            _extraPatterns.Add(new PatternVM
+            {
+                Name = p.Name ?? "",
+                Blank = p.Blank.ToString(CultureInfo.InvariantCulture),
+                DivideCnt = p.DivideCnt.ToString(CultureInfo.InvariantCulture),
+                PosMax = p.PosMax.ToString(CultureInfo.InvariantCulture),
+            });
+
+        var orderedLanes = tpl.Lanes.OrderBy(l => l.DisplayOrder).ToList();
+        for (int i = 0; i < orderedLanes.Count; i++)
+        {
+            var vm = FromLaneDef(orderedLanes[i]);
+            foreach (var p in tpl.ExtraPatterns) vm.PatternOverrides.Add(FromOverride(p.LaneOverrides[i]));
+            AddLaneTab(vm);
+        }
     }
 
     private static List<string> SplitKeys(string text) =>
@@ -496,18 +821,7 @@ internal sealed class TemplateEditorWindow : Window
         string laneLabel = HeaderText(vm);
         if (string.IsNullOrWhiteSpace(vm.LaneId)) { error = "laneIdが空欄のレーンがありますの"; return false; }
         if (string.IsNullOrWhiteSpace(vm.DataName)) { error = $"'{laneLabel}': dataNameを入力してくださいまし"; return false; }
-        var keyAssign = SplitKeys(vm.KeyAssign);
-        if (keyAssign.Count == 0) { error = $"'{laneLabel}': keyAssignを1つ以上指定してくださいまし"; return false; }
         var kbdKeys = SplitKeys(vm.KeyboardInputKeys);
-        if (!int.TryParse(vm.ColorGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var colorGroup))
-        { error = $"'{laneLabel}': colorGroupは整数で入力してくださいまし"; return false; }
-        if (!double.TryParse(vm.PosIndex, NumberStyles.Float, CultureInfo.InvariantCulture, out var posIndex))
-        { error = $"'{laneLabel}': posIndexは数値で入力してくださいまし"; return false; }
-        if (vm.ScrollDirection is not ("up" or "down"))
-        { error = $"'{laneLabel}': scrollDirectionはup/downのいずれかにしてくださいまし"; return false; }
-        if (string.IsNullOrWhiteSpace(vm.NoteGraphic)) { error = $"'{laneLabel}': noteGraphicを選択してくださいまし"; return false; }
-        if (!double.TryParse(vm.RotationAngle, NumberStyles.Float, CultureInfo.InvariantCulture, out var rot))
-        { error = $"'{laneLabel}': rotationAngleは数値で入力してくださいまし"; return false; }
         if (!int.TryParse(vm.EngineLaneNum, NumberStyles.Integer, CultureInfo.InvariantCulture, out var engineLaneNum))
         { error = $"'{laneLabel}': engineLaneNumは整数で入力してくださいまし"; return false; }
         int? fujiLaneNum = null;
@@ -517,6 +831,8 @@ internal sealed class TemplateEditorWindow : Window
             { error = $"'{laneLabel}': fujiLaneNumは整数で入力するか、空欄にしてくださいまし"; return false; }
             fujiLaneNum = parsedFuji;
         }
+        // 2026-07-26e: keyAssign以下6項目(パターン0=既定パターン分)はvm.Baseから検証する
+        if (!TryBuildPatternOverride(vm.Base, laneLabel, 0, out var baseFields, out error)) return false;
 
         lane = new LaneDef
         {
@@ -524,15 +840,48 @@ internal sealed class TemplateEditorWindow : Window
             DataName = vm.DataName,
             FrzDataNameOverride = string.IsNullOrWhiteSpace(vm.FrzDataNameOverride) ? null : vm.FrzDataNameOverride,
             DisplayOrder = displayOrder,
-            KeyAssign = keyAssign,
+            KeyAssign = baseFields!.KeyAssign,
             KeyboardInputKeys = kbdKeys,
-            ColorGroup = colorGroup,
-            PosIndex = posIndex,
-            ScrollDirection = vm.ScrollDirection,
-            NoteGraphic = vm.NoteGraphic,
-            RotationAngle = rot,
+            ColorGroup = baseFields.ColorGroup,
+            PosIndex = baseFields.PosIndex,
+            ScrollDirection = baseFields.ScrollDirection,
+            NoteGraphic = baseFields.NoteGraphic,
+            RotationAngle = baseFields.RotationAngle,
             EngineLaneNum = engineLaneNum,
             FujiLaneNum = fujiLaneNum,
+        };
+        error = null;
+        return true;
+    }
+
+    /// <summary>キーパターン1件・1レーン分のプレゼンテーション値を検証してLanePatternOverrideを作る
+    /// (2026-07-26e)。patternNumber=0は既定パターン(エラーメッセージ用の表記のみ、"パターン0"は
+    /// 付けずベースのレーンとして表示する)。</summary>
+    private static bool TryBuildPatternOverride(LanePatternFieldsVM f, string laneLabel, int patternNumber,
+        out LanePatternOverride? result, out string? error)
+    {
+        result = null;
+        string suffix = patternNumber > 0 ? $"(パターン{patternNumber})" : "";
+        var keyAssign = SplitKeys(f.KeyAssign);
+        if (keyAssign.Count == 0) { error = $"'{laneLabel}'{suffix}: keyAssignを1つ以上指定してくださいまし"; return false; }
+        if (!int.TryParse(f.ColorGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var colorGroup))
+        { error = $"'{laneLabel}'{suffix}: colorGroupは整数で入力してくださいまし"; return false; }
+        if (!double.TryParse(f.PosIndex, NumberStyles.Float, CultureInfo.InvariantCulture, out var posIndex))
+        { error = $"'{laneLabel}'{suffix}: posIndexは数値で入力してくださいまし"; return false; }
+        if (f.ScrollDirection is not ("up" or "down"))
+        { error = $"'{laneLabel}'{suffix}: scrollDirectionはup/downのいずれかにしてくださいまし"; return false; }
+        if (string.IsNullOrWhiteSpace(f.NoteGraphic)) { error = $"'{laneLabel}'{suffix}: noteGraphicを選択してくださいまし"; return false; }
+        if (!double.TryParse(f.RotationAngle, NumberStyles.Float, CultureInfo.InvariantCulture, out var rot))
+        { error = $"'{laneLabel}'{suffix}: rotationAngleは数値で入力してくださいまし"; return false; }
+
+        result = new LanePatternOverride
+        {
+            KeyAssign = keyAssign,
+            ColorGroup = colorGroup,
+            PosIndex = posIndex,
+            ScrollDirection = f.ScrollDirection,
+            NoteGraphic = f.NoteGraphic,
+            RotationAngle = rot,
         };
         error = null;
         return true;
@@ -546,12 +895,14 @@ internal sealed class TemplateEditorWindow : Window
         { _error.Text = "keyTypeIdは半角英数字1〜10文字で入力してくださいまし"; return; }
         if (string.IsNullOrWhiteSpace(_keyTypeName.Text))
         { _error.Text = "keyTypeNameを入力してくださいまし"; return; }
-        if (!double.TryParse(_blank.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var blank))
-        { _error.Text = "blankは数値で入力してくださいまし"; return; }
-        if (!double.TryParse(_divideCnt.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var divideCnt))
-        { _error.Text = "divideCntは数値で入力してくださいまし"; return; }
-        if (!double.TryParse(_posMax.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var posMax))
-        { _error.Text = "posMaxは数値で入力してくださいまし"; return; }
+        // 2026-07-26e: blank/divideCnt/posMaxは現在表示中のパターンの値であり、既定パターン(0)の
+        // 値は_basePatternに常に同期済み(TextChangedがActivePattern経由で書き込むため)。
+        if (!double.TryParse(_basePattern.Blank, NumberStyles.Float, CultureInfo.InvariantCulture, out var blank))
+        { _error.Text = "blank(パターン0)は数値で入力してくださいまし"; return; }
+        if (!double.TryParse(_basePattern.DivideCnt, NumberStyles.Float, CultureInfo.InvariantCulture, out var divideCnt))
+        { _error.Text = "divideCnt(パターン0)は数値で入力してくださいまし"; return; }
+        if (!double.TryParse(_basePattern.PosMax, NumberStyles.Float, CultureInfo.InvariantCulture, out var posMax))
+        { _error.Text = "posMax(パターン0)は数値で入力してくださいまし"; return; }
         if (_laneTabs.Items.Count == 0)
         { _error.Text = "レーンを1つ以上追加してくださいまし"; return; }
 
@@ -569,6 +920,39 @@ internal sealed class TemplateEditorWindow : Window
             order++;
         }
 
+        // 2026-07-26e: 追加パターンの検証。LaneOverridesはlanes(=_laneTabs.Itemsの並び順)と
+        // 同じ順序で組み立てる(KeyTemplate.WithPatternの前提=配列インデックス対応)。
+        var extraPatterns = new List<KeyPattern>();
+        for (int pi = 0; pi < _extraPatterns.Count; pi++)
+        {
+            var pvm = _extraPatterns[pi];
+            int patternNumber = pi + 1;
+            if (!double.TryParse(pvm.Blank, NumberStyles.Float, CultureInfo.InvariantCulture, out var pBlank))
+            { _error.Text = $"blank(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+            if (!double.TryParse(pvm.DivideCnt, NumberStyles.Float, CultureInfo.InvariantCulture, out var pDivideCnt))
+            { _error.Text = $"divideCnt(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+            if (!double.TryParse(pvm.PosMax, NumberStyles.Float, CultureInfo.InvariantCulture, out var pPosMax))
+            { _error.Text = $"posMax(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+
+            var overrides = new List<LanePatternOverride>();
+            foreach (TabItem item in _laneTabs.Items)
+            {
+                var vm = (LaneEditVM)item.Tag!;
+                if (!TryBuildPatternOverride(vm.PatternOverrides[pi], HeaderText(vm), patternNumber, out var ov, out var err))
+                { _error.Text = err; return; }
+                overrides.Add(ov!);
+            }
+
+            extraPatterns.Add(new KeyPattern
+            {
+                Name = string.IsNullOrWhiteSpace(pvm.Name) ? null : pvm.Name.Trim(),
+                Blank = pBlank,
+                DivideCnt = pDivideCnt,
+                PosMax = pPosMax,
+                LaneOverrides = overrides,
+            });
+        }
+
         var template = new KeyTemplate
         {
             KeyTypeId = keyTypeId,
@@ -579,6 +963,7 @@ internal sealed class TemplateEditorWindow : Window
             DivideCnt = divideCnt,
             PosMax = posMax,
             Lanes = lanes,
+            ExtraPatterns = extraPatterns,
         };
 
         var destPath = Path.Combine(_templateDir, $"temp_{keyTypeId}.json");

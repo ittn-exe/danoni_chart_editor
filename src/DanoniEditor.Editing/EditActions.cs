@@ -212,7 +212,7 @@ internal static class NColorEntryMerge
 }
 
 /// <summary>NColorEntryをスナップショット(ClipboardColor、全フィールド分)から丸ごと1件追加する
-/// (2026-08-05、Ctrl+C/V・Ctrl+ドラッグ複製でColorOverridesを保持したままコピーするために新設)。
+/// (2026-07-26、Ctrl+C/V・Ctrl+ドラッグ複製でColorOverridesを保持したままコピーするために新設)。
 /// SetNoteColorAction等の個別フィールド更新とは異なり、「元のエントリの値をそのまま複製先へ再現する」
 /// 専用の単純な追加/削除ペア。対象位置(lane+tick)に既存エントリが無い前提(コピペ/複製の貼り付け先は
 /// 常に空セルであることが呼び出し元で保証されている)。</summary>
@@ -645,7 +645,7 @@ public sealed class EditWordEntryAction(int laneIndex, long tick, WordEntry newE
     }
 }
 
-/// <summary>歌詞レーンの追加(WordLaneManagerWindow「+ 歌詞レーンを追加」、2026-07-31)。末尾に1本追加する。</summary>
+/// <summary>歌詞レーンの追加(WordLaneManagerWindow「+ 歌詞レーンを追加」、2026-07-26)。末尾に1本追加する。</summary>
 public sealed class AddWordLaneAction(string name) : IEditAction
 {
     private int _addedIndex = -1;
@@ -667,7 +667,7 @@ public sealed class AddWordLaneAction(string name) : IEditAction
     }
 }
 
-/// <summary>歌詞レーンの削除(WordLaneManagerWindow、2026-07-31)。削除時点のレーン内容(歌詞エントリを
+/// <summary>歌詞レーンの削除(WordLaneManagerWindow、2026-07-26)。削除時点のレーン内容(歌詞エントリを
 /// 含む全体)をそのまま保持し、Undoで元のindexへ丸ごと復元する(=削除操作そのものを取り消す)。
 /// 後続レーンのindexが詰まる/戻る関係上、Do・Undoいずれの直後もWord系の選択状態はクリアする
 /// (削除前後で他の歌詞エントリのindex対応が変わり得るため、選択の連続性までは保証しない)。</summary>
@@ -693,7 +693,7 @@ public sealed class DeleteWordLaneAction(int index) : IEditAction
     }
 }
 
-/// <summary>歌詞レーンの名前変更(WordLaneManagerWindow、2026-07-31)。</summary>
+/// <summary>歌詞レーンの名前変更(WordLaneManagerWindow、2026-07-26)。</summary>
 public sealed class RenameWordLaneAction(int index, string newName) : IEditAction
 {
     private string _old = "";
@@ -710,7 +710,7 @@ public sealed class RenameWordLaneAction(int index, string newName) : IEditActio
     public void Undo(EditorDocument doc) => doc.CurrentTab.WordLanes[index].Name = _old;
 }
 
-/// <summary>歌詞レーンのReverse専用フラグ切替(WordLaneManagerWindow、2026-07-31)。</summary>
+/// <summary>歌詞レーンのReverse専用フラグ切替(WordLaneManagerWindow、2026-07-26)。</summary>
 public sealed class SetWordLaneReverseAction(int index, bool value) : IEditAction
 {
     private bool _old;
@@ -1029,8 +1029,8 @@ public sealed class MoveObjectsAction : IEditAction
 }
 
 /// <summary>選択中オブジェクトを、指定した位置ずらし(lane/tick)の場所へ複製する(Ctrl+ドラッグ、
-/// 2026-08-04要望対応)。MoveObjectsActionと対になる実装だが、対象を元の場所から取り除かず
-/// (laneDelta,tickDelta)ずらした新しい実体を追加するだけの点が異なる。2026-08-05: 「frame情報以外は
+/// 2026-07-26要望対応)。MoveObjectsActionと対になる実装だが、対象を元の場所から取り除かず
+/// (laneDelta,tickDelta)ずらした新しい実体を追加するだけの点が異なる。2026-07-26: 「frame情報以外は
 /// 全て保持してコピペしたい」との要望対応で、通常ノート/フリーズのColorOverrides(ncolor_data個別色)・
 /// Annotations(コメント・警告)も複製先へコピーする(CopySidecar参照、Ctrl+C/VのBuildClipboardEntriesと
 /// 同じ方針)。複製に成功した新オブジェクト群を選択状態にする。</summary>
@@ -1217,7 +1217,7 @@ public sealed class CopyObjectsAction : IEditAction
     }
 
     /// <summary>ColorOverrides/Annotations(付随データ)を、複製元のtickから複製先のtickへコピーする
-    /// (2026-08-05)。同じ趣旨のMoveSidecarEntries(EditActions.cs内、MoveObjectsAction用)と異なり、
+    /// (2026-07-26)。同じ趣旨のMoveSidecarEntries(EditActions.cs内、MoveObjectsAction用)と異なり、
     /// 元のエントリは削除しない(複製なので両方に残す)。どちらも無ければ何もしない。</summary>
     private static void CopySidecar(DifficultyTab tab, int fromLane, long fromTick, int toLane, long toTick)
     {
@@ -1228,7 +1228,7 @@ public sealed class CopyObjectsAction : IEditAction
         if (annotation is not null) tab.Lanes[toLane].Annotations.Add(annotation with { Tick = toTick });
     }
 
-    /// <summary>CopySidecarで複製したColorOverrides/Annotationsを、Undo時に取り除く(2026-08-05)。</summary>
+    /// <summary>CopySidecarで複製したColorOverrides/Annotationsを、Undo時に取り除く(2026-07-26)。</summary>
     private static void RemoveSidecar(DifficultyTab tab, int lane, long tick)
     {
         var color = tab.Lanes[lane].ColorOverrides.FirstOrDefault(c => c.Tick == tick);
@@ -1259,7 +1259,7 @@ public sealed class CompositeEditAction(IReadOnlyList<IEditAction> actions, stri
 }
 
 /// <summary>
-/// レーン入替マクロの適用(仕様書11.1、2026-07-30)。現在の難易度タブの全レーンの
+/// レーン入替マクロの適用(仕様書11.1、2026-07-26)。現在の難易度タブの全レーンの
 /// ノート配置データ(LaneNotes = Notes/Freezes/ColorOverrides/Annotations一式)を、
 /// 順列配列(laneMapping。インデックス=適用後の位置、値=どのレーン位置のデータを持ってくるか)
 /// に従って一括で入れ替える。レーンの定義(dataName・keyAssign・colorGroup等、テンプレート由来の

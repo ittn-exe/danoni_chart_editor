@@ -119,5 +119,87 @@
       "rotationAngle": 0,
       "engineLaneNum": 7
     }
+  ],
+  "extraPatterns": [
+    {
+      "name": "danoniplus本家keyCtrl8_1相当",
+      "blank": 55,
+      "divideCnt": 8,
+      "posMax": 8,
+      "laneOverrides": [
+        { "keyAssign": "S", "colorGroup": 0, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "D", "colorGroup": 1, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -45 },
+        { "keyAssign": "F", "colorGroup": 0, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": "J", "colorGroup": 0, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "K", "colorGroup": 1, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 135 },
+        { "keyAssign": "L", "colorGroup": 0, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "Tab", "colorGroup": 2, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    },
+    {
+      "name": "danoniplus本家keyCtrl8_2相当",
+      "blank": 55,
+      "divideCnt": 8,
+      "posMax": 8,
+      "laneOverrides": [
+        { "keyAssign": "N", "colorGroup": 0, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "J", "colorGroup": 1, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 30 },
+        { "keyAssign": "M", "colorGroup": 0, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 60 },
+        { "keyAssign": "K", "colorGroup": 1, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "<", "colorGroup": 0, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 120 },
+        { "keyAssign": "L", "colorGroup": 1, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 150 },
+        { "keyAssign": ">", "colorGroup": 0, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    },
+    {
+      "name": "danoniplus本家keyCtrl8_3相当",
+      "blank": 55,
+      "divideCnt": 8,
+      "posMax": 8,
+      "laneOverrides": [
+        { "keyAssign": "Space", "colorGroup": 0, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "B", "colorGroup": 1, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -45 },
+        { "keyAssign": "H", "colorGroup": 0, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": ["N", "M"], "colorGroup": 2, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": ["J", "K"], "colorGroup": 0, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "<", "colorGroup": 1, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 135 },
+        { "keyAssign": "L", "colorGroup": 0, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": ">", "colorGroup": 2, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    },
+    {
+      "name": "danoniplus本家keyCtrl8_4相当",
+      "blank": 55,
+      "divideCnt": 8,
+      "posMax": 8,
+      "laneOverrides": [
+        { "keyAssign": "Shift", "colorGroup": 0, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "Z", "colorGroup": 1, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -45 },
+        { "keyAssign": "S", "colorGroup": 0, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "X", "colorGroup": 2, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": "D", "colorGroup": 0, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "C", "colorGroup": 1, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 135 },
+        { "keyAssign": "F", "colorGroup": 0, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "V", "colorGroup": 2, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    },
+    {
+      "name": "danoniplus本家keyCtrl8_5相当",
+      "blank": 55,
+      "divideCnt": 8,
+      "posMax": 8,
+      "laneOverrides": [
+        { "keyAssign": "Shift", "colorGroup": 0, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "Z", "colorGroup": 1, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -45 },
+        { "keyAssign": "S", "colorGroup": 0, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": ["X", "C"], "colorGroup": 2, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": ["D", "F"], "colorGroup": 0, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "V", "colorGroup": 1, "posIndex": 5, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 135 },
+        { "keyAssign": "G", "colorGroup": 0, "posIndex": 6, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "B", "colorGroup": 2, "posIndex": 7, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    }
   ]
 }

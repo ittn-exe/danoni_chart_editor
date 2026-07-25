@@ -41,6 +41,9 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _cursorHighlightColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _cursorHighlightPreview = MakePreview();
 
+    // --- テスト再生 > 全般: ノート音として鳴らす./sounds内の音声ファイル選択 ---
+    private readonly ComboBox _noteSoundFile = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
+
     // --- 目視テスト ---
     private readonly ComboBox _followMode = new() { Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
 
@@ -50,12 +53,18 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _ptOffset = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly ComboBox _ptScale = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly CheckBox _ptQuitDelete = new() { Content = "Delete" };
-    private readonly CheckBox _ptQuitBackSpace = new() { Content = "BackSpace" };
     private readonly CheckBox _ptQuitEscape = new() { Content = "Escape" };
-    // --- プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応) ---
+    // --- プレイテスト起動時ウェイト(2026-07-26d要望対応、ms単位) ---
+    private readonly TextBox _ptStartupWaitMs = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
+    // --- プレイテスト: キー種ごとのReverse既定値(2026-07-26要望対応) ---
     private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
 
-    // --- プレイテスト: ウィンドウ幅(2026-08-03要望対応、2026-08-06 自動モード追加) ---
+    // --- プレイテスト: キー種ごとの採用キーパターン(2026-07-26e要望対応)。
+    // 追加パターンを持つキー種のみ選択欄を出す。値はコンボの表示文字列("パターン0(既定)"等)ではなく
+    // インデックスで管理したいため、ComboBoxのTagにキー種IDを持たせてSelectedIndexをそのまま使う。 ---
+    private readonly Dictionary<string, ComboBox> _ptPatternByKeyType = [];
+
+    // --- プレイテスト: ウィンドウ幅(2026-07-26要望対応、2026-07-26 自動モード追加) ---
     private readonly RadioButton _ptWidthAutoMode = new() { Content = "自動(特に指定せず、プレイテストする譜面のキー種に合わせて自動的に切り替える)", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
     private readonly RadioButton _ptWidthPxMode = new() { Content = "ウィンドウ幅を直接入力", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
     private readonly TextBox _ptWidthPx = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(20, 0, 0, 8) };
@@ -71,7 +80,7 @@ internal sealed class PreferencesWindow : Window
     private readonly RadioButton _markerHead = new() { Content = "先頭数文字のみ", GroupName = "marker" };
     private readonly TextBox _markerHeadChars = new() { Width = 50, HorizontalAlignment = HorizontalAlignment.Left };
 
-    // --- レーン文字サイズ(時間情報レーン/マーカーレーン、2026-08-05) ---
+    // --- レーン文字サイズ(時間情報レーン/マーカーレーン、2026-07-26) ---
     private readonly TextBox _timeInfoFontSize = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _markerFontSize = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
 
@@ -95,13 +104,21 @@ internal sealed class PreferencesWindow : Window
     // --- 譜面ビューReverse(2026-07-22、環境設定のみで切替) ---
     private readonly CheckBox _chartViewReverse = new() { Content = "譜面ビューをReverse表示する(tick0を下端・末尾を上端にする)" };
 
+    // --- キーボードモードのSpace/B方向(2026-07-26要望対応) ---
+    private readonly RadioButton _spaceBModeVisual = new() { Content = "見た目通りの上下(Spaceで下方向、Bで上方向、現在の実装)", GroupName = "spaceBMode", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly RadioButton _spaceBModeTime = new() { Content = "前進/後退(時間基準。Reverse中は前進=上方向、後退=下方向になる)", GroupName = "spaceBMode", Margin = new Thickness(0, 0, 0, 2) };
+
+    // --- キーボードモードの←/→方向(2026-07-26要望対応) ---
+    private readonly RadioButton _leftRightModeVisual = new() { Content = "見た目通りの上下(←で上方向、→で下方向、現在の実装)", GroupName = "leftRightMode", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly RadioButton _leftRightModeTime = new() { Content = "前進/後退(時間基準。Reverse中は→=上方向、←=下方向になる)", GroupName = "leftRightMode", Margin = new Thickness(0, 0, 0, 2) };
+
     // --- SKB操作モード(キーボード操作、2026-07-21) ---
     private readonly TextBox _kbdThreshold = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- グリッド分解能ショートカット(Ctrl+1〜9,0,-,^、2026-07-26) ---
     private readonly ComboBox _gridShortcutPreset = new() { Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
 
-    // --- musicURLからの楽曲取得(2026-07-27) ---
+    // --- musicURLからの楽曲取得(2026-07-26) ---
     private readonly CheckBox _musicUrlEnabled = new() { Content = "musicURLから楽曲を取得できるようにする" };
     private readonly TextBox _musicUrlFolder = new() { Width = 300, HorizontalAlignment = HorizontalAlignment.Left, IsReadOnly = true };
     private readonly Button _musicUrlBrowse = new() { Content = "参照...", Width = 70, Margin = new Thickness(4, 0, 0, 0) };
@@ -115,7 +132,7 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _selAllTimeSig = new() { Content = "拍子変化" };
     private readonly CheckBox _selAllMarker = new() { Content = "マーカー" };
 
-    // --- テンプレート(temp_*.json、2026-07-29) ---
+    // --- テンプレート(temp_*.json、2026-07-26) ---
     private readonly ListBox _templateList = new() { Margin = new Thickness(0, 0, 0, 8), Height = 260 };
     private readonly Button _templateEditButton = new() { Content = "編集", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsEnabled = false };
     private readonly Button _templateNewButton = new() { Content = "新規作成", Width = 90 };
@@ -131,15 +148,16 @@ internal sealed class PreferencesWindow : Window
         Title = "環境設定";
         Width = 560;
         Height = 470;
+        MinWidth = 480;
+        MinHeight = 360;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        ResizeMode = ResizeMode.NoResize;
+        ResizeMode = ResizeMode.CanResize; // 2026-07-26要望対応: サイズ変更できるように
         WindowStyle = WindowStyle.ToolWindow;
 
         // --- カテゴリ一覧+パネル切替 ---
         var categories = new ListBox { Margin = new Thickness(8), Width = 120 };
         categories.Items.Add("表示");
-        categories.Items.Add("目視テスト");
-        categories.Items.Add("プレイテスト");
+        categories.Items.Add("テスト再生");
         categories.Items.Add("新規プロジェクト");
         categories.Items.Add("編集・保存");
         categories.Items.Add("キーボードモード");
@@ -147,7 +165,7 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("テンプレート");
         categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildVisualTestPanel(), BuildPlaytestPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildStatsPanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -213,6 +231,18 @@ internal sealed class PreferencesWindow : Window
     private UIElement BuildDisplayPanel()
     {
         var p = new StackPanel { Margin = new Thickness(4) };
+
+        // 2026-07-26要望対応: 譜面ビューのReverse設定を一番上に移動。
+        p.Children.Add(Label("譜面ビュー", section: true));
+        _chartViewReverse.Margin = new Thickness(0, 0, 0, 4);
+        p.Children.Add(_chartViewReverse);
+        p.Children.Add(Label("キーボードモード中のSpace/Bキーの移動方向:"));
+        p.Children.Add(_spaceBModeVisual);
+        p.Children.Add(_spaceBModeTime);
+        p.Children.Add(Label("キーボードモード中の←/→キーの移動方向:"));
+        p.Children.Add(_leftRightModeVisual);
+        p.Children.Add(_leftRightModeTime);
+
         p.Children.Add(Label("ノート表示", section: true));
         _showImages.Margin = new Thickness(0, 0, 0, 4);
         _showGrid.Margin = new Thickness(0, 0, 0, 4);
@@ -268,25 +298,44 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("マーカーレーン:"));
         p.Children.Add(_markerFontSize);
 
-        p.Children.Add(Label("譜面ビュー", section: true));
-        _chartViewReverse.Margin = new Thickness(0, 0, 0, 2);
-        p.Children.Add(_chartViewReverse);
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
-    private UIElement BuildVisualTestPanel()
+    /// <summary>「テスト再生」カテゴリ: 全般(ノート音)→目視テスト→プレイテストの順に並べた統合パネル。
+    /// 元は「目視テスト」「プレイテスト」の別カテゴリだったが、共通設定(ノート音)の置き場として
+    /// 「全般」を新設した上で1つのカテゴリへ統合した。セクションの先頭には太字の見出しを、
+    /// セクション間には区切り線(Separator)を入れて視認性を確保する。</summary>
+    private UIElement BuildTestPlaybackPanel()
     {
         var p = new StackPanel { Margin = new Thickness(4) };
-        p.Children.Add(Label("再生位置ラインの追従方式", section: true));
+
+        // --- 全般 ---
+        p.Children.Add(Label("全般", section: true));
+        p.Children.Add(Label("ノート音(目視テスト・プレイテストでノート通過時に鳴らす音):"));
+        var soundsDir = AppPaths.FindAssetDir("sounds");
+        if (soundsDir is null)
+        {
+            p.Children.Add(new TextBlock { Text = "(soundsフォルダが見つかりませんでした)", Foreground = Brushes.Gray, FontStyle = FontStyles.Italic, Margin = new Thickness(0, 0, 0, 4) });
+        }
+        else
+        {
+            foreach (var path in Directory.EnumerateFiles(soundsDir, "*.wav").OrderBy(f => System.IO.Path.GetFileName(f), StringComparer.OrdinalIgnoreCase))
+                _noteSoundFile.Items.Add(System.IO.Path.GetFileName(path));
+            p.Children.Add(_noteSoundFile);
+        }
+
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
+
+        // --- 目視テスト ---
+        p.Children.Add(Label("目視テスト", section: true));
+        p.Children.Add(Label("再生位置ラインの追従方式:"));
         _followMode.Items.Add("ページ送り(画面外に出たら次の1画面へ)");
         _followMode.Items.Add("スムーズスクロール(ライン位置固定で譜面が流れる)");
         p.Children.Add(_followMode);
-        return p;
-    }
 
-    private UIElement BuildPlaytestPanel()
-    {
-        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
+
+        // --- プレイテスト ---
         p.Children.Add(Label("プレイテスト(Ctrl+P)", section: true));
         _ptReverse.Margin = new Thickness(0, 0, 0, 4);
         p.Children.Add(_ptReverse);
@@ -299,7 +348,7 @@ internal sealed class PreferencesWindow : Window
         foreach (var v in new[] { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 }) _ptScale.Items.Add(v);
         p.Children.Add(_ptScale);
 
-        p.Children.Add(Label("ウィンドウ幅(2026-08-03要望対応、2026-08-06 自動モード追加)", section: true));
+        p.Children.Add(Label("ウィンドウ幅", section: true));
         _ptWidthAutoMode.Checked += (_, _) => UpdateWidthModeEnabled();
         _ptWidthPxMode.Checked += (_, _) => UpdateWidthModeEnabled();
         _ptWidthKeyTypeMode.Checked += (_, _) => UpdateWidthModeEnabled();
@@ -337,15 +386,17 @@ internal sealed class PreferencesWindow : Window
         }
         p.Children.Add(_ptWidthKeyTypeList);
 
-        p.Children.Add(Label("中断キー(2026-07-20)", section: true));
+        p.Children.Add(Label("中断キー(BackSpaceは「再生開始フレームからやり直し」専用のため選択肢から除外)", section: true));
         _ptQuitDelete.Margin = new Thickness(0, 0, 0, 2);
-        _ptQuitBackSpace.Margin = new Thickness(0, 0, 0, 2);
         _ptQuitEscape.Margin = new Thickness(0, 0, 0, 2);
         p.Children.Add(_ptQuitDelete);
-        p.Children.Add(_ptQuitBackSpace);
         p.Children.Add(_ptQuitEscape);
 
-        p.Children.Add(Label("キー種ごとのReverse既定値(2026-08-02要望対応)", section: true));
+        p.Children.Add(Label("起動時ウェイト(ms単位)", section: true));
+        p.Children.Add(Label("プレイテスト画面表示後、この時間だけ待ってから再生を開始する(0=待たない):"));
+        p.Children.Add(_ptStartupWaitMs);
+
+        p.Children.Add(Label("キー種ごとのReverse既定値", section: true));
         _ptReverseByKeyType.Clear();
         if (_templates is null)
         {
@@ -360,18 +411,53 @@ internal sealed class PreferencesWindow : Window
                 p.Children.Add(cb);
             }
         }
+
+        // 2026-07-26e: キー種ごとの採用キーパターン。追加パターンを持つキー種のみ選択欄を出す
+        // (danoniplus本家の「キーパターン」概念。エディタ本体の譜面ビュー・データ名等には影響せず、
+        // プレイテストの見た目・キー入力にのみ反映される)。
+        _ptPatternByKeyType.Clear();
+        if (_templates is not null)
+        {
+            var withPatterns = new List<(string KeyTypeId, KeyTemplate Template)>();
+            foreach (var keyTypeId in _templates.ListKeyTypeIds())
+            {
+                try
+                {
+                    var tpl = _templates.Get(keyTypeId);
+                    if (tpl.PatternCount > 1) withPatterns.Add((keyTypeId, tpl));
+                }
+                catch { /* 読み込み失敗のキー種はここでは無視(他のテンプレート一覧欄でエラーが分かる) */ }
+            }
+            if (withPatterns.Count > 0)
+            {
+                p.Children.Add(Label("キー種ごとの採用キーパターン", section: true));
+                foreach (var (keyTypeId, tpl) in withPatterns)
+                {
+                    p.Children.Add(Label($"{keyTypeId}k:"));
+                    var combo = new ComboBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 4) };
+                    combo.Items.Add("パターン0(既定)");
+                    for (int i = 1; i < tpl.PatternCount; i++)
+                    {
+                        var name = tpl.ExtraPatterns[i - 1].Name;
+                        combo.Items.Add(string.IsNullOrWhiteSpace(name) ? $"パターン{i}" : $"パターン{i}: {name}");
+                    }
+                    _ptPatternByKeyType[keyTypeId] = combo;
+                    p.Children.Add(combo);
+                }
+            }
+        }
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
     /// <summary>ウィンドウ幅の指定方式ラジオ(直接入力/キー種から選択)に応じて、
-    /// 対応する入力欄のIsEnabledを切り替える(2026-08-03)。</summary>
+    /// 対応する入力欄のIsEnabledを切り替える(2026-07-26)。</summary>
     private void UpdateWidthModeEnabled()
     {
         _ptWidthPx.IsEnabled = _ptWidthPxMode.IsChecked == true;
         _ptWidthKeyTypeList.IsEnabled = _ptWidthKeyTypeMode.IsChecked == true;
     }
 
-    /// <summary>環境設定内部で使う「幅指定方式」の文字列表現(2026-08-06)</summary>
+    /// <summary>環境設定内部で使う「幅指定方式」の文字列表現(2026-07-26)</summary>
     private const string WidthModeAuto = "auto";
     private const string WidthModePx = "px";
     private const string WidthModeKeyType = "keyType";
@@ -403,7 +489,7 @@ internal sealed class PreferencesWindow : Window
         _confirmUnsaved.Margin = new Thickness(0, 0, 0, 4);
         p.Children.Add(_confirmUnsaved);
 
-        p.Children.Add(Label("自動保存・クラッシュ復旧(2026-07-25)", section: true));
+        p.Children.Add(Label("自動保存・クラッシュ復旧", section: true));
         _autoSaveEnabled.Margin = new Thickness(0, 0, 0, 4);
         p.Children.Add(_autoSaveEnabled);
         p.Children.Add(Label("保存間隔(分):"));
@@ -413,7 +499,7 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("色コード使用履歴の上限件数(デフォルト24):"));
         p.Children.Add(_colorHistLimit);
 
-        p.Children.Add(Label("最近開いたファイル(2026-07-28)", section: true));
+        p.Children.Add(Label("最近開いたファイル", section: true));
         p.Children.Add(Label("履歴の保持件数(デフォルト10):"));
         p.Children.Add(_recentFilesLimit);
 
@@ -448,7 +534,7 @@ internal sealed class PreferencesWindow : Window
     private UIElement BuildMusicUrlPanel()
     {
         var p = new StackPanel { Margin = new Thickness(4) };
-        p.Children.Add(Label("musicURLからの楽曲取得(2026-07-27)", section: true));
+        p.Children.Add(Label("musicURLからの楽曲取得", section: true));
         _musicUrlEnabled.Margin = new Thickness(0, 0, 0, 8);
         _musicUrlEnabled.Checked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = true;
         _musicUrlEnabled.Unchecked += (_, _) => _musicUrlFolder.IsEnabled = _musicUrlBrowse.IsEnabled = false;
@@ -468,7 +554,7 @@ internal sealed class PreferencesWindow : Window
         return p;
     }
 
-    /// <summary>一覧行の表示用(2026-07-29要望: 「キー種 - ファイル名」形式)</summary>
+    /// <summary>一覧行の表示用(2026-07-26要望: 「キー種 - ファイル名」形式)</summary>
     private sealed record TemplateListEntry(string KeyTypeId, string FileName, string Path)
     {
         public override string ToString() => $"{KeyTypeId} - {FileName}";
@@ -520,7 +606,7 @@ internal sealed class PreferencesWindow : Window
         var win = new TemplateEditorWindow(dir, path) { Owner = this };
         if (win.ShowDialog() != true) return;
 
-        // 2026-07-29: 実行中のTemplateRepositoryキャッシュを破棄し、次回参照時にディスクの最新内容を
+        // 2026-07-26: 実行中のTemplateRepositoryキャッシュを破棄し、次回参照時にディスクの最新内容を
         // 再読込させる(編集直後にプロジェクトを新規作成/開いても古い内容のままになるのを防ぐ)。
         if (win.OriginalKeyTypeId is { } oldId) _templates?.Invalidate(oldId);
         if (win.SavedKeyTypeId is { } newId) _templates?.Invalidate(newId);
@@ -528,7 +614,7 @@ internal sealed class PreferencesWindow : Window
     }
 
     // =====================================================================
-    // 統計情報(2026-08-05、閲覧専用。ITTNアナライザー/おにスターの隠し機能解禁条件にも使う
+    // 統計情報(2026-07-26、閲覧専用。ITTNアナライザー/おにスターの隠し機能解禁条件にも使う
     // カウンタだが、ここでは解禁段階等には一切触れず、純粋な利用実績として並べるだけにする)。
     // =====================================================================
 
@@ -582,6 +668,8 @@ internal sealed class PreferencesWindow : Window
         _cursorHighlightWidth.Text = s.CursorHighlightWidth.ToString(CultureInfo.InvariantCulture);
         _cursorHighlightColor.Text = s.CursorHighlightColorHex;
         _cursorHighlightPreview.Background = SafeBrush(s.CursorHighlightColorHex);
+        if (_noteSoundFile.Items.Contains(s.NoteSoundFileName)) _noteSoundFile.SelectedItem = s.NoteSoundFileName;
+        else if (_noteSoundFile.Items.Count > 0) _noteSoundFile.SelectedIndex = 0;
         _followMode.SelectedIndex = s.VisualTestFollowMode == "smooth" ? 1 : 0;
         _ptReverse.IsChecked = s.PlaytestReverse;
         _ptHiSpeed.SelectedItem = _ptHiSpeed.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestHiSpeed)).First();
@@ -598,8 +686,13 @@ internal sealed class PreferencesWindow : Window
             _ptWidthKeyTypeGroups[0].Radio.IsChecked = true;
         UpdateWidthModeEnabled();
         _ptQuitDelete.IsChecked = s.PlaytestQuitKeyDelete;
-        _ptQuitBackSpace.IsChecked = s.PlaytestQuitKeyBackSpace;
         _ptQuitEscape.IsChecked = s.PlaytestQuitKeyEscape;
+        _ptStartupWaitMs.Text = s.PlaytestStartupWaitMs.ToString(CultureInfo.InvariantCulture);
+        foreach (var (keyTypeId, combo) in _ptPatternByKeyType)
+        {
+            int idx = s.PlaytestPatternByKeyType.TryGetValue(keyTypeId, out var pi) ? pi : 0;
+            combo.SelectedIndex = idx >= 0 && idx < combo.Items.Count ? idx : 0;
+        }
         foreach (var (keyTypeId, cb) in _ptReverseByKeyType)
             cb.IsChecked = s.PlaytestReverseByKeyType.TryGetValue(keyTypeId, out var rev) && rev;
         _markerFull.IsChecked = s.MarkerCommentFull;
@@ -608,6 +701,10 @@ internal sealed class PreferencesWindow : Window
         _timeInfoFontSize.Text = s.TimeInfoFontSize.ToString(CultureInfo.InvariantCulture);
         _markerFontSize.Text = s.MarkerFontSize.ToString(CultureInfo.InvariantCulture);
         _chartViewReverse.IsChecked = s.ChartViewReverse;
+        _spaceBModeTime.IsChecked = s.KeyboardModeSpaceBMode == "time";
+        _spaceBModeVisual.IsChecked = s.KeyboardModeSpaceBMode != "time";
+        _leftRightModeTime.IsChecked = s.KeyboardModeLeftRightMode == "time";
+        _leftRightModeVisual.IsChecked = s.KeyboardModeLeftRightMode != "time";
         _defStartFrame.Text = s.DefaultStartFrame.ToString(CultureInfo.InvariantCulture);
         _defBlankFrame.Text = s.DefaultBlankFrame.ToString(CultureInfo.InvariantCulture);
         _defTuning.Text = s.DefaultTuning;
@@ -638,8 +735,10 @@ internal sealed class PreferencesWindow : Window
         _error.Text = "";
         if (_showImages.IsChecked != true && _showGrid.IsChecked != true)
         { _error.Text = "ノート画像と強調グリッドの両方をOFFにはできませんの(どちらかはONにしてくださいまし)"; return false; }
-        if (_ptQuitDelete.IsChecked != true && _ptQuitBackSpace.IsChecked != true && _ptQuitEscape.IsChecked != true)
+        if (_ptQuitDelete.IsChecked != true && _ptQuitEscape.IsChecked != true)
         { _error.Text = "プレイテストの中断キーは最低1つはcheckedにしてくださいまし"; return false; }
+        if (!TryNonNegativeInt(_ptStartupWaitMs.Text, out var ptWait))
+        { _error.Text = "プレイテスト起動時ウェイトは0以上の整数(ms)で入力してくださいまし"; return false; }
         if (!TryPositive(_gridWidth.Text, out var gw))
         { _error.Text = "強調グリッドの太さは正の数値で入力してくださいまし"; return false; }
         if (!TryColor(_gridColor.Text))
@@ -698,6 +797,7 @@ internal sealed class PreferencesWindow : Window
         _work.CursorLineColorHex = _cursorLineColor.Text;
         _work.CursorHighlightWidth = chw;
         _work.CursorHighlightColorHex = _cursorHighlightColor.Text;
+        if (_noteSoundFile.Items.Count > 0 && _noteSoundFile.SelectedItem is string ns) _work.NoteSoundFileName = ns;
         _work.VisualTestFollowMode = _followMode.SelectedIndex == 1 ? "smooth" : "page";
         _work.PlaytestReverse = _ptReverse.IsChecked == true;
         if (_ptHiSpeed.SelectedItem is double hs) _work.PlaytestHiSpeed = hs;
@@ -710,14 +810,17 @@ internal sealed class PreferencesWindow : Window
         var selectedWidthGroup = _ptWidthKeyTypeGroups.FirstOrDefault(g => g.Radio.IsChecked == true);
         if (selectedWidthGroup.Radio is not null) _work.PlaytestWindowWidthKeyType = selectedWidthGroup.RepresentativeKeyTypeId;
         _work.PlaytestQuitKeyDelete = _ptQuitDelete.IsChecked == true;
-        _work.PlaytestQuitKeyBackSpace = _ptQuitBackSpace.IsChecked == true;
         _work.PlaytestQuitKeyEscape = _ptQuitEscape.IsChecked == true;
+        _work.PlaytestStartupWaitMs = ptWait;
+        _work.PlaytestPatternByKeyType = _ptPatternByKeyType.ToDictionary(kv => kv.Key, kv => Math.Max(0, kv.Value.SelectedIndex));
         _work.PlaytestReverseByKeyType = _ptReverseByKeyType.ToDictionary(kv => kv.Key, kv => kv.Value.IsChecked == true);
         _work.MarkerCommentFull = _markerFull.IsChecked == true;
         _work.MarkerCommentHeadChars = headChars;
         _work.TimeInfoFontSize = timeInfoFontSize;
         _work.MarkerFontSize = markerFontSize;
         _work.ChartViewReverse = _chartViewReverse.IsChecked == true;
+        _work.KeyboardModeSpaceBMode = _spaceBModeTime.IsChecked == true ? "time" : "visual";
+        _work.KeyboardModeLeftRightMode = _leftRightModeTime.IsChecked == true ? "time" : "visual";
         _work.DefaultStartFrame = defSf;
         _work.DefaultBlankFrame = defBf;
         _work.DefaultTuning = _defTuning.Text;
@@ -749,6 +852,10 @@ internal sealed class PreferencesWindow : Window
 
     private static bool TryPositive(string text, out double v) =>
         double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out v) && v > 0;
+
+    /// <summary>0以上の整数(2026-07-26d、プレイテスト起動時ウェイト等)</summary>
+    private static bool TryNonNegativeInt(string text, out int v) =>
+        int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out v) && v >= 0;
 
     private static bool TryColor(string text)
     {

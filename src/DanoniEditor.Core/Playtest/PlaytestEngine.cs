@@ -203,4 +203,24 @@ public sealed class PlaytestEngine
     }
 
     private void Emit(int lane, PlayJudge judge, double diff) => Judged?.Invoke(new JudgeResult(lane, judge, diff));
+
+    /// <summary>再生開始フレームからのやり直し用(2026-07-26d要望対応、プレイテスト中のBackSpace)。
+    /// 全ノート/フリーズの判定結果・ホールド状態・コンボをコンストラクタ直後の状態へ戻す。
+    /// (ノート自体のFrameはタイミング固定のため再生成不要、Resultだけ消せば十分)</summary>
+    public void Reset()
+    {
+        foreach (var lane in _arrows)
+            foreach (var a in lane) a.Result = null;
+        foreach (var lane in _freezes)
+            foreach (var f in lane)
+            {
+                f.Started = false;
+                f.Holding = false;
+                f.ReleasedAt = double.NaN;
+                f.Result = null;
+            }
+        Combo = 0;
+        MaxCombo = 0;
+        FreezeCombo = 0;
+    }
 }

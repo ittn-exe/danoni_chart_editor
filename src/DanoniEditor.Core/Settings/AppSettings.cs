@@ -28,7 +28,7 @@ public sealed class AppSettings
     /// <summary>ノート強調グリッドの色(6桁カラーコード、仕様書6.4.2のカラーコード入力方式に準拠)。</summary>
     public string HighlightLineColorHex { get; set; } = "#FFD400";
 
-    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-08-02要望対応)。
+    /// <summary>強調グリッドの対象からフリーズアロー終点を除外するか(2026-07-26要望対応)。
     /// 既定OFF(従来通り始点・終点の両方に描画)。環境設定「表示」カテゴリからのみ変更可能。</summary>
     public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
 
@@ -62,15 +62,21 @@ public sealed class AppSettings
     public string CursorHighlightColorHex { get; set; } = "#00E5FF";
 
     /// <summary>プレイテスト: Reverse(スクロール反転)ON/OFF(2026-07-17g)。
-    /// 難易度タブ切替時にPlaytestReverseByKeyTypeの値で自動上書きされる(2026-08-02)。</summary>
+    /// 難易度タブ切替時にPlaytestReverseByKeyTypeの値で自動上書きされる(2026-07-26)。</summary>
     public bool PlaytestReverse { get; set; } = false;
 
-    /// <summary>プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応)。
+    /// <summary>プレイテスト: キー種ごとのReverse既定値(2026-07-26要望対応)。
     /// キー=keyTypeId、値=そのキー種で難易度タブを開いた際に自動適用するReverse初期値。
     /// エディタUIには編集欄を設けず、環境設定「テンプレート」カテゴリでのみ変更する
     /// (テンプレートフォルダの全キー種を一覧表示してチェックボックスで設定)。
     /// キーが存在しないキー種はfalse(通常)扱い。</summary>
     public Dictionary<string, bool> PlaytestReverseByKeyType { get; set; } = [];
+
+    /// <summary>プレイテスト: キー種ごとの採用キーパターン番号(2026-07-26e要望対応)。
+    /// キー=keyTypeId、値=そのキー種のプレイテストで使うパターン番号(0=既定パターン)。
+    /// キーが存在しない、またはテンプレート側の追加パターン数を超える値の場合は0(既定)扱い。
+    /// パターンが1つしかない(追加パターンが無い)キー種は環境設定に選択欄を出さない。</summary>
+    public Dictionary<string, int> PlaytestPatternByKeyType { get; set; } = [];
 
     /// <summary>プレイテスト: ハイスピード倍率(px/frame換算、本家のx1=1px/frame相当)。</summary>
     public double PlaytestHiSpeed { get; set; } = 2.0;
@@ -82,7 +88,7 @@ public sealed class AppSettings
     /// キー種別の基準サイズ(本家autoSpread準拠の横幅×高さ)に掛けて実ウィンドウサイズとする。</summary>
     public double PlaytestWindowScale { get; set; } = 1.0;
 
-    /// <summary>プレイテスト: ウィンドウ幅の指定方式(2026-08-03要望対応、2026-08-06 "auto"追加)。dos.txtの
+    /// <summary>プレイテスト: ウィンドウ幅の指定方式(2026-07-26要望対応、2026-07-26 "auto"追加)。dos.txtの
     /// playingWidthヘッダーが明示されている場合は常にそちらが最優先(仕様書12.2)。ヘッダー未指定時の
     /// フォールバック値をどう決めるかがこの設定で、"px"=PlaytestWindowWidthPxを直接使う、
     /// "keyType"=PlaytestWindowWidthKeyTypeで指定したキー種の幅(本家autoSpread準拠)を常に使う
@@ -103,15 +109,30 @@ public sealed class AppSettings
     /// 自動的に拾う(手動キー入力は終了キー以外無効)。</summary>
     public bool PlaytestAutoPlay { get; set; } = false;
 
-    /// <summary>プレイテスト: 中断キーとしてDeleteキーを使用するか(2026-07-20)。
-    /// Delete/BackSpace/Escapeのうち、checkedのものだけが中断キーとして機能する。</summary>
-    public bool PlaytestQuitKeyDelete { get; set; } = true;
+    /// <summary>ノート音ON/OFF(既定OFF)。ONの場合、目視テスト・プレイテストの両方で、
+    /// ノート(通常+フリーズ始点)が存在するframeを通過するたびに、環境設定「テスト再生 > 全般」で
+    /// 選択した./sounds内の音声ファイルを鳴らす。上部パネルのチェックボックスで切り替える。</summary>
+    public bool HandClapEnabled { get; set; } = false;
 
-    /// <summary>プレイテスト: 中断キーとしてBackSpaceキーを使用するか(2026-07-20)</summary>
-    public bool PlaytestQuitKeyBackSpace { get; set; } = true;
+    /// <summary>ノート音の再生音量(0.0〜1.0、既定1.0)。上部パネルの音量欄(%)で調整する。</summary>
+    public double HandClapVolume { get; set; } = 1.0;
+
+    /// <summary>ノート音として使用する音声ファイル名(./sounds内、拡張子含む)。環境設定
+    /// 「テスト再生 > 全般」の一覧から選択する。既定は同梱のclap.wav。</summary>
+    public string NoteSoundFileName { get; set; } = "clap.wav";
+
+    /// <summary>プレイテスト: 中断キーとしてDeleteキーを使用するか(2026-07-20)。
+    /// Delete/Escapeのうち、checkedのものだけが中断キーとして機能する。
+    /// (2026-07-26d: BackSpaceは「再生開始フレームからやり直し」専用キーへ変更したため、
+    /// 中断キーの選択肢からは除外した)</summary>
+    public bool PlaytestQuitKeyDelete { get; set; } = true;
 
     /// <summary>プレイテスト: 中断キーとしてEscapeキーを使用するか(2026-07-20)</summary>
     public bool PlaytestQuitKeyEscape { get; set; } = true;
+
+    /// <summary>プレイテスト起動時のウェイト(ms、2026-07-26d要望対応、既定0)。
+    /// プレイテストウィンドウ表示後、この時間だけ待ってから音楽再生・判定を開始する。</summary>
+    public int PlaytestStartupWaitMs { get; set; } = 0;
 
     /// <summary>譜面ビュー(編集画面)のReverse表示(2026-07-22)。ONの場合、tick0を画面下端・末尾を
     /// 上端にして進行方向を逆にする(画像等は上下反転しない、座標変換のみを反転する仕様)。
@@ -119,7 +140,23 @@ public sealed class AppSettings
     /// (ボタン・チェックボックス・ショートカットキーは用意しない、2026-07-22ユーザー確定仕様)。</summary>
     public bool ChartViewReverse { get; set; } = false;
 
-    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-08-01、要望対応)。既定OFF。
+    /// <summary>キーボードモード中のSpace/Bキーの移動方向の解釈方式(2026-07-26要望対応)。
+    /// - "visual"(既定、現在の実装通り): 画面上の見た目方向に固定(Space=常に画面下へ、B=常に画面上へ。
+    ///   ChartViewReverse中でもこの見た目基準は変わらない)。
+    /// - "time": 時間(tick)方向に固定(Space=常に前進、B=常に後退)。通常表示では"visual"と同じ結果になるが、
+    ///   ChartViewReverse中は画面上の方向が逆転する(前進が画面上方向になる)。
+    /// ↑/↓キーの解釈(見た目方向固定)には影響しない。</summary>
+    public string KeyboardModeSpaceBMode { get; set; } = "visual";
+
+    /// <summary>キーボードモード中の←/→キー(および対応するCtrl+←/→の2小節移動、Shift+Ctrl+←/→の
+    /// 4小節移動)の移動方向の解釈方式(2026-07-26要望対応、KeyboardModeSpaceBModeと同じ考え方)。
+    /// - "visual"(既定、現在の実装通り): 画面上の見た目方向に固定(←=常に画面上へ、→=常に画面下へ。
+    ///   ChartViewReverse中でもこの見た目基準は変わらない)。
+    /// - "time": 時間(tick)方向に固定(←=常に後退、→=常に前進)。通常表示では"visual"と同じ結果になるが、
+    ///   ChartViewReverse中は画面上の方向が逆転する。</summary>
+    public string KeyboardModeLeftRightMode { get; set; } = "visual";
+
+    /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-07-26、要望対応)。既定OFF。
     /// マウスモード中はラベルの次の行に表示し、キーボードモード中(既に2行使用中)は
     /// 1行目(実キー表示)をノート数表示に置き換える(ChartCanvas.DrawLaneLabels参照)。</summary>
     public bool ShowLaneNoteCount { get; set; } = false;
@@ -128,7 +165,7 @@ public sealed class AppSettings
     /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>
     public double PlaybackSpeed { get; set; } = 1.0;
 
-    /// <summary>音楽再生時の音量(2026-07-27)。0.0〜1.0(MediaPlayer.Volumeへそのまま渡す)。
+    /// <summary>音楽再生時の音量(2026-07-26)。0.0〜1.0(MediaPlayer.Volumeへそのまま渡す)。
     /// 上部パネルのスライダー+数値入力欄(0〜100%表示)で変更する。</summary>
     public double PlaybackVolume { get; set; } = 1.0;
 
@@ -176,7 +213,7 @@ public sealed class AppSettings
     public double AutoSaveIntervalMinutes { get; set; } = 5.0;
 
     // =====================================================================
-    // 最近開いたファイル(2026-07-28、ファイル>最近開いたファイル)
+    // 最近開いたファイル(2026-07-26、ファイル>最近開いたファイル)
     // =====================================================================
 
     /// <summary>最近開いた(自形式)プロジェクトファイルの絶対パス一覧(新しい順)。
@@ -243,7 +280,7 @@ public sealed class AppSettings
     public int MarkerCommentHeadChars { get; set; } = 4;
 
     // =====================================================================
-    // 譜面ビューのレーン文字サイズ(2026-08-05要望対応)。時間情報レーン(小節番号/frame/time)と
+    // 譜面ビューのレーン文字サイズ(2026-07-26要望対応)。時間情報レーン(小節番号/frame/time)と
     // マーカーレーンのタグ文字それぞれの基準フォントサイズ(pt、ZoomScale=1.0時)。
     // 実描画時はChartCanvas側でZoomScaleを掛けて最終サイズを求める(既定値は変更前の固定値8/9を踏襲)。
     // =====================================================================
@@ -255,7 +292,7 @@ public sealed class AppSettings
     public double MarkerFontSize { get; set; } = 9.0;
 
     // =====================================================================
-    // musicURLからの楽曲取得(2026-07-27確定仕様)。指定フォルダをカレントディレクトリとして扱い、
+    // musicURLからの楽曲取得(2026-07-26確定仕様)。指定フォルダをカレントディレクトリとして扱い、
     // その中からProject.MusicUrlで指定されたファイル名の楽曲を読み込めるようにする機能。
     // 既定OFF(意図しない自動読込・意図しないフォルダ露出を避けるため)。
     // =====================================================================
@@ -278,11 +315,11 @@ public sealed class AppSettings
     /// <summary>色コード使用履歴(新しい順)</summary>
     public List<string> ColorHistory { get; set; } = [];
 
-    // 2026-07-30: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した
+    // 2026-07-26: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した
     // swap_macro.json(同じ./settingsフォルダ内)で管理する。LaneSwapMacroFile.Load/Save参照。
 
     // =====================================================================
-    // 統計情報(2026-08-05、環境設定 > 統計情報で閲覧のみ可能)。
+    // 統計情報(2026-07-26、環境設定 > 統計情報で閲覧のみ可能)。
     // ITTNアナライザー/おにスターの隠し機能解禁条件(docs/progress_and_tbd_2026-07-25.md §2-2)にも
     // これらのうちStatObjectsPlaced/StatOniStarRecalcPressesを流用する。
     // プロジェクトを跨いだアプリ全体の累計のため、プロジェクトファイルではなくAppSettings側に持つ。
@@ -316,7 +353,7 @@ public sealed class AppSettings
     /// <summary>dos.txtエクスポートの累計回数。</summary>
     public int StatDosExportCount { get; set; } = 0;
 
-    /// <summary>Undo/Redo実行の累計回数(両方合計、2026-08-05追加)。</summary>
+    /// <summary>Undo/Redo実行の累計回数(両方合計、2026-07-26追加)。</summary>
     public int StatUndoRedoCount { get; set; } = 0;
 
     /// <summary>プレイテスト起動の累計回数。</summary>
@@ -337,7 +374,7 @@ public sealed class AppSettings
     public int StatCrashCount { get; set; } = 0;
 
     // =====================================================================
-    // 終了時のウィンドウ状態(2026-08-05要望対応)。「どの画面のどの位置に」「最大化かどうか」を保存し、
+    // 終了時のウィンドウ状態(2026-07-26要望対応)。「どの画面のどの位置に」「最大化かどうか」を保存し、
     // 次回起動時に復元する。null/未設定=従来通りOS既定の位置。位置(WindowLeft/Top)は仮想スクリーン
     // 座標(マルチモニタ環境ではモニタをまたいだ通し座標)のため、これ自体が「何番の画面か」の情報を
     // 兼ねる(モニタ構成が変わって画面外になった場合はMainWindow側で既定位置へフォールバックする)。

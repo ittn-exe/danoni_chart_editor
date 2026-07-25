@@ -5,7 +5,7 @@ namespace DanoniEditor.Core.Persistence;
 
 /// <summary>
 /// 自動保存(クラッシュ復旧用)のファイルI/O本体(2026-07-25、TBD「自動保存・クラッシュ復旧」、
-/// 2026-08-06 複数ウィンドウ[=複数プロセス]対応でクラッシュフラグをインスタンス単位に分離)。
+/// 2026-07-26 複数ウィンドウ[=複数プロセス]対応でクラッシュフラグをインスタンス単位に分離)。
 /// WPFに依存しない純ロジックとして切り出し、単体テスト可能にしている(DanoniEditor.App側は
 /// AppPaths.AutoSaveDirを渡してこのクラスを呼ぶだけの薄いラッパーになる想定)。
 ///
@@ -13,7 +13,7 @@ namespace DanoniEditor.Core.Persistence;
 /// 別の「復旧用スロット」へ書き込む。次回起動時に前回の異常終了を検知した場合のみ、
 /// スロットの内容を「復元しますか?」と提示する。
 ///
-/// クラッシュ検知の仕組み(2026-08-06改訂): 「新しいウィンドウ」機能により同一exeが複数プロセスで
+/// クラッシュ検知の仕組み(2026-07-26改訂): 「新しいウィンドウ」機能により同一exeが複数プロセスで
 /// 同時実行され得るため、実行中フラグは単一ファイルではなくプロセス(インスタンス)ごとに
 /// running_{instanceId}.flag として個別に持つ。フラグの中身にはPIDを記録し、次回起動時は
 /// 「そのPIDのプロセスが今も実際に生きているか」で判定する(単にファイルの有無だけで判定すると、
@@ -37,7 +37,7 @@ public static class AutoSaveManager
     public static string GetManifestPath(string autoSaveDir) => Path.Combine(autoSaveDir, ManifestFileName);
     public static string GetSlotFilePath(string autoSaveDir, string slotId) => Path.Combine(autoSaveDir, $"slot_{slotId}.json");
 
-    // --- クラッシュフラグ(2026-08-06: インスタンス[プロセス]単位) ---
+    // --- クラッシュフラグ(2026-07-26: インスタンス[プロセス]単位) ---
 
     public static string GetInstanceFlagPath(string autoSaveDir, string instanceId) =>
         Path.Combine(autoSaveDir, $"{CrashFlagPrefix}{instanceId}{CrashFlagExt}");
@@ -59,7 +59,7 @@ public static class AutoSaveManager
     }
 
     /// <summary>autoSaveDir内の全インスタンスフラグを走査し、フラグに記録されたPIDのプロセスが
-    /// 実際に今も生きているインスタンスIDの集合を返す(2026-08-06)。生きていないフラグ(前回
+    /// 実際に今も生きているインスタンスIDの集合を返す(2026-07-26)。生きていないフラグ(前回
     /// 正常終了しなかった痕跡)は、判定の後にPurgeDeadInstanceFlagsで明示的に片付ける想定。</summary>
     public static HashSet<string> GetAliveInstanceIds(string autoSaveDir)
     {
@@ -88,7 +88,7 @@ public static class AutoSaveManager
         catch { return false; }
     }
 
-    /// <summary>生きていないインスタンスのフラグファイルを削除する(2026-08-06)。起動時、
+    /// <summary>生きていないインスタンスのフラグファイルを削除する(2026-07-26)。起動時、
     /// crashSuspectedスロットの提示可否を判定し終えた後に呼ぶ想定(古い痕跡の掃除)。</summary>
     public static void PurgeDeadInstanceFlags(string autoSaveDir, IEnumerable<string> deadInstanceIds)
     {
@@ -158,7 +158,7 @@ public static class AutoSaveManager
 /// </summary>
 /// <param name="SlotId">セッションごとに割り当てる一意なID(Guid文字列)。</param>
 /// <param name="InstanceId">このスロットを書き込んだプロセス(ウィンドウ)のインスタンスID
-/// (2026-08-06追加、複数ウィンドウ利用時に「まだ生きている別ウィンドウ」のセッションを
+/// (2026-07-26追加、複数ウィンドウ利用時に「まだ生きている別ウィンドウ」のセッションを
 /// 誤って復旧候補にしないためのもの)。旧バージョンのmanifestから読み込んだ場合は空文字列になる。</param>
 /// <param name="LastKnownPath">最後にわかっている保存先パス。未保存の新規プロジェクトならnull。</param>
 /// <param name="ProjectName">復旧ダイアログ表示用のプロジェクト名。</param>

@@ -8,7 +8,7 @@ using DanoniEditor.Editing;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// 譜面ビュー右側のミニマップ(2026-08-05、ユーザー要望)。譜面全体(tick0〜末尾)を縦に圧縮した
+/// 譜面ビュー右側のミニマップ(2026-07-26、ユーザー要望)。譜面全体(tick0〜末尾)を縦に圧縮した
 /// 概観を表示し、クリック(またはドラッグ)した位置へChartScrollViewerをジャンプさせる。
 /// ノート・フリーズの位置はDocument.CurrentLayoutのTickToY(Reverse反映済み)をそのままContentHeightで
 /// 正規化して使うため、譜面ビュー本体の表示方向と常に一致する。ノート内容の更新は
@@ -39,14 +39,19 @@ internal sealed class ChartMinimap : FrameworkElement
         }
     }
 
-    /// <summary>ジャンプ先を実際にスクロールさせる対象(2026-08-05)。MainWindowが紐付ける。</summary>
+    /// <summary>ジャンプ先を実際にスクロールさせる対象(2026-07-26)。MainWindowが紐付ける。</summary>
     public ScrollViewer? TargetScrollViewer { get; set; }
 
-    /// <summary>2026-08-05: ミニマップ操作後にキーボードフォーカスを戻す先(通常は譜面ビュー本体の
+    /// <summary>2026-07-26: ミニマップ操作後にキーボードフォーカスを戻す先(通常は譜面ビュー本体の
     /// ChartCanvas)。ミニマップ自体はFocusable=falseだが、クリック/ドラッグ操作の前に別のコントロール
     /// (右パネルのテキストボックス等)へフォーカスが残っていると、操作直後もそちらにショートカットキーが
     /// 奪われたままになるため、明示的にここへフォーカスを戻す。</summary>
     public UIElement? FocusTarget { get; set; }
+
+    /// <summary>読み込み済み音楽ファイルの全体長(フレーム、2026-07-26追加)。ChartCanvas.AudioTotalFrames
+    /// と同じ値をMainWindowが設定し、全体スクロール範囲(=ミニマップの表示範囲)をChartCanvas側と
+    /// 一致させる。</summary>
+    public double? AudioTotalFrames { get; set; }
 
     private void OnDocumentChanged() => InvalidateVisual();
 
@@ -64,7 +69,7 @@ internal sealed class ChartMinimap : FrameworkElement
         if (_document is null) return;
         var layout = _document.CurrentLayout;
         var tab = _document.CurrentTab;
-        long maxTick = ChartCanvas.MaxTickInProject(_document);
+        long maxTick = ChartCanvas.MaxTickInProject(_document, AudioTotalFrames);
         layout.RefreshContentHeight(maxTick);
         double contentHeight = layout.ContentHeight(maxTick);
         if (contentHeight <= 0) return;
@@ -118,7 +123,7 @@ internal sealed class ChartMinimap : FrameworkElement
 
     /// <summary>ミニマップはFocusable=falseのためクリックでフォーカスを奪うことは無いはずだが、
     /// 操作前から他コントロールにフォーカスが残っているケースに備え、操作の都度FocusTargetへ
-    /// 明示的にフォーカスを戻す(2026-08-05)。</summary>
+    /// 明示的にフォーカスを戻す(2026-07-26)。</summary>
     private void RestoreFocus()
     {
         if (FocusTarget is null) return;

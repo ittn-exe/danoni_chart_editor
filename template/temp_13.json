@@ -192,5 +192,28 @@
       "rotationAngle": 180,
       "engineLaneNum": 3
     }
+  ],
+  "extraPatterns": [
+    {
+      "name": "danoniplus本家keyCtrl13_1相当",
+      "blank": 50,
+      "divideCnt": 13.25,
+      "posMax": 13.25,
+      "laneOverrides": [
+        { "keyAssign": "S", "colorGroup": 0, "posIndex": 0, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "D", "colorGroup": 0, "posIndex": 1, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": ["E", "R"], "colorGroup": 0, "posIndex": 2, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "F", "colorGroup": 0, "posIndex": 3, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 4, "scrollDirection": "down", "noteGraphic": "onigiri", "rotationAngle": 0 },
+        { "keyAssign": "J", "colorGroup": 3, "posIndex": 5, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "K", "colorGroup": 3, "posIndex": 6, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "I", "colorGroup": 3, "posIndex": 7, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "L", "colorGroup": 3, "posIndex": 8, "scrollDirection": "down", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "←", "colorGroup": 4, "posIndex": 9.25, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "↓", "colorGroup": 4, "posIndex": 10.25, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "↑", "colorGroup": 4, "posIndex": 11.25, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "→", "colorGroup": 4, "posIndex": 12.25, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 }
+      ]
+    }
   ]
 }

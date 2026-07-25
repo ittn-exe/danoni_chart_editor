@@ -9,7 +9,7 @@ using DanoniEditor.Core.Models;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// ゲージ計算機(2026-08-01、ユーザー要望)。GaugeEditorWindowの②ゲージ別パラメータ表から
+/// ゲージ計算機(2026-07-26、ユーザー要望)。GaugeEditorWindowの②ゲージ別パラメータ表から
 /// モードレスで開く。①のタブで選択中の難易度タブを「カレントタブ」として常に参照し、
 /// タブが切り替われば警告無しに新しいタブの値で再計算する(ユーザー確定仕様)。
 /// 計算式はdanoni_main.js(getAccuracy/calcLifeVal/gaugeFormat)をナレッジの本体ソースで検証したもの
@@ -160,7 +160,7 @@ internal sealed class GaugeCalculatorWindow : Window
 
     private void TabGaugeTabsControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // 2026-08-01ユーザー確定仕様: タブ切替時は警告無しに新タブの値で再計算する
+        // 2026-07-26ユーザー確定仕様: タブ切替時は警告無しに新タブの値で再計算する
         LoadFromCurrentTab(resetGaugeSelection: false);
     }
 
@@ -274,7 +274,7 @@ internal sealed class GaugeCalculatorWindow : Window
         double realDmg = GaugeCalculator.ToRealValue(dmgRaw, mode, maxLifeVal, allCnt);
         if (mode == GaugeCalculator.CalcMode.Vary)
         {
-            // 2026-08-01: 本体のgaugeFormatはVary時の表示値をmaxLifeValで頭打ちにする(Math.min)。
+            // 2026-07-26: 本体のgaugeFormatはVary時の表示値をmaxLifeValで頭打ちにする(Math.min)。
             realRcv = Math.Min(realRcv, maxLifeVal);
             realDmg = Math.Min(realDmg, maxLifeVal);
         }

@@ -44,7 +44,7 @@ public sealed class ChartProject
     public double? PlaybackStartFrame { get; set; }
 
     /// <summary>譜面ビューの縦方向ズーム(ChartLayout.PxPerTick、Shift+ホイール)・横方向ズーム
-    /// (ChartLayout.ZoomScale、Alt+ホイール)の保存値(2026-08-05要望対応)。dos.txtには出力されない
+    /// (ChartLayout.ZoomScale、Alt+ホイール)の保存値(2026-07-26要望対応)。dos.txtには出力されない
     /// エディタ専用の表示設定だが、プロジェクトファイルには永続化し次回オープン時に復元する。
     /// null=未設定(エディタ既定値を使用、旧プロジェクトファイルとの後方互換)。</summary>
     public double? EditorZoomPxPerTick { get; set; }
@@ -56,7 +56,7 @@ public sealed class ChartProject
     /// <summary>難易度タブ(並び順=出力順=サフィックス採番順)</summary>
     public List<DifficultyTab> Tabs { get; set; } = [];
 
-    /// <summary>customGauge/gaugeXXX機能で使うゲージ名の並び順(2026-08-01、GaugeEditorWindow)。
+    /// <summary>customGauge/gaugeXXX機能で使うゲージ名の並び順(2026-07-26、GaugeEditorWindow)。
     /// 表の行順・出力順を保持するためだけのプロジェクト全体の情報で、実際のパラメータ値
     /// (border/recovery/damage/initLife)はタブごとに<see cref="DifficultyTab.GaugeParams"/>が持つ
     /// (2026-07-24: 旧GaugeParamSet.PerTabCsvはタブ削除時にインデックス調整が漏れて値がズレる不具合が
@@ -64,13 +64,13 @@ public sealed class ChartProject
     /// タブを削除すればそのタブの値も一緒に破棄されるだけで整合するようになる)。</summary>
     public List<string> GaugeNames { get; set; } = [];
 
-    /// <summary>「直接入力モード」(2026-08-01、ユーザー確定仕様)。空でなければ、ゲージ関連ヘッダー
+    /// <summary>「直接入力モード」(2026-07-26、ユーザー確定仕様)。空でなければ、ゲージ関連ヘッダー
     /// (customGauge系・gaugeXXX系)の出力はこのテキストの内容(dos.txtにそのまま書き込む前提の
     /// 生テキスト、複数行可)で完全に置き換えられ、GaugeParams/DifficultyTab.Gaugeによる
     /// UI構築ロジックは無視される(過去資産からのコピペ用途、プロジェクト全体で1つ)。</summary>
     public string? GaugeRawOverrideText { get; set; }
 
-    /// <summary>「dos作成後に直接編集する」フラグ(2026-08-05、ユーザー確定仕様、プロジェクト全体で1つ)。
+    /// <summary>「dos作成後に直接編集する」フラグ(2026-07-26、ユーザー確定仕様、プロジェクト全体で1つ)。
     /// trueの間、エクスポート時にゲージ関連の出力(difData内のborder/recovery/damage/initLife%、
     /// customGauge系・gaugeXXX系ヘッダー、GaugeRawOverrideTextによる直接入力を含む)を一切行わない。
     /// エディタでは編集せず、書き出し後のdos.txtへユーザー自身がテキストエディタ等で直接追記する
@@ -114,7 +114,7 @@ public sealed class DifficultyTab
     /// <summary>難易度個別のfrzColor上書き(null=曲共通を使用)</summary>
     public List<string>? FrzColorOverride { get; set; }
 
-    /// <summary>customGauge{N}(仕様dos-h0053、2026-08-01)。null=このタブはゲージ名リストを
+    /// <summary>customGauge{N}(仕様dos-h0053、2026-07-26)。null=このタブはゲージ名リストを
     /// 指定しない(customGauge{N}ヘッダー自体を出力しない=本体の既定ゲージが使われる)。</summary>
     public GaugeConfig? Gauge { get; set; }
 
@@ -195,7 +195,7 @@ public sealed record Marker(long Tick, string Comment);
 public sealed record NColorEntry(long Tick, string? Color, string? BandColor, bool AllFlag = false,
     string? ShadowColor = null, string? HitColor = null, string? HitBarColor = null, string? HitShadowColor = null);
 
-/// <summary>難易度タブ1件分のcustomGauge{N}設定(2026-08-01、仕様dos-h0053)。
+/// <summary>難易度タブ1件分のcustomGauge{N}設定(2026-07-26、仕様dos-h0053)。
 /// InheritKeywordが設定されていれば継承キーワード(survival/border/customDefault)そのものを
 /// customGauge{N}の値として出力し、Entriesは無視する。InheritKeywordがnullの場合のみ
 /// Entriesの明示リストを出力する(両方null/空の場合はこのタブのcustomGauge{N}自体を出力しない)。</summary>

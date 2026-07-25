@@ -33,7 +33,7 @@ internal static class AppPaths
     public static string SettingsFilePath => Path.Combine(SettingsDir, "settings.json");
 
     /// <summary>レーン入替マクロ(仕様書11章)の保存ファイル。settings.jsonとは独立させ、
-    /// 同じ./settingsフォルダ内に "swap_macro.json" として保存する(2026-07-30)。</summary>
+    /// 同じ./settingsフォルダ内に "swap_macro.json" として保存する(2026-07-26)。</summary>
     public static string LaneSwapMacroFilePath => Path.Combine(SettingsDir, "swap_macro.json");
 
     /// <summary>

@@ -77,5 +77,33 @@
       "rotationAngle": 0,
       "engineLaneNum": 4
     }
+  ],
+  "extraPatterns": [
+    {
+      "name": "danoniplus本家keyCtrl5_1相当 (space先頭配置)",
+      "blank": 57.5,
+      "divideCnt": 5,
+      "posMax": 5,
+      "laneOverrides": [
+        { "keyAssign": "←", "colorGroup": 0, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "↓", "colorGroup": 0, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "↑", "colorGroup": 0, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "→", "colorGroup": 0, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    },
+    {
+      "name": "danoniplus本家keyCtrl5_2相当 (DFJK配置)",
+      "blank": 57.5,
+      "divideCnt": 5,
+      "posMax": 5,
+      "laneOverrides": [
+        { "keyAssign": "D", "colorGroup": 0, "posIndex": 0, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 0 },
+        { "keyAssign": "F", "colorGroup": 0, "posIndex": 1, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": -90 },
+        { "keyAssign": "J", "colorGroup": 0, "posIndex": 3, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 90 },
+        { "keyAssign": "K", "colorGroup": 0, "posIndex": 4, "scrollDirection": "up", "noteGraphic": "arrow", "rotationAngle": 180 },
+        { "keyAssign": "Space", "colorGroup": 2, "posIndex": 2, "scrollDirection": "up", "noteGraphic": "onigiri", "rotationAngle": 0 }
+      ]
+    }
   ]
 }

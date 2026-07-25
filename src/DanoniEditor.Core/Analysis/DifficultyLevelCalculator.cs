@@ -1,7 +1,7 @@
 namespace DanoniEditor.Core.Analysis;
 
 /// <summary>
-/// danoniplus本体の「レベル計算ツール++」アルゴリズム(2026-08-01、ユーザー要望「ツール値(難易度)計算」)。
+/// danoniplus本体の「レベル計算ツール++」アルゴリズム(2026-07-26、ユーザー要望「ツール値(難易度)計算」)。
 /// `danoni_main.js`の`calcLevel`関数をそのまま移植したもの(ナレッジの本体ソースで検証済み、
 /// アルゴリズム自体は本体側に一切手を加えていない)。
 /// 入力は「1レーン分のフレーム値配列」のリスト(通常ノート)と、同じくレーンごとの
@@ -53,7 +53,7 @@ public static class DifficultyLevelCalculator
         var allScorebook = new List<long>();
         foreach (var lane in arrowData) allScorebook.AddRange(lane);
 
-        // 2026-08-01: ノートが1件も無い場合は本体側の想定外入力(allScorebook[0]-100がNaNになる)にあたるため、
+        // 2026-07-26: ノートが1件も無い場合は本体側の想定外入力(allScorebook[0]-100がNaNになる)にあたるため、
         // 当エディタ側の防御的ガードとして"0.00"を返す(本体の挙動そのものではない)。
         if (allScorebook.Count == 0)
             return new Result("0.00", 0, 0, 0);
