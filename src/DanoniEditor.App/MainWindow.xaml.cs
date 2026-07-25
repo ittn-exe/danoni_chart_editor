@@ -1313,10 +1313,8 @@ public partial class MainWindow : Window
         var template = _templates.Get(c.KeyTypeId);
         var newTab = DifficultyTab.CreateFor(template, c.DifficultyName);
         _document.Project.Tabs.Add(newTab);
-        _document.CurrentTabIndex = _document.Project.Tabs.Count - 1;
-        _document.Selection.Clear();
+        _document.NotifyTabsChanged(_document.Project.Tabs.Count - 1);
         OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
-        _document.NotifyChanged();
     }
 
     private void CloseCurrentTab_Click(object sender, RoutedEventArgs e)
@@ -1335,9 +1333,13 @@ public partial class MainWindow : Window
             "タブを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
-        tabs.RemoveAt(idx);
-        _document.CurrentTabIndex = Math.Min(idx, tabs.Count - 1);
-        _document.Selection.Clear();
+        ProjectOperations.RemoveTab(_document.Project, idx);
+        // 2026-07-24: 単純に CurrentTabIndex に代入するだけだと、閉じたタブが末尾以外の場合
+        // 「数値としては変わらないインデックス」になり得て(例: 3件中の2番目を閉じると2→2のまま)、
+        // setterの早期returnガードに阻まれてレイアウトキャッシュが古いタブのテンプレートを
+        // 指したまま残ってしまう(タブを閉じるとクラッシュする不具合の原因)。
+        // NotifyTabsChangedは値の異同に関わらず無条件でキャッシュ等を作り直すため、これを使う。
+        _document.NotifyTabsChanged(Math.Min(idx, tabs.Count - 1));
         OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
     }
 
@@ -1423,8 +1425,10 @@ public partial class MainWindow : Window
         if (from < 0 || to < 0 || from >= tabs.Count || to >= tabs.Count || from == to) return;
 
         ProjectOperations.MoveTab(_document.Project, from, to);
-        _document.CurrentTabIndex = to;
-        _document.NotifyChanged();
+        // 2026-07-24: 並び替え後もtoが元のCurrentTabIndexと同値になり得る(例: 自分より後ろのタブと
+        // 入れ替える場合)。単純代入だとsetterの早期returnで弾かれるため、CloseCurrentTab_Clickと同じく
+        // NotifyTabsChangedで無条件に反映する。
+        _document.NotifyTabsChanged(to);
         OpenDocument(_document, _controller);
     }
 

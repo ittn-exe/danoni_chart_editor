@@ -49,14 +49,13 @@ public sealed class ChartProject
     /// <summary>難易度タブ(並び順=出力順=サフィックス採番順)</summary>
     public List<DifficultyTab> Tabs { get; set; } = [];
 
-    /// <summary>customGauge/gaugeXXX機能(2026-08-01、GaugeEditorWindow)。
-    /// ゲージ名別パラメータ(border/recovery/damage/initLife)はプロジェクト全体で共有し、
-    /// キー=ゲージ名(例: "Original", "Heavy", ユーザー定義名等)。
-    /// 個々のGaugeParamSet.PerTabCsvは「難易度タブ数」分の要素を持ち、各要素は
-    /// "ノルマ(またはx固定),回復,ダメージ,初期ライフ" のCSV文字列(未設定タブは空文字列とし、
-    /// 出力時にgaugeXXXの$結合へそのまま渡す。本体側がgauges[j] || gauges[0]で
-    /// 先頭タブへ自動フォールバックするため、空要素のままで問題ない)。</summary>
-    public Dictionary<string, GaugeParamSet> GaugeParams { get; set; } = [];
+    /// <summary>customGauge/gaugeXXX機能で使うゲージ名の並び順(2026-08-01、GaugeEditorWindow)。
+    /// 表の行順・出力順を保持するためだけのプロジェクト全体の情報で、実際のパラメータ値
+    /// (border/recovery/damage/initLife)はタブごとに<see cref="DifficultyTab.GaugeParams"/>が持つ
+    /// (2026-07-24: 旧GaugeParamSet.PerTabCsvはタブ削除時にインデックス調整が漏れて値がズレる不具合が
+    /// あったため、他のタブ別設定(setColor/frzColor/customGauge)と同じ「タブ自身が値を持つ」方式へ統一した。
+    /// タブを削除すればそのタブの値も一緒に破棄されるだけで整合するようになる)。</summary>
+    public List<string> GaugeNames { get; set; } = [];
 
     /// <summary>「直接入力モード」(2026-08-01、ユーザー確定仕様)。空でなければ、ゲージ関連ヘッダー
     /// (customGauge系・gaugeXXX系)の出力はこのテキストの内容(dos.txtにそのまま書き込む前提の
@@ -104,6 +103,13 @@ public sealed class DifficultyTab
     /// <summary>customGauge{N}(仕様dos-h0053、2026-08-01)。null=このタブはゲージ名リストを
     /// 指定しない(customGauge{N}ヘッダー自体を出力しない=本体の既定ゲージが使われる)。</summary>
     public GaugeConfig? Gauge { get; set; }
+
+    /// <summary>gauge{ゲージ名}{N}(仕様dos-h0022)のこのタブぶんの値(2026-07-24、旧
+    /// ChartProject.GaugeParams/GaugeParamSet.PerTabCsvから移行)。キー=ゲージ名(ChartProject.GaugeNames
+    /// に列挙されるもの)、値="ノルマ(またはx固定),回復,ダメージ,初期ライフ"のCSV文字列。
+    /// キーが存在しない(未設定)場合は出力時に空文字列として扱う(本体側がgauges[j] || gauges[0]で
+    /// 先頭タブへ自動フォールバックするため、空のままで問題ない)。null=このタブは1件も未設定。</summary>
+    public Dictionary<string, string>? GaugeParams { get; set; }
 
     /// <summary>歌詞表示レーン(仕様dos-e0003-wordData、2026-07-23、TBD 4)。ユーザーが任意に追加/削除できる
     /// (既定0本=歌詞表示機能を使わないプロジェクトでは何も出力されない)。同一タブ内でIsReverseが同じ
@@ -190,16 +196,6 @@ public sealed class GaugeConfig
 
 /// <summary>customGauge{N}の明示リスト1項目分(name::F|V(::displayName)?)。</summary>
 public sealed record GaugeListEntry(string Name, bool IsVariable, string? DisplayName = null);
-
-/// <summary>gauge{ゲージ名}{N}(仕様dos-h0022)。プロジェクト全体でゲージ名ごとに1つ持つ。
-/// PerTabCsvの要素数は難易度タブ数と一致させる想定(GaugeEditorWindow側で維持管理)。</summary>
-public sealed class GaugeParamSet
-{
-    /// <summary>タブごとの"ノルマ(またはx),回復,ダメージ,初期ライフ"のCSV文字列。
-    /// 空文字列のタブは出力時そのまま空セグメントとして$結合し、本体側のgauges[j] || gauges[0]
-    /// フォールバックに委ねる(先頭タブと同じ値が使われる)。</summary>
-    public List<string> PerTabCsv { get; set; } = [];
-}
 
 // =====================================================================
 // 歌詞表示(word_data、仕様dos-e0003-wordData、2026-07-23、TBD 4)

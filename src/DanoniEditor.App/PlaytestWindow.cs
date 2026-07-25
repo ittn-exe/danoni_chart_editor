@@ -88,9 +88,15 @@ internal sealed class PlaytestWindow : Window
     private readonly int[] _autoPlayArrowCursor;
     private readonly int[] _autoPlayFreezeCursor;
 
+    // 2026-07-25: 本家準拠(danoni_main.js: charaJ/comboJ ←→ charaFJ/comboFJ)で、通常ノート(矢印)と
+    // フリーズの判定文字・コンボ表示を別系統で持つ。同時に判定が発生しても互いの表示を上書きしない。
     private string _judgeText = "";
     private Brush _judgeBrush = Brushes.White;
     private string _comboText = "";
+
+    private string _freezeJudgeText = "";
+    private Brush _freezeJudgeBrush = Brushes.White;
+    private string _freezeComboText = "";
 
     private readonly PlaySurface _surface;
 
@@ -339,7 +345,7 @@ internal sealed class PlaytestWindow : Window
 
     private void OnJudged(JudgeResult r)
     {
-        (_judgeText, _judgeBrush) = r.Judge switch
+        var (text, brush) = r.Judge switch
         {
             PlayJudge.Ii => ("(・∀・)ｲｲ!!", Brushes.Cyan),
             PlayJudge.Shakin => ("(`・ω・)ｼｬｷﾝ", Brushes.LightGreen),
@@ -349,8 +355,22 @@ internal sealed class PlaytestWindow : Window
             PlayJudge.Kita => ("(ﾟ∀ﾟ)ｷﾀ-!!", Brushes.Yellow),
             _ => ("ｲｸﾅｲ(・A・)", Brushes.Gray),
         };
-        // 本家準拠: イイ/シャキンで更新、マターリ/ダメージ系でコンボ表示は消える(内部値はエンジン側規則)
-        _comboText = r.Judge is PlayJudge.Ii or PlayJudge.Shakin ? $"{_engine.Combo} Combo!!" : "";
+
+        // 2026-07-25: 本家準拠でフリーズ(キター/イクナイ)と通常ノート(イイ〜ウワァン)の判定文字・
+        // コンボ表示を別系統に書き分ける(danoni_main.jsのcharaJ/comboJ ←→ charaFJ/comboFJ)。
+        if (r.Judge is PlayJudge.Kita or PlayJudge.Iknai)
+        {
+            _freezeJudgeText = text;
+            _freezeJudgeBrush = brush;
+            _freezeComboText = r.Judge == PlayJudge.Kita ? $"{_engine.FreezeCombo} Combo!!" : "";
+        }
+        else
+        {
+            _judgeText = text;
+            _judgeBrush = brush;
+            // 本家準拠: イイ/シャキンで更新、マターリ/ダメージ系でコンボ表示は消える(内部値はエンジン側規則)
+            _comboText = r.Judge is PlayJudge.Ii or PlayJudge.Shakin ? $"{_engine.Combo} Combo!!" : "";
+        }
     }
 
     // =====================================================================
@@ -422,9 +442,12 @@ internal sealed class PlaytestWindow : Window
                 }
             }
 
-            // 判定文字(画面中央)+コンボ(その下)
+            // 判定文字(画面中央)+コンボ(その下)。2026-07-25: 本家準拠でフリーズ用の判定文字・
+            // コンボはさらにその下へ別枠として常時表示する(矢印側の表示を上書きしない)。
             DrawCenteredText(dc, o._judgeText, o._judgeBrush, 28, h / 2 - 30, w);
             DrawCenteredText(dc, o._comboText, Brushes.White, 20, h / 2 + 8, w);
+            DrawCenteredText(dc, o._freezeJudgeText, o._freezeJudgeBrush, 22, h / 2 + 40, w);
+            DrawCenteredText(dc, o._freezeComboText, Brushes.White, 16, h / 2 + 66, w);
         }
 
         private static void DrawNote(DrawingContext dc, System.Windows.Media.Imaging.BitmapImage? image, LaneDef laneDef, double cx, double y, Color color)

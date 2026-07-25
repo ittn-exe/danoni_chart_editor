@@ -79,12 +79,12 @@ internal sealed class GaugeEditorWindow : Window
         WindowStyle = WindowStyle.ToolWindow;
 
         _tabVms = project.Tabs.Select(t => TabGaugeVm.FromGaugeConfig(t.Gauge)).ToList();
-        _paramRows = project.GaugeParams.Select(kv => new ParamRowVm
+        // 2026-07-24: ゲージ別パラメータの実値はDifficultyTab.GaugeParams(タブごと)に持たせる方式へ変更。
+        // GaugeNamesは行の並び順(名前一覧)のみを保持するプロジェクト全体の情報。
+        _paramRows = project.GaugeNames.Select(name => new ParamRowVm
         {
-            GaugeName = kv.Key,
-            PerTabCsv = Enumerable.Range(0, project.Tabs.Count)
-                .Select(i => i < kv.Value.PerTabCsv.Count ? kv.Value.PerTabCsv[i] : "")
-                .ToList(),
+            GaugeName = name,
+            PerTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "").ToList(),
         }).ToList();
 
         var root = new DockPanel();
@@ -411,11 +411,24 @@ internal sealed class GaugeEditorWindow : Window
         for (int i = 0; i < _project.Tabs.Count; i++)
             _project.Tabs[i].Gauge = rawText is null ? gaugeConfigs[i] : null;
 
-        _project.GaugeParams = rawText is not null
+        // 2026-07-24: ②の表内容(行=ゲージ名, 列=タブ)を、ChartProject.GaugeNames(並び順)と
+        // 各DifficultyTab.GaugeParams(タブごとの実値)へ分解して書き戻す。
+        List<ParamRowVm> validRows = rawText is not null
             ? []
-            : _paramRows
-                .Where(r => !string.IsNullOrWhiteSpace(r.GaugeName))
-                .ToDictionary(r => r.GaugeName.Trim(), r => new GaugeParamSet { PerTabCsv = r.PerTabCsv.ToList() });
+            : _paramRows.Where(r => !string.IsNullOrWhiteSpace(r.GaugeName)).ToList();
+
+        _project.GaugeNames = validRows.Select(r => r.GaugeName.Trim()).ToList();
+        for (int i = 0; i < _project.Tabs.Count; i++)
+        {
+            Dictionary<string, string>? gp = null;
+            foreach (var row in validRows)
+            {
+                var csv = i < row.PerTabCsv.Count ? row.PerTabCsv[i] : "";
+                if (string.IsNullOrEmpty(csv)) continue;
+                (gp ??= []).Add(row.GaugeName.Trim(), csv);
+            }
+            _project.Tabs[i].GaugeParams = gp;
+        }
 
         _project.GaugeRawOverrideText = rawText;
 

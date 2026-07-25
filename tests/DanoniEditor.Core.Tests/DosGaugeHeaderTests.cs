@@ -74,7 +74,10 @@ public class DosGaugeHeaderTests
     public void GaugeParams_JoinsPerTabCsvWithDollarSign_EmptySegmentsAllowedForFallback()
     {
         var project = NewProject(tabCount: 3);
-        project.GaugeParams["Heavy"] = new GaugeParamSet { PerTabCsv = ["2,50,50,100", "", "1,40,40,90"] };
+        project.GaugeNames.Add("Heavy");
+        project.Tabs[0].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "2,50,50,100" };
+        // Tabs[1]はGaugeParams未設定(=空欄、先頭タブへの本体側フォールバックに委ねる)
+        project.Tabs[2].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "1,40,40,90" };
 
         var repo = TestFixtures.Repository();
         var text = new DosExporter(repo.Get).Export(project);
@@ -86,7 +89,7 @@ public class DosGaugeHeaderTests
     public void GaugeParams_AllEmptyForAName_WritesNoHeaderAtAll()
     {
         var project = NewProject(tabCount: 2);
-        project.GaugeParams["Unused"] = new GaugeParamSet { PerTabCsv = ["", ""] };
+        project.GaugeNames.Add("Unused"); // どのタブにも値を設定しない
 
         var repo = TestFixtures.Repository();
         var text = new DosExporter(repo.Get).Export(project);
@@ -99,7 +102,8 @@ public class DosGaugeHeaderTests
     {
         var project = NewProject(tabCount: 1);
         project.Tabs[0].Gauge = new GaugeConfig { InheritKeyword = "survival" };
-        project.GaugeParams["Heavy"] = new GaugeParamSet { PerTabCsv = ["2,50,50,100"] };
+        project.GaugeNames.Add("Heavy");
+        project.Tabs[0].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "2,50,50,100" };
         project.GaugeRawOverrideText = "|customGauge=_Original::F::Original,Escape::V|\n|gaugeEscape=x,0,50,25|";
 
         var repo = TestFixtures.Repository();

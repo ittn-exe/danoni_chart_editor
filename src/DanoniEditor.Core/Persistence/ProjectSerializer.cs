@@ -10,8 +10,12 @@ namespace DanoniEditor.Core.Persistence;
 /// </summary>
 public static class ProjectSerializer
 {
-    /// <summary>2026-07-19g: v2=tick分解能1680/拍(旧v1=48/拍)。v1読込時は全tickを×35して移行する</summary>
-    public const int CurrentSchemaVersion = 2;
+    /// <summary>2026-07-19g: v2=tick分解能1680/拍(旧v1=48/拍)。v1読込時は全tickを×35して移行する。
+    /// 2026-07-24: v3=ゲージ別パラメータ(gaugeXXX)の保持方式変更。旧ChartProject.GaugeParams
+    /// (Dictionary&lt;string, {perTabCsv:[...]}&gt;、プロジェクト全体・タブ位置インデックス依存)を廃止し、
+    /// DifficultyTab.GaugeParams(タブごとのDictionary&lt;string,string&gt;)+ChartProject.GaugeNames
+    /// (並び順のみ)へ移行した(タブ削除時にインデックスがズレて値が壊れる不具合の修正)。</summary>
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>v1(48tick/拍)→v2(1680tick/拍)の移行係数</summary>
     private const long V1ToV2Scale = 35;
@@ -43,6 +47,7 @@ public static class ProjectSerializer
                 $"このプロジェクトはより新しいバージョンのエディタで作成されています(schemaVersion={env.SchemaVersion})");
         // schemaVersion < Current のマイグレーション
         if (env.SchemaVersion == 1) MigrateV1ToV2(env.Project);
+        if (env.SchemaVersion < 3) MigrateV2ToV3(json, env.Project);
         return env.Project;
     }
 
@@ -136,6 +141,51 @@ public static class ProjectSerializer
             tab.BoostEvents = tab.BoostEvents.Select(e => e with { Tick = e.Tick * V1ToV2Scale }).ToList();
         }
     }
+
+    /// <summary>2026-07-24: 旧v2形式のChartProject.GaugeParams(プロジェクト全体のDictionary&lt;string,
+    /// {perTabCsv:[...]}&gt;、タブの並び順インデックスに暗黙依存)を、新v3形式(ChartProject.GaugeNames
+    /// で並び順のみ保持し、実値はDifficultyTab.GaugeParamsへタブごとに持たせる形)へ変換する。
+    /// 型自体を変更済み(ChartProject/DifficultyTabにはもう旧プロパティが存在しない)ため、
+    /// 型付きデシリアライズでは値が失われてしまう。ここでは同じjson文字列をJsonDocumentとして
+    /// 別途読み直し、旧"gaugeParams"ノードが残っていればその内容を新モデルへ書き戻す
+    /// (解析に失敗しても致命的ではないため、諦めて何もしない)。</summary>
+    private static void MigrateV2ToV3(string json, Models.ChartProject project)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("project", out var projectEl)) return;
+            if (!projectEl.TryGetProperty("gaugeParams", out var gaugeParamsEl) ||
+                gaugeParamsEl.ValueKind != JsonValueKind.Object) return;
+
+            var names = new List<string>();
+            foreach (var gaugeProp in gaugeParamsEl.EnumerateObject())
+            {
+                string name = gaugeProp.Name;
+                names.Add(name);
+                if (!gaugeProp.Value.TryGetProperty("perTabCsv", out var perTabCsvEl) ||
+                    perTabCsvEl.ValueKind != JsonValueKind.Array) continue;
+
+                int i = 0;
+                foreach (var csvEl in perTabCsvEl.EnumerateArray())
+                {
+                    if (i >= project.Tabs.Count) break;
+                    var csv = csvEl.GetString();
+                    if (!string.IsNullOrEmpty(csv))
+                    {
+                        var tab = project.Tabs[i];
+                        (tab.GaugeParams ??= [])[name] = csv;
+                    }
+                    i++;
+                }
+            }
+            project.GaugeNames = names;
+        }
+        catch (JsonException)
+        {
+            // 旧データの救済に失敗しても致命的ではないため無視する
+        }
+    }
 }
 
 /// <summary>タブ操作(仕様書6.4.2の共通色ルールを含む)</summary>
@@ -152,6 +202,29 @@ public static class ProjectOperations
         var tab = project.Tabs[fromIndex];
         project.Tabs.RemoveAt(fromIndex);
         project.Tabs.Insert(toIndex, tab);
+
+        var newFirst = project.Tabs[0];
+        if (!ReferenceEquals(oldFirst, newFirst))
+        {
+            newFirst.SetColorOverride ??= oldFirst.SetColorOverride;
+            newFirst.FrzColorOverride ??= oldFirst.FrzColorOverride;
+        }
+    }
+
+    /// <summary>
+    /// 難易度タブを削除する。先頭タブは共通setColor/frzColorの「実体」なので、先頭タブ自体を削除して
+    /// 新しい先頭タブに切り替わる場合、その新しい先頭タブに色実体が無ければ旧先頭から引き継ぐ
+    /// (MoveTabと同じ考え方、仕様書6.4.2)。
+    /// ゲージパラメータ(DifficultyTab.GaugeParams、2026-07-24でPerTabCsv方式から移行)は
+    /// タブ自身が保持するデータになったため、他タブ側のインデックス調整は一切不要
+    /// (タブを削除すればそのタブのGaugeParamsも一緒に破棄されるだけで整合する)。
+    /// </summary>
+    public static void RemoveTab(ChartProject project, int index)
+    {
+        if (index < 0 || index >= project.Tabs.Count) return;
+        var oldFirst = project.Tabs[0];
+        project.Tabs.RemoveAt(index);
+        if (project.Tabs.Count == 0) return;
 
         var newFirst = project.Tabs[0];
         if (!ReferenceEquals(oldFirst, newFirst))

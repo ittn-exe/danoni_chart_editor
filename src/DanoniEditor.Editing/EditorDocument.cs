@@ -52,6 +52,23 @@ public sealed class EditorDocument
     public DifficultyTab CurrentTab => Project.Tabs[CurrentTabIndex];
     public KeyTemplate CurrentTemplate => Templates.Get(CurrentTab.KeyTypeId);
 
+    /// <summary>タブの追加・削除・並び替えなど、Project.Tabsの中身の対応関係が変わった直後に呼ぶ
+    /// (2026-07-24: 難易度タブを閉じるとクラッシュする不具合の修正)。
+    /// CurrentTabIndexのsetterは「値そのものが変わらない限り何もしない」ため、タブを1件削除して
+    /// 同じ数値のインデックスへ設定し直しても(例: 3件中の2番目を閉じてインデックスは変わらず2→2のまま)
+    /// 早期returnしてしまい、_layoutCacheが閉じられる前のタブのテンプレートを指したまま残ってしまう。
+    /// 実際のCurrentTabは繰り上がった別のタブ(キー種が異なりレーン数が違う場合がある)になっているため、
+    /// 描画側がtab.Lanes[i]をlayout.Template.Lanes[i]の数だけ回してIndexOutOfRangeExceptionになる。
+    /// このメソッドは値の異同に関わらず無条件でキャッシュを破棄するため、上記の経路をすべて避けられる。</summary>
+    public void NotifyTabsChanged(int? indexOverride = null)
+    {
+        int target = indexOverride ?? _currentTabIndex;
+        _currentTabIndex = Math.Clamp(target, 0, Math.Max(0, Project.Tabs.Count - 1));
+        Selection.Clear();
+        _layoutCache = null;
+        NotifyChanged();
+    }
+
     private ChartLayout? _layoutCache;
     /// <summary>現在タブのレイアウト(テンプレート変更・タブ切替まではキャッシュ)。
     /// 歌詞レーン本数(2026-07-23、TBD 4)はタブごとに可変のため、取得の都度SyncWordLaneCountで

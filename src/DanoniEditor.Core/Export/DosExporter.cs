@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Naming;
@@ -352,10 +353,12 @@ public sealed class DosExporter
             }
         }
 
-        foreach (var (name, paramSet) in project.GaugeParams)
+        foreach (var name in project.GaugeNames)
         {
-            if (paramSet.PerTabCsv.All(string.IsNullOrEmpty)) continue;
-            AppendParam(sb, $"gauge{name}", string.Join("$", paramSet.PerTabCsv));
+            var perTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "");
+            var values = perTabCsv.ToList();
+            if (values.All(string.IsNullOrEmpty)) continue;
+            AppendParam(sb, $"gauge{name}", string.Join("$", values));
         }
     }
 }
