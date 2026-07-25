@@ -55,6 +55,16 @@ internal sealed class PreferencesWindow : Window
     // --- プレイテスト: キー種ごとのReverse既定値(2026-08-02要望対応) ---
     private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
 
+    // --- プレイテスト: ウィンドウ幅(2026-08-03要望対応) ---
+    private readonly RadioButton _ptWidthPxMode = new() { Content = "ウィンドウ幅を直接入力", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly TextBox _ptWidthPx = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(20, 0, 0, 8) };
+    private readonly RadioButton _ptWidthKeyTypeMode = new() { Content = "キー種から選択", GroupName = "ptWidthMode", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly StackPanel _ptWidthKeyTypeList = new() { Margin = new Thickness(20, 0, 0, 0) };
+    /// <summary>幅グループごとのラジオボタン。Members=その幅を共有するキー種ID一式(設定値の読込照合用)、
+    /// RepresentativeKeyTypeId=保存時にAppSettings.PlaytestWindowWidthKeyTypeへ書き込む代表キー種
+    /// (同じ幅を生む値ならどれでも計算結果は同じなので、ラベルの筆頭=最少キー数のものを使う)。</summary>
+    private readonly List<(RadioButton Radio, string RepresentativeKeyTypeId, HashSet<string> Members)> _ptWidthKeyTypeGroups = [];
+
     // --- マーカー表示(表示カテゴリ内) ---
     private readonly RadioButton _markerFull = new() { Content = "全文表示", GroupName = "marker" };
     private readonly RadioButton _markerHead = new() { Content = "先頭数文字のみ", GroupName = "marker" };
@@ -72,6 +82,10 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _confirmUnsaved = new() { Content = "未保存の変更がある時、終了前に確認する" };
     private readonly TextBox _colorHistLimit = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _recentFilesLimit = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
+
+    // --- 自動保存・クラッシュ復旧(2026-07-25) ---
+    private readonly CheckBox _autoSaveEnabled = new() { Content = "自動保存を有効にする(クラッシュ復旧用、通常の保存とは別領域に保存されますわ)" };
+    private readonly TextBox _autoSaveInterval = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 譜面ビューReverse(2026-07-22、環境設定のみで切替) ---
     private readonly CheckBox _chartViewReverse = new() { Content = "譜面ビューをReverse表示する(tick0を下端・末尾を上端にする)" };
@@ -126,8 +140,9 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("キーボードモード");
         categories.Items.Add("musicURL取得");
         categories.Items.Add("テンプレート");
+        categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildVisualTestPanel(), BuildPlaytestPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildVisualTestPanel(), BuildPlaytestPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -311,6 +326,50 @@ internal sealed class PreferencesWindow : Window
             Margin = new Thickness(0, 6, 0, 0),
         });
 
+        p.Children.Add(Label("ウィンドウ幅(2026-08-03要望対応)", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "dos.txtのplayingWidthヘッダーが明示されているプロジェクトでは常にそちらが優先されますの。" +
+                   "ここはヘッダー未指定時に使うフォールバック値ですわ。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 6),
+        });
+        _ptWidthPxMode.Checked += (_, _) => UpdateWidthModeEnabled();
+        _ptWidthKeyTypeMode.Checked += (_, _) => UpdateWidthModeEnabled();
+        p.Children.Add(_ptWidthPxMode);
+        p.Children.Add(_ptWidthPx);
+        p.Children.Add(_ptWidthKeyTypeMode);
+
+        _ptWidthKeyTypeGroups.Clear();
+        _ptWidthKeyTypeList.Children.Clear();
+        if (_templates is null)
+        {
+            _ptWidthKeyTypeList.Children.Add(new TextBlock { Text = "(テンプレート一覧を取得できませんでした)", Foreground = Brushes.Gray, FontStyle = FontStyles.Italic });
+        }
+        else
+        {
+            // 幅ごとにグループ化し、幅の狭い順に並べる。各グループのラベルには、そのグループに属する
+            // キー種のうち使用キー数が少ない順に最大3つを表示する(2つ以上併記する場合は末尾に「等」)。
+            var groups = _templates.ListKeyTypeIds()
+                .Select(id => _templates.Get(id))
+                .GroupBy(t => PlaytestWindow.AutoSpreadWidth(t.KeyTypeId))
+                .OrderBy(g => g.Key)
+                .Select(g => new { Width = g.Key, Templates = g.OrderBy(t => t.KeyCount).ToList() });
+
+            foreach (var g in groups)
+            {
+                var shown = g.Templates.Take(3).ToList();
+                string names = string.Join(",", shown.Select(t => t.KeyTypeId));
+                string label = $"{g.Width:0}px : {names}{(shown.Count >= 2 ? "等" : "")}";
+                var radio = new RadioButton { Content = label, GroupName = "ptWidthKeyType", Margin = new Thickness(0, 0, 0, 2) };
+                var members = g.Templates.Select(t => t.KeyTypeId).ToHashSet();
+                _ptWidthKeyTypeGroups.Add((radio, shown[0].KeyTypeId, members));
+                _ptWidthKeyTypeList.Children.Add(radio);
+            }
+        }
+        p.Children.Add(_ptWidthKeyTypeList);
+
         p.Children.Add(Label("中断キー(2026-07-20)", section: true));
         _ptQuitDelete.Margin = new Thickness(0, 0, 0, 2);
         _ptQuitBackSpace.Margin = new Thickness(0, 0, 0, 2);
@@ -349,7 +408,15 @@ internal sealed class PreferencesWindow : Window
                 p.Children.Add(cb);
             }
         }
-        return p;
+        return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    /// <summary>ウィンドウ幅の指定方式ラジオ(直接入力/キー種から選択)に応じて、
+    /// 対応する入力欄のIsEnabledを切り替える(2026-08-03)。</summary>
+    private void UpdateWidthModeEnabled()
+    {
+        _ptWidthPx.IsEnabled = _ptWidthPxMode.IsChecked == true;
+        _ptWidthKeyTypeList.IsEnabled = _ptWidthKeyTypeMode.IsChecked == true;
     }
 
     private UIElement BuildNewProjectPanel()
@@ -385,6 +452,22 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("保存", section: true));
         _confirmUnsaved.Margin = new Thickness(0, 0, 0, 4);
         p.Children.Add(_confirmUnsaved);
+
+        p.Children.Add(Label("自動保存・クラッシュ復旧(2026-07-25)", section: true));
+        _autoSaveEnabled.Margin = new Thickness(0, 0, 0, 4);
+        p.Children.Add(_autoSaveEnabled);
+        p.Children.Add(Label("保存間隔(分):"));
+        p.Children.Add(_autoSaveInterval);
+        p.Children.Add(new TextBlock
+        {
+            Text = "変更のあるプロジェクトタブのみ、通常の保存(Ctrl+S)とは別の場所へ自動的に控えを取りますの。" +
+                   "手動保存した時点で、そのタブの控えは役目を終えて消去されますわ。次回起動時に前回の異常終了を" +
+                   "検知した場合のみ「復元しますか?」とお尋ねいたします。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+
         p.Children.Add(Label("色履歴", section: true));
         p.Children.Add(Label("色コード使用履歴の上限件数(デフォルト24):"));
         p.Children.Add(_colorHistLimit);
@@ -562,6 +645,51 @@ internal sealed class PreferencesWindow : Window
         RefreshTemplateList();
     }
 
+    // =====================================================================
+    // 統計情報(2026-08-05、閲覧専用。ITTNアナライザー/おにスターの隠し機能解禁条件にも使う
+    // カウンタだが、ここでは解禁段階等には一切触れず、純粋な利用実績として並べるだけにする)。
+    // =====================================================================
+
+    private UIElement BuildStatsPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("統計情報", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "これまでの操作回数の累計です(閲覧専用、アプリ全体でプロジェクトを跨いで記録されます)。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+
+        void Row(string label, int value)
+        {
+            p.Children.Add(new TextBlock
+            {
+                Text = $"{label}: {value:N0}",
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+        }
+
+        Row("オブジェクト設置回数", _work.StatObjectsPlaced);
+        Row("オブジェクト削除回数", _work.StatObjectsDeleted);
+        Row("オブジェクトコピー回数", _work.StatObjectsCopied);
+        Row("オブジェクト切り取り回数", _work.StatObjectsCut);
+        Row("オブジェクトペースト回数", _work.StatObjectsPasted);
+        Row("算出・再算出ボタン押下回数", _work.StatOniStarRecalcPresses);
+        Row("新規プロジェクト回数", _work.StatNewProjectCount);
+        Row("プロジェクト保存回数", _work.StatProjectSaveCount);
+        Row("dosエクスポート回数", _work.StatDosExportCount);
+        Row("Undo/Redo実行回数(合計)", _work.StatUndoRedoCount);
+        Row("プレイテスト起動回数", _work.StatPlaytestLaunchCount);
+        Row("プレイテスト中に打鍵で消したノート数", _work.StatPlaytestNotesCleared);
+        Row("マクロ実行回数", _work.StatMacroRunCount);
+        Row("アプリ起動回数", _work.StatAppLaunchCount);
+        Row("クラッシュ検出回数", _work.StatCrashCount);
+
+        return p;
+    }
+
     private void LoadFrom(AppSettings s)
     {
         _showImages.IsChecked = s.ShowNoteImages;
@@ -584,6 +712,15 @@ internal sealed class PreferencesWindow : Window
         _ptHiSpeed.SelectedItem = _ptHiSpeed.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestHiSpeed)).First();
         _ptOffset.Text = s.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         _ptScale.SelectedItem = _ptScale.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestWindowScale)).First();
+        _ptWidthPx.Text = s.PlaytestWindowWidthPx.ToString(CultureInfo.InvariantCulture);
+        _ptWidthPxMode.IsChecked = s.PlaytestWindowWidthMode == "px";
+        _ptWidthKeyTypeMode.IsChecked = s.PlaytestWindowWidthMode != "px";
+        foreach (var g in _ptWidthKeyTypeGroups)
+            g.Radio.IsChecked = g.Members.Contains(s.PlaytestWindowWidthKeyType);
+        // 保存済みのキー種が現在のテンプレート一覧に見当たらない場合(削除等)は先頭グループへフォールバック
+        if (_ptWidthKeyTypeGroups.Count > 0 && !_ptWidthKeyTypeGroups.Any(g => g.Radio.IsChecked == true))
+            _ptWidthKeyTypeGroups[0].Radio.IsChecked = true;
+        UpdateWidthModeEnabled();
         _ptQuitDelete.IsChecked = s.PlaytestQuitKeyDelete;
         _ptQuitBackSpace.IsChecked = s.PlaytestQuitKeyBackSpace;
         _ptQuitEscape.IsChecked = s.PlaytestQuitKeyEscape;
@@ -600,6 +737,8 @@ internal sealed class PreferencesWindow : Window
         _defBpm.Text = s.DefaultBpm.ToString(CultureInfo.InvariantCulture);
         _undoSize.Text = s.UndoHistorySize.ToString(CultureInfo.InvariantCulture);
         _confirmUnsaved.IsChecked = s.ConfirmUnsavedOnClose;
+        _autoSaveEnabled.IsChecked = s.AutoSaveEnabled;
+        _autoSaveInterval.Text = s.AutoSaveIntervalMinutes.ToString(CultureInfo.InvariantCulture);
         _colorHistLimit.Text = s.ColorHistoryLimit.ToString(CultureInfo.InvariantCulture);
         _recentFilesLimit.Text = s.RecentFilesLimit.ToString(CultureInfo.InvariantCulture);
         _selAllNote.IsChecked = s.SelectAllTargetNote;
@@ -641,6 +780,8 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "カーソルライン(強調帯)の色は #RRGGBB 形式で入力してくださいまし"; return false; }
         if (!double.TryParse(_ptOffset.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var ofs))
         { _error.Text = "調整オフセットは数値で入力してくださいまし"; return false; }
+        if (!TryPositive(_ptWidthPx.Text, out var ptWidthPx))
+        { _error.Text = "プレイテストのウィンドウ幅は正の数値で入力してくださいまし"; return false; }
         if (!int.TryParse(_markerHeadChars.Text, out var headChars) || headChars < 1)
         { _error.Text = "マーカー先頭表示の文字数は1以上の整数で入力してくださいまし"; return false; }
         if (!int.TryParse(_defStartFrame.Text, out var defSf) || defSf < 0)
@@ -653,6 +794,8 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "BPM初期値は正の数値で入力してくださいまし"; return false; }
         if (!int.TryParse(_undoSize.Text, out var undoSize) || undoSize < 1)
         { _error.Text = "Undo履歴件数は1以上の整数で入力してくださいまし"; return false; }
+        if (!TryPositive(_autoSaveInterval.Text, out var autoSaveInterval))
+        { _error.Text = "自動保存の間隔は正の数値(分)で入力してくださいまし"; return false; }
         if (!int.TryParse(_colorHistLimit.Text, out var colorLimit) || colorLimit < 1)
         { _error.Text = "色履歴の上限件数は1以上の整数で入力してくださいまし"; return false; }
         if (!int.TryParse(_recentFilesLimit.Text, out var recentLimit) || recentLimit < 1)
@@ -678,6 +821,10 @@ internal sealed class PreferencesWindow : Window
         if (_ptHiSpeed.SelectedItem is double hs) _work.PlaytestHiSpeed = hs;
         _work.PlaytestOffsetFrames = ofs;
         if (_ptScale.SelectedItem is double sc) _work.PlaytestWindowScale = sc;
+        _work.PlaytestWindowWidthMode = _ptWidthPxMode.IsChecked == true ? "px" : "keyType";
+        _work.PlaytestWindowWidthPx = ptWidthPx;
+        var selectedWidthGroup = _ptWidthKeyTypeGroups.FirstOrDefault(g => g.Radio.IsChecked == true);
+        if (selectedWidthGroup.Radio is not null) _work.PlaytestWindowWidthKeyType = selectedWidthGroup.RepresentativeKeyTypeId;
         _work.PlaytestQuitKeyDelete = _ptQuitDelete.IsChecked == true;
         _work.PlaytestQuitKeyBackSpace = _ptQuitBackSpace.IsChecked == true;
         _work.PlaytestQuitKeyEscape = _ptQuitEscape.IsChecked == true;
@@ -692,6 +839,8 @@ internal sealed class PreferencesWindow : Window
         _work.DefaultBpm = defBpm;
         _work.UndoHistorySize = undoSize;
         _work.ConfirmUnsavedOnClose = _confirmUnsaved.IsChecked == true;
+        _work.AutoSaveEnabled = _autoSaveEnabled.IsChecked == true;
+        _work.AutoSaveIntervalMinutes = autoSaveInterval;
         _work.ColorHistoryLimit = colorLimit;
         _work.RecentFilesLimit = recentLimit;
         if (_work.RecentFiles.Count > recentLimit) _work.RecentFiles.RemoveRange(recentLimit, _work.RecentFiles.Count - recentLimit);

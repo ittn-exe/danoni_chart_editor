@@ -45,7 +45,6 @@ public partial class MainWindow : Window
     private bool _suppressObjectPanelEvents;
     private ObjectRef? _currentPropertyObject;
     private EditorDocument? _selectionSubscribedDoc;
-    private SmartToolController? _tickSubscribedController;
     private string? _currentFilePath;
 
     /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-30)。settings.jsonとは独立した
@@ -62,6 +61,10 @@ public partial class MainWindow : Window
         public required EditorDocument Document { get; init; }
         public required SmartToolController Controller { get; set; }
         public string? FilePath { get; set; }
+
+        /// <summary>自動保存スロットの一意なID(2026-07-25)。セッション生成時に1回だけ発行し、
+        /// アプリの実行中は変わらない(復旧時に開いたセッションも新規に発行し直す)。</summary>
+        public string SlotId { get; } = Guid.NewGuid().ToString("N");
 
         /// <summary>プロジェクトタブの表示ラベル(プロジェクト名、未設定なら"Untitled" + 半角スペース + 未保存マーカー"*")</summary>
         public string TabLabel
@@ -81,6 +84,9 @@ public partial class MainWindow : Window
     // --- 音楽ファイル再生(目テスト・プレイテスト用) ---
     private readonly MediaPlayer _audioPlayer = new();
     private readonly DispatcherTimer _playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(33) }; // ≒30fps同期
+
+    /// <summary>自動保存(クラッシュ復旧用、2026-07-25)。間隔・ON/OFFはApplyAutoSaveTimerSettingsで反映。</summary>
+    private readonly DispatcherTimer _autoSaveTimer = new();
 
     /// <summary>Spaceキーで開始する目視テスト中か(2026-07-17f)。目視テスト中のみ
     /// 追従スクロールと終了時のスクロール復帰が働く。</summary>
@@ -131,6 +137,7 @@ public partial class MainWindow : Window
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         _playbackTimer.Tick += PlaybackTimer_Tick;
+        _autoSaveTimer.Tick += AutoSaveTimer_Tick; // 2026-07-25
 
         // 2026-07-20: D&Dによるファイル読み込み(仕様書TBD#7)。ウィンドウ全体を対象にする。
         AllowDrop = true;
@@ -150,6 +157,7 @@ public partial class MainWindow : Window
         Canvas.StartNumberChangedByDrag += RefreshProjectPropertiesPanel;
 
         _appSettings = preloadedSettings ?? AppSettings.Load(AppPaths.SettingsFilePath);
+        ApplyAutoSaveTimerSettings(); // 2026-07-25
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
         NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-08-01
@@ -298,6 +306,7 @@ public partial class MainWindow : Window
         if (win.ShowDialog() != true || win.Result is null) return;
         _appSettings = win.Result;
         _appSettings.Save(AppPaths.SettingsFilePath);
+        ApplyAutoSaveTimerSettings(); // 2026-07-25
         ApplyDisplaySettingsToCanvas();
         if (_document is not null) _document.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 2026-07-19b
         if (_keyboardMode is not null) _keyboardMode.ThresholdMs = _appSettings.SimultaneousPressThresholdMs; // 2026-07-21
@@ -365,6 +374,8 @@ public partial class MainWindow : Window
         };
         project.Tabs.Add(DifficultyTab.CreateFor(template, c.DifficultyName));
         AddSession(new EditorDocument(project, _templates), null); // 2026-07-20: 新規プロジェクトタブとして追加
+        _appSettings.StatNewProjectCount++;
+        _appSettings.Save(AppPaths.SettingsFilePath);
     }
 
     /// <summary>プロジェクトファイルの既定保存先(仕様書3.1確定: ./projects)を、無ければ作成して返す</summary>
@@ -492,12 +503,17 @@ public partial class MainWindow : Window
             ProjectSerializer.Save(_document.Project, path);
             _currentFilePath = path;
             _document.MarkSaved(); // 未保存フラグ解除→タイトルバーの'*'も消える(2026-07-19b)
+            // 2026-07-25: 手動保存が完了した時点で、このセッションの自動保存スロットは
+            // 役目を終えるので消去する(古い控えが手動保存より後まで残らないようにする)。
+            var savedSession = _sessions.FirstOrDefault(x => x.Document == _document);
+            if (savedSession is not null) AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, savedSession.SlotId);
             UpdateWindowTitle();
             RefreshProjectTabBarLabelOnly(); // プロジェクトタブの表示名も同期
             ProjectTitleText.Text = $"{_document.Project.ProjectName} ({_document.Project.MusicTitle})";
             StatusText.Text = $"保存しました: {Path.GetFileName(path)}";
             // 2026-07-28: 保存先も「最近開いたファイル」の先頭へ記録する(初回保存のパス確定時も含む)
             _appSettings.AddRecentFile(path);
+            _appSettings.StatProjectSaveCount++; // 2026-08-05: 統計情報(手動保存回数)
             _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
@@ -531,6 +547,8 @@ public partial class MainWindow : Window
             var text = exporter.Export(_document.Project, includeEditorMetadata: true);
             File.WriteAllText(dlg.FileName, text);
             StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
+            _appSettings.StatDosExportCount++; // 2026-08-05: 統計情報(dosエクスポート回数)
+            _appSettings.Save(AppPaths.SettingsFilePath);
         }
         catch (Exception ex)
         {
@@ -684,7 +702,13 @@ public partial class MainWindow : Window
         ImportDosFile(dlg.FileName);
     }
 
-    /// <summary>dos.txtをインポートする。ImportDos_ClickとD&D(2026-07-20)の共通処理。</summary>
+    /// <summary>dos.txtをインポートする。ImportDos_ClickとD&Dの共通処理。
+    /// 2026-07-25: FUJI/SKB/タブファイルインポートとインポート先の選択フローを統一(ユーザー要望
+    /// 「インポートのフローを共通にしてほしい」)。以前(2026-07-20)は「dos.txtインポートは単体で
+    /// プロジェクト全体(タブ複数を含む)を作るため」既存プロジェクトへの追加を考慮せず常に新規
+    /// プロジェクトタブとしていたが、他形式と同様プロジェクトが開いていれば追加/新規を選ばせるべき
+    /// という指摘のため、ChooseImportTargetProject/ApplyImport(DosImportResult)/FinishTabImportの
+    /// 共通トリオへ揃えた(dos.txt1件で複数タブを含み得る点はApplyImport側で全タブ追加として吸収)。</summary>
     private void ImportDosFile(string path)
     {
         var autoEstimate = MessageBox.Show(this,
@@ -699,15 +723,13 @@ public partial class MainWindow : Window
             var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = _appSettings.DefaultBpm }; // 環境設定(仕様書15.2、2026-07-19b)
             var result = importer.Import(text, options);
 
-            // dos.txtインポートは単体でプロジェクト全体(タブ複数を含む)を作るため、既存プロジェクトへの
-            // タブ追加ではなく新しいプロジェクトタブとして追加する(2026-07-20)。
-            AddSession(new EditorDocument(result.Project, _templates), null);
-
-            var warnings = new List<string>(result.Warnings)
-            {
-                $"タイミング情報の出所: {result.TimingSource} / 最大スナップ誤差: {result.MaxSnapErrorFrames:F2}フレーム",
-            };
-            ReportImportWarnings(warnings);
+            var fileName = Path.GetFileName(path);
+            var project = ChooseImportTargetProject(fileName);
+            if (project is null) return; // インポート先の選択をキャンセル
+            int addedTabCount = result.Project.Tabs.Count;
+            var warnings = ProjectOperations.ApplyImport(project, result);
+            warnings.Add($"タイミング情報の出所: {result.TimingSource} / 最大スナップ誤差: {result.MaxSnapErrorFrames:F2}フレーム");
+            FinishTabImport(project, warnings, addedTabCount);
         }
         catch (Exception ex)
         {
@@ -773,8 +795,12 @@ public partial class MainWindow : Window
     /// 見えなくなる)。projectが現在アクティブなセッションのものと異なる(=新しいプロジェクトとして
     /// インポートされた)場合はここで新規セッションとして追加し、同一の場合はUndo履歴・選択状態を
     /// 維持したまま画面だけ更新する。
+    /// addedTabCountは今回のApplyImportで新たに追加されたタブの件数。FUJI/SKB/タブファイルは常に1件だが、
+    /// dos.txt(2026-07-25でこの共通フローに統合)は1ファイルに複数難易度タブを含み得るため、
+    /// 「末尾のタブ」ではなく「今回追加された先頭のタブ」を選択する(末尾固定だと複数タブ追加時に
+    /// 意味の薄い最後のタブが選ばれてしまうため)。
     /// </summary>
-    private void FinishTabImport(ChartProject project, List<string> warnings)
+    private void FinishTabImport(ChartProject project, List<string> warnings, int addedTabCount = 1)
     {
         bool isNewProject = _document is null || !ReferenceEquals(_document.Project, project);
         if (isNewProject)
@@ -785,7 +811,8 @@ public partial class MainWindow : Window
         {
             OpenDocument(_document!, _controller); // タブ一覧の再読込のみ。既存コントローラ・選択状態はそのまま
         }
-        _document!.CurrentTabIndex = _document.Project.Tabs.Count - 1;
+        int newTabCount = Math.Max(1, addedTabCount);
+        _document!.CurrentTabIndex = Math.Max(0, _document.Project.Tabs.Count - newTabCount);
 
         // 2026-07-16d バグ修正: OpenDocument内のDifficultyTabControl.SelectedIndex設定は、
         // 上のCurrentTabIndex代入より「前」に(古いCurrentTabIndexを使って)行われてしまうため、
@@ -815,21 +842,13 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// docを画面に反映する。controllerを渡した場合はそれを再利用する(2026-07-20: マルチプロジェクトタブで
-    /// セッション切替時にCurrentTick等のコントローラ状態を保つため)。省略時(新規プロジェクト/インポート等)は
+    /// セッション切替時に色編集モード等のコントローラ状態を保つため)。省略時(新規プロジェクト/インポート等)は
     /// 新しいコントローラを作る。
     /// </summary>
     private void OpenDocument(EditorDocument doc, SmartToolController? controller = null)
     {
         _document = doc;
         _controller = controller ?? new SmartToolController(doc);
-
-        // CurrentTickChangedの購読はコントローラ単位。セッション切替でコントローラを使い回す場合に
-        // 二重購読(表示更新が積み重なる)しないよう、既に購読済みのコントローラかどうかで判定する。
-        if (!ReferenceEquals(_tickSubscribedController, _controller))
-        {
-            _controller.CurrentTickChanged += () => CurrentTickText.Text = _controller.CurrentTick is { } ct ? FormatTickPos(ct) : "-"; // 2026-07-17f: tick単独→tick/frame/秒の複合表記へ
-            _tickSubscribedController = _controller;
-        }
 
         Canvas.Document = doc;
         Canvas.Controller = _controller;
@@ -864,10 +883,12 @@ public partial class MainWindow : Window
                 _selectionSubscribedDoc.Changed -= RefreshSelectedObjectPanel;
                 _selectionSubscribedDoc.Changed -= UpdateWindowTitle;
                 _selectionSubscribedDoc.Changed -= RefreshProjectTabBarLabelOnly;
+                _selectionSubscribedDoc.StatRecorded -= OnStatRecorded;
             }
             doc.Changed += RefreshSelectedObjectPanel;
             doc.Changed += UpdateWindowTitle;
             doc.Changed += RefreshProjectTabBarLabelOnly;
+            doc.StatRecorded += OnStatRecorded;
             _selectionSubscribedDoc = doc;
         }
 
@@ -878,6 +899,7 @@ public partial class MainWindow : Window
         RefreshColorPanel();
         RefreshExtraHeadersPanel();
         RefreshMacroList(); // 2026-07-30: 現在タブのKeyTypeIdに応じて「実行」ボタンの有効/無効が変わるため
+        RefreshAnalysisPanel(); // 2026-08-05: 分析タブ(ITTNアナライザー/おにスター)
     }
 
     /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
@@ -964,6 +986,7 @@ public partial class MainWindow : Window
         _playbackTimer.Stop();
 
         int closingIndex = _activeSessionIndex;
+        AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, _sessions[closingIndex].SlotId); // 2026-07-25
         _sessions.RemoveAt(closingIndex);
 
         if (_sessions.Count == 0)
@@ -1256,6 +1279,106 @@ public partial class MainWindow : Window
     /// frame = 経過秒 × 60(仕様書の60fps基準)。この値はStartNumber/blankFrameを含む絶対フレーム軸と
     /// 同じ基準(曲頭=0)なので、TimingEngine.FrameToTickへそのまま渡せる。
     /// </summary>
+    // =====================================================================
+    // 自動保存・クラッシュ復旧(2026-07-25、TBD)。B案: 通常の保存(Ctrl+S)とは別領域
+    // (AppPaths.AutoSaveDir)へ、変更のあるプロジェクトタブだけを一定間隔で控える。
+    // 実際のI/Oロジックは DanoniEditor.Core.Persistence.AutoSaveManager 側に集約してあり、
+    // ここではタイマーの起動/停止と、どのセッションを対象にするかの選定のみを担う。
+    // =====================================================================
+
+    /// <summary>環境設定のAutoSaveEnabled/AutoSaveIntervalMinutesを_autoSaveTimerへ反映する。
+    /// 起動時・環境設定を閉じた直後(OpenPreferences)の両方から呼ぶ。</summary>
+    private void ApplyAutoSaveTimerSettings()
+    {
+        _autoSaveTimer.Stop();
+        if (!_appSettings.AutoSaveEnabled) return;
+        _autoSaveTimer.Interval = TimeSpan.FromMinutes(Math.Max(0.1, _appSettings.AutoSaveIntervalMinutes));
+        _autoSaveTimer.Start();
+    }
+
+    /// <summary>自動保存タイマーのTick。変更のある(IsModified)プロジェクトタブだけを対象に、
+    /// 各セッションごとのスロットへ書き込む。変更が無いタブは何もしない(無駄な書き込み回避、
+    /// ユーザー確定仕様)。1タブの書き込みに失敗しても他タブ・編集作業自体は継続する。</summary>
+    private void AutoSaveTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_appSettings.AutoSaveEnabled || _sessions.Count == 0) return;
+        SyncActiveSessionBeforeSwitch(); // アクティブセッションのFilePathを最新化してから読む
+
+        foreach (var s in _sessions)
+        {
+            if (!s.Document.IsModified) continue;
+            try
+            {
+                var name = string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName;
+                var json = ProjectSerializer.Serialize(s.Document.Project);
+                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, s.FilePath, name, json);
+            }
+            catch
+            {
+                // 自動保存の失敗で編集作業自体を止めたくないため、ここでは静かに無視する
+                // (次回のTickで再試行される)。
+            }
+        }
+    }
+
+    /// <summary>2026-08-05: 予期しない例外を検出した際の緊急保存(App.OnDispatcherUnhandledException/
+    /// AppDomain.UnhandledExceptionから呼ばれる)。変更のある全セッションを自動保存スロットへ
+    /// 書き込む(AutoSaveTimer_Tickと同じ仕組みを流用)。AutoSaveEnabled設定に関わらず常に実行する
+    /// (緊急時なので環境設定は問わない)。戻り値は実際に保存できたセッション数。</summary>
+    public int EmergencySaveAllSessions()
+    {
+        int saved = 0;
+        try { SyncActiveSessionBeforeSwitch(); } catch { /* 緊急時はベストエフォート */ }
+        foreach (var s in _sessions)
+        {
+            if (!s.Document.IsModified) continue;
+            try
+            {
+                var name = string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName;
+                var json = ProjectSerializer.Serialize(s.Document.Project);
+                AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, s.FilePath, name, json);
+                saved++;
+            }
+            catch { /* 1件失敗しても他セッションの保存は続ける */ }
+        }
+        return saved;
+    }
+
+    /// <summary>起動時にクラッシュが疑われた場合、App.OnStartupから呼ばれる。manifestに記録された
+    /// スロットを1件ずつ「復元しますか?」と尋ね、はいの場合は新規プロジェクトタブとして開く
+    /// (復元後もあえてMarkSavedはせず、未保存状態のまま維持してユーザー自身の目で確認・保存を促す)。
+    /// 復元してもしなくても、確認済みのスロットは古い控えとして削除する。</summary>
+    public void OfferCrashRecovery(List<AutoSaveSlotInfo> slots)
+    {
+        foreach (var slot in slots)
+        {
+            var pathLabel = slot.LastKnownPath ?? "(未保存の新規プロジェクト)";
+            var r = MessageBox.Show(this,
+                $"前回、正常に終了しなかった形跡がありますわ。\n\n" +
+                $"プロジェクト: {slot.ProjectName}\n元のファイル: {pathLabel}\n" +
+                $"自動保存日時: {slot.SavedAtUtc.ToLocalTime():yyyy/MM/dd HH:mm}\n\n" +
+                "前回の続きから復元しますか?",
+                "クラッシュ復旧", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+            if (r == MessageBoxResult.Yes)
+            {
+                try
+                {
+                    var json = AutoSaveManager.ReadSlotContent(AppPaths.AutoSaveDir, slot.SlotId);
+                    var project = ProjectSerializer.Deserialize(json);
+                    var doc = new EditorDocument(project, _templates);
+                    doc.NotifyChanged(); // 復元直後は「未保存の変更あり」状態にする(既定markModified:true)
+                    AddSession(doc, slot.LastKnownPath);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"復元に失敗しましたわ: {ex.Message}", "クラッシュ復旧", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, slot.SlotId);
+        }
+    }
+
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
     {
         if (_document is null || !_audioPlayer.NaturalDuration.HasTimeSpan) return;
@@ -1442,6 +1565,7 @@ public partial class MainWindow : Window
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
         RefreshMacroList(); // 2026-07-30: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
+        RefreshAnalysisPanel(); // 2026-08-05: タブが変わればTotalRating等も変わるため結果表示をリセットする
 
         // 2026-08-02: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
         // カテゴリのキー種別一覧で設定した値。一覧に無いキー種はOFF扱い)。PlaytestReverseCheck.IsChecked代入は
@@ -1842,7 +1966,8 @@ public partial class MainWindow : Window
         ArtistNameBox.Text = p.ArtistName;
         ArtistUrlBox.Text = p.ArtistUrl;
         BpmBox.Text = (p.BpmEvents.Count > 0 ? p.BpmEvents[0].Bpm : 120).ToString(CultureInfo.InvariantCulture);
-        StartNumberBox.Text = p.StartNumber.ToString(CultureInfo.InvariantCulture);
+        // 2026-07-25: 表示のみ小数点以下2桁に丸める(実値StartNumber自体はフル精度のまま保持)
+        StartNumberBox.Text = p.StartNumber.ToString("F2", CultureInfo.InvariantCulture);
         StartFrameBox.Text = p.StartFrame.ToString(CultureInfo.InvariantCulture);
         BlankFrameBox.Text = p.BlankFrame.ToString(CultureInfo.InvariantCulture);
         MusicUrlBox.Text = p.MusicUrl;
@@ -2577,6 +2702,15 @@ public partial class MainWindow : Window
     // ショートカット(仕様書13章): Ctrl+S/E/Z/Y
     // =====================================================================
 
+    /// <summary>統計情報(2026-08-05、Undo/Redo実行回数、両方合計)。実際に履歴を消費した場合
+    /// (何も無い状態でCtrl+Z/Yを空押ししただけの場合は増やさない)のみカウントする。</summary>
+    private void RecordUndoRedoStatIfChanged(bool didSomething)
+    {
+        if (!didSomething) return;
+        _appSettings.StatUndoRedoCount++;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (_document is null) return;
@@ -2589,8 +2723,8 @@ public partial class MainWindow : Window
 
         if (ctrl)
         {
-            if (e.Key == Key.Z) { _document.Undo(); Canvas.InvalidateVisual(); e.Handled = true; }
-            else if (e.Key == Key.Y) { _document.Redo(); Canvas.InvalidateVisual(); e.Handled = true; }
+            if (e.Key == Key.Z) { RecordUndoRedoStatIfChanged(_document.Undo()); Canvas.InvalidateVisual(); e.Handled = true; }
+            else if (e.Key == Key.Y) { RecordUndoRedoStatIfChanged(_document.Redo()); Canvas.InvalidateVisual(); e.Handled = true; }
             else if (e.Key == Key.S) { SaveProject_Click(this, new RoutedEventArgs()); e.Handled = true; }
             else if (e.Key == Key.E) { ExportDos_Click(this, new RoutedEventArgs()); e.Handled = true; }
             // --- 2026-07-17f: マウスモードのショートカット追加(Ctrl系) ---
@@ -2690,6 +2824,10 @@ public partial class MainWindow : Window
             case Key.Space: // 目視テスト開始/終了(終了後はテスト開始位置へ復帰)
                 ToggleVisualTest();
                 e.Handled = true; // 再生ボタン等のフォーカス誤発火防止(要望メモ07-15の注意点)
+                break;
+            case Key.Escape: // 選択解除(2026-08-04要望対応: マウス操作だけでは解除手段が無かったため新設)
+                if (_controller is not null && _controller.ClearSelection()) Canvas.InvalidateVisual();
+                e.Handled = true;
                 break;
         }
     }
@@ -2854,6 +2992,113 @@ public partial class MainWindow : Window
         if (_document is null || MacroListBox.SelectedItem is not MacroListEntry entry) return;
         _document.Execute(new ApplyLaneSwapMacroAction(entry.Macro.LaneMapping, entry.Macro.MacroName));
         StatusText.Text = $"マクロ実行: {entry.Macro.MacroName}";
+        _appSettings.StatMacroRunCount++; // 2026-08-05: 統計情報
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    // =====================================================================
+    // 右パネル: 分析(ITTNアナライザー/おにスター、2026-08-05、隠し機能、
+    // docs/progress_and_tbd_2026-07-25.md §2-1/§2-2対応)
+    // 2026-08-05要望対応: 実績進捗・解禁条件は右パネルに一切表示しない(統計情報ウィンドウ側で
+    // 閲覧する)。右パネルは「未解禁の間はタブごと非表示、解禁したら普通に使えるだけ」のシンプルな
+    // 二値表示にする(譜面編集に必要なものだけを表示する方針)。
+    // =====================================================================
+
+    private const int AnalyzerUnlockThreshold = 10000; // 配置オブジェクト累計数
+    private const int OniStarUnlockThreshold = 10;      // 算出・再算出ボタン累計押下回数
+
+    /// <summary>EditorDocument.StatRecordedの購読先(OpenDocument参照)。統計情報(AppSettings.Stat*)へ
+    /// 加算・保存する。分析タブの解禁状態(配置数)が変わるタイミングだけ再描画する
+    /// (頻繁な配置操作のたびに毎回フルリフレッシュすると重いため)。</summary>
+    private void OnStatRecorded(EditorStatKind kind, int count)
+    {
+        bool refreshAnalysisTab = false;
+        switch (kind)
+        {
+            case EditorStatKind.ObjectsPlaced:
+                bool wasUnlocked = _appSettings.StatObjectsPlaced >= AnalyzerUnlockThreshold;
+                _appSettings.StatObjectsPlaced += count;
+                refreshAnalysisTab = (_appSettings.StatObjectsPlaced >= AnalyzerUnlockThreshold) != wasUnlocked;
+                break;
+            case EditorStatKind.ObjectsDeleted:
+                _appSettings.StatObjectsDeleted += count;
+                break;
+            case EditorStatKind.Copy:
+                _appSettings.StatObjectsCopied += count;
+                break;
+            case EditorStatKind.Cut:
+                _appSettings.StatObjectsCut += count;
+                break;
+            case EditorStatKind.Paste:
+                _appSettings.StatObjectsPasted += count;
+                break;
+        }
+        _appSettings.Save(AppPaths.SettingsFilePath);
+        if (refreshAnalysisTab) RefreshAnalysisPanel();
+    }
+
+    /// <summary>分析タブの表示状態を、AppSettingsの解禁カウンタに応じて更新する。アナライザーが
+    /// 未解禁の間はタブ自体を非表示にする(進捗・解禁条件は右パネルに表示しない方針、2026-08-05)。
+    /// タブ切替・ドキュメント読込のたびに呼ばれるため、算出結果自体は都度クリアする
+    /// (タブが変われば対象の譜面が変わり、前回の結果は無意味になるため)。</summary>
+    private void RefreshAnalysisPanel()
+    {
+        bool analyzerUnlocked = _appSettings.StatObjectsPlaced >= AnalyzerUnlockThreshold;
+        AnalysisTabItem.Visibility = analyzerUnlocked ? Visibility.Visible : Visibility.Collapsed;
+        AnalyzerResultText.Text = "";
+        OniStarResultText.Text = "？？？";
+    }
+
+    /// <summary>「分析を実行」ボタン(2026-08-05)。現在の難易度タブをIttnAnalyzer(analyze.js忠実移植、
+    /// docs/progress_and_tbd_2026-07-25.md §1-2/1-3)で解析し、レーダー6軸・JACK/ALT/MOV・
+    /// baseRating/totalRating/toolScaleRatingをそのまま表示する。</summary>
+    private void AnalyzerRunButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        var result = IttnAnalyzer.Analyze(_document.Project, _document.CurrentTab, _document.CurrentTemplate);
+        if (result is null)
+        {
+            AnalyzerResultText.Text = "解析できませんでした(オブジェクトが無い等)。";
+            return;
+        }
+        AnalyzerResultText.Text =
+            $"STREAM  : {result.Stream:F2}\n" +
+            $"VOLTAGE : {result.Voltage:F2}\n" +
+            $"CHORD   : {result.Chord:F2}\n" +
+            $"FREEZE  : {result.Freeze:F2}\n" +
+            $"SOF-LAN : {result.Soflan:F2}\n" +
+            $"ONIGIRI : {result.Onigiri:F2}\n" +
+            $"JACK    : {result.Jack:F2}\n" +
+            $"ALT     : {result.Alt:F2}\n" +
+            $"MOV     : {result.Mov:F2}\n" +
+            $"\n" +
+            $"baseRating      : {result.BaseRating:F2}\n" +
+            $"totalRating     : {result.TotalRating:F2}\n" +
+            $"toolScaleRating : {result.ToolScaleRating:F2}";
+    }
+
+    /// <summary>「算出・再算出」ボタン(2026-08-05)。押すたびにAppSettings.StatOniStarRecalcPressesを
+    /// 加算・保存し、解禁閾値(10回)に達していればIttnAnalyzer→OniStarEstimatorで統一スケールの
+    /// 推定値(60%信頼区間つき)を表示する。未解禁の間は押しても結果は表示しない
+    /// (進捗も表示しない、隠し機能、docs/progress_and_tbd_2026-07-25.md §2-2)。
+    /// 2026-08-05要望対応: ☆/★表記への変換は行わない(統一スケールの数値をそのまま表示、
+    /// 最終的な表記は今後の「おにスター」表記側で行う想定)。</summary>
+    private void OniStarRecalcButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        _appSettings.StatOniStarRecalcPresses++;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+
+        if (_appSettings.StatOniStarRecalcPresses < OniStarUnlockThreshold) return;
+
+        var result = IttnAnalyzer.Analyze(_document.Project, _document.CurrentTab, _document.CurrentTemplate);
+        if (result is null)
+        {
+            OniStarResultText.Text = "算出できませんでした(オブジェクトが無い等)。";
+            return;
+        }
+        var est = OniStarEstimator.Estimate(result.TotalRating);
+        OniStarResultText.Text = $"推定値: {est.Score:F1} (幅: {est.ScoreLow:F1} 〜 {est.ScoreHigh:F1}、60%目安)";
     }
 
     /// <summary>種類(単色/linear/radial/conic)・方向・色リストから、右パネルの色編集タブの
@@ -3552,6 +3797,9 @@ public partial class MainWindow : Window
         }
         if (_visualTestActive) StopVisualTest(returnToStart: false); // 目視テスト中なら止めてから
 
+        _appSettings.StatPlaytestLaunchCount++; // 2026-08-05: 統計情報
+        _appSettings.Save(AppPaths.SettingsFilePath);
+
         var win = new PlaytestWindow(
             _document,
             _appSettings.PlaytestReverse,
@@ -3564,9 +3812,17 @@ public partial class MainWindow : Window
             _appSettings.PlaytestQuitKeyBackSpace,
             _appSettings.PlaytestQuitKeyEscape,
             _appSettings.PlaybackSpeed,
-            _appSettings.PlaybackVolume) // 2026-07-21: UIの音量設定をプレイテストにも反映
+            _appSettings.PlaybackVolume, // 2026-07-21: UIの音量設定をプレイテストにも反映
+            _appSettings) // 2026-08-03: ウィンドウ幅設定(環境設定「プレイテスト」)の解決に使う
         { Owner = this };
         win.ShowDialog();
+
+        // 2026-08-05: 統計情報(手動プレイ中に打鍵で消えたノート数の累計)
+        if (win.NotesClearedByKeypress > 0)
+        {
+            _appSettings.StatPlaytestNotesCleared += win.NotesClearedByKeypress;
+            _appSettings.Save(AppPaths.SettingsFilePath);
+        }
 
         // 終了後はテスト開始位置に戻る(Space目視テスト終了と同じ挙動、ユーザー確定仕様)
         ReturnScrollToStartFrame();

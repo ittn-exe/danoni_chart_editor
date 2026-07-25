@@ -42,4 +42,11 @@ internal static class AppPaths
     /// フォルダが無ければ保存/参照時に作成する。
     /// </summary>
     public static string ProjectsDir => Path.Combine(AppContext.BaseDirectory, "projects");
+
+    /// <summary>
+    /// 自動保存(クラッシュ復旧用)スロット・クラッシュフラグの格納フォルダ(exe直下の./autosave、
+    /// 2026-07-25)。settingsDir同様、通常の保存(Ctrl+S)とは完全に別領域に置く
+    /// (DanoniEditor.Core.Persistence.AutoSaveManager参照)。
+    /// </summary>
+    public static string AutoSaveDir => Path.Combine(AppContext.BaseDirectory, "autosave");
 }

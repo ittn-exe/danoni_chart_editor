@@ -308,4 +308,37 @@ public static class ProjectOperations
         return warnings;
     }
 
+    /// <summary>
+    /// dos.txtインポート結果を現在のプロジェクトへ難易度タブとして追加する(2026-07-25:
+    /// FUJI/SKB/タブファイルインポートとインポート先の選択フローを統一。ユーザー要望「インポートの
+    /// フローを共通にしてほしい」)。dos.txt単体は1ファイルに複数難易度タブを含み得るため、
+    /// DosImporterが組み立てたChartProject全体(result.Project)のタブを「全件」追加する点が
+    /// FUJI/SKB/タブファイル(常に1タブ)との違い。プロジェクトが空(タブ0件)ならタイミング情報
+    /// (BPM/拍子/StartNumber/BlankFrame)ごと採用し、既存タブがある場合はプロジェクト側の
+    /// タイミングを維持して警告を返す(FUJI/SKBと同じ方針、ApplyImport(FujiImportResult)参照)。
+    /// </summary>
+    public static List<string> ApplyImport(ChartProject project, Import.DosImportResult result)
+    {
+        var warnings = new List<string>(result.Warnings);
+        var source = result.Project;
+        if (project.Tabs.Count == 0)
+        {
+            project.StartNumber = source.StartNumber;
+            project.BlankFrame = source.BlankFrame;
+            project.BpmEvents = [.. source.BpmEvents];
+            project.TimeSignatures = [.. source.TimeSignatures];
+        }
+        else if (source.BpmEvents.Count == 0 ||
+                 Math.Abs(project.BpmEvents[0].Bpm - source.BpmEvents[0].Bpm) > 0.001 ||
+                 Math.Abs(project.StartNumber - source.StartNumber) > 0.001)
+        {
+            warnings.Add("インポート元のタイミング(BPM/StartNumber)がプロジェクトと異なります。プロジェクト側の設定を維持します");
+        }
+        foreach (var tab in source.Tabs)
+        {
+            project.Tabs.Add(tab);
+        }
+        return warnings;
+    }
+
 }

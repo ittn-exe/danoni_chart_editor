@@ -2,6 +2,22 @@ using DanoniEditor.Core.Models;
 
 namespace DanoniEditor.Editing;
 
+/// <summary>統計情報(2026-08-05、環境設定 > 統計情報)向けの操作カテゴリ。
+/// EditorDocument.StatRecordedイベントの引数として使う。</summary>
+public enum EditorStatKind
+{
+    /// <summary>新規配置したオブジェクトの数(単発配置=1、貼り付け/Ctrl+ドラッグ複製は複製個数分)</summary>
+    ObjectsPlaced,
+    /// <summary>削除したオブジェクトの数</summary>
+    ObjectsDeleted,
+    /// <summary>Ctrl+C(コピー)操作の回数(常に1)</summary>
+    Copy,
+    /// <summary>Ctrl+X(切り取り)操作の回数(常に1。内部でObjectsDeletedも別途記録される)</summary>
+    Cut,
+    /// <summary>Ctrl+V(貼り付け)操作の回数(常に1。貼り付けた個々のオブジェクト数はObjectsPlacedで別途記録される)</summary>
+    Paste,
+}
+
 /// <summary>
 /// エディタが扱う「開いているプロジェクト」1つ分の可変状態(仕様書6章全体の裏側)。
 /// ChartProjectそのもの(モデル)に加えて、編集セッション固有の状態
@@ -135,6 +151,16 @@ public sealed class EditorDocument
     {
         UndoStack.Push(this, FrameEdit is { } fe ? new FrameModeAction(action, fe) : action);
         NotifyChanged();
+    }
+
+    /// <summary>2026-08-05: 統計情報(環境設定 > 統計情報)向けの操作カウント通知。
+    /// SmartToolControllerが該当する操作を行うたびに呼ぶ。永続化(AppSettings)はApp層の責務
+    /// (このイベントを購読して加算・保存する)。Editing層はAppSettingsを参照しないための橋渡し。</summary>
+    public event Action<EditorStatKind, int>? StatRecorded;
+
+    public void RecordStat(EditorStatKind kind, int count = 1)
+    {
+        if (count > 0) StatRecorded?.Invoke(kind, count);
     }
 
     public bool Undo()

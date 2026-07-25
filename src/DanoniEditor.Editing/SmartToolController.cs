@@ -76,15 +76,14 @@ public sealed class SmartToolController
     /// <summary>FrzHitサブモードで塗るHitShadow色</summary>
     public string? PaintHitShadowColor { get; set; }
 
-    /// <summary>マーカーレーンクリックで設定される「現在フレーム」相当のtick位置(仕様書7.4)</summary>
-    public long? CurrentTick { get; private set; }
-
-    /// <summary>CurrentTickが変化した時に発火(WPF側でプレイヘッド表示更新用)</summary>
-    public event Action? CurrentTickChanged;
-
     // --- セッション状態(Begin〜Endの間だけ有効) ---
     private PointerButton _button;
     private PointerModifiers _modifiers;
+    /// <summary>左ボタンを離した瞬間の修飾キー状態(2026-08-04)。Ctrl+ドラッグ=複製の判定はこちらを
+    /// 使う(押下時のCtrl状態=_modifiersではなく、離した時点の状態を見る。ドラッグ中に気が変わって
+    /// Ctrlを離しても最終判断に反映されるようにするため)。既定値はBegin時の_modifiersと同じにしておき、
+    /// End()が(WPF側の都合等で)呼ばれない特殊ケースでも未初期化のPointerModifiers.Noneにならないようにする。</summary>
+    private PointerModifiers _endModifiers;
     private PointerPos _startPos;
     private PointerPos _lastPos;
     private ColumnInfo? _startColumn;
@@ -179,12 +178,14 @@ public sealed class SmartToolController
         if (HitAt(pos, hitScale: 1.0) is not null) return; // 既存オブジェクト上では何もしない(誤操作防止)
         long tick = SnappedTickAt(pos);
         _doc.Execute(new PlaceFreezeAction(col.NoteLaneIndex, tick, tick + _doc.Snap.GridTicks));
+        _doc.RecordStat(EditorStatKind.ObjectsPlaced, 1);
     }
 
     private void Begin(PointerButton button, PointerPos pos, PointerModifiers modifiers)
     {
         _button = button;
         _modifiers = modifiers;
+        _endModifiers = modifiers; // End()が呼ばれるまでの既定値(押下時と同じ状態にしておく)
         _startPos = _lastPos = pos;
         _startColumn = _doc.CurrentLayout.ColumnAt(pos.X);
         _startHit = HitAt(pos, hitScale: 1.0);
@@ -200,8 +201,41 @@ public sealed class SmartToolController
         // (DetermineGestureがDragGesture.Noneを返す)ため、押下時に確定しても既存のドラッグ操作と
         // 一切競合しない。既存オブジェクト上の押下は従来通りEndまで保留する(クリック=選択/
         // ドラッグ=移動・リサイズの判別がボタンアップまで確定しないため)。
-        if (button == PointerButton.Left && _startHit is null)
+        // 2026-07-25: 「空セルか」の判定はIsEmptyForPlacement参照(ノートレーンは広い当たり判定
+        // ではなく厳密tick一致を使う、ノート画像が密集して重なっている場合の配置不能対策)。
+        if (button == PointerButton.Left && IsEmptyForPlacement(pos))
             _clickHandledOnDown = TryHandleEmptyLeftPress();
+    }
+
+    /// <summary>「ここへ配置してよい空セルか」の判定(2026-07-25)。
+    /// ノートレーン(ColumnKind.Note)は、NoteSize基準の広いピクセル当たり判定(HitAt)ではなく、
+    /// クリック位置のスナップ後tickに実際のノート/フリーズ端点が存在するかを厳密に見る。
+    /// ノート画像は密集すると見た目上で隣接ノートの分まで当たり判定が重なってしまい、実際には
+    /// 空いているグリッドマスへ配置できなくなる不具合があったための対応(選択・掴みの当たり判定
+    /// である_startHit/HitAt自体はここでは変更しない、既存オブジェクトの掴みやすさは維持する)。
+    /// ノートレーン以外の列(Speed/Boost/Bpm/Marker/Word等)は従来通り広い当たり判定で判定する。</summary>
+    private bool IsEmptyForPlacement(PointerPos pos)
+    {
+        if (_startColumn is { Kind: ColumnKind.Note } col)
+            return !NoteExistsAtExactTick(col.NoteLaneIndex, SnappedTickAt(pos));
+        return _startHit is null;
+    }
+
+    /// <summary>指定レーンの指定tickに、通常ノート・フリーズの端点(始点/終点)・フリーズの帯範囲内
+    /// (始点〜終点、両端含む)のいずれかが実際に存在するか。IsEmptyForPlacement専用の厳密判定
+    /// (2026-07-25)。HitAtと異なりピクセル距離を一切見ない。
+    /// 2026-08-05修正: 帯範囲チェックが無く端点ぴったりのtickしか「占有」と判定していなかったため、
+    /// フリーズの帯中央付近をクリックすると「空セル」と誤判定され、選択/掴み移動より先に新規ノート
+    /// 配置(TryHandleEmptyLeftPress)が押下時点で即実行されてしまっていた(帯でのクリック選択・
+    /// ドラッグ移動が機能しなくなる副作用)。通常ノートはフリーズと重ねて置けない仕様のため、
+    /// 帯の範囲全体を占有域として扱うのが安全かつ正しい。</summary>
+    private bool NoteExistsAtExactTick(int laneIndex, long tick)
+    {
+        var lane = _doc.CurrentTab.Lanes[laneIndex];
+        if (lane.Notes.Contains(tick)) return true;
+        foreach (var f in lane.Freezes)
+            if (tick >= f.StartTick && tick <= f.EndTick) return true;
+        return false;
     }
 
     /// <summary>空セル(既存オブジェクト無し)への左ボタン押下を即時処理する(2026-07-17e)。
@@ -214,9 +248,16 @@ public sealed class SmartToolController
 
         if (col.Kind == ColumnKind.Marker)
         {
-            if (shift) { _doc.Execute(new PlaceMarkerAction(SnappedTickAt(_startPos))); return true; }
-            SetCurrentTick(TickAt(_startPos));
-            return true;
+            // 2026-08-05: CurrentTick機能(シングルクリックでの位置記録)は撤去。参照先が無くなった
+            // (Pasteの基準点は既に再生開始フレームへ移行済み)ため、Shift+クリックのマーカー配置のみ残す。
+            // Shift無しの単純クリックは何もしない(空振り、ダブルクリックの再生開始フレーム設定と競合しない)。
+            if (shift)
+            {
+                _doc.Execute(new PlaceMarkerAction(SnappedTickAt(_startPos)));
+                _doc.RecordStat(EditorStatKind.ObjectsPlaced, 1);
+                return true;
+            }
+            return false;
         }
 
         // 2026-07-23: 色編集モード中はマーカーレーン以外への新規配置を一切受け付けない(誤操作防止)。
@@ -226,6 +267,7 @@ public sealed class SmartToolController
         var action = BuildPlaceAction(col, SnappedTickAt(_startPos), shift);
         if (action is null) return false;
         _doc.Execute(action);
+        _doc.RecordStat(EditorStatKind.ObjectsPlaced, 1);
         return true;
     }
 
@@ -261,6 +303,13 @@ public sealed class SmartToolController
 
     private DragGesture DetermineGesture()
     {
+        // 2026-07-25: 押下時に既に配置処理を終えている(_clickHandledOnDown)場合、常にNone。
+        // IsEmptyForPlacementの厳密tick判定により、ノートレーンでは「_startHit(広い当たり判定)は
+        // 隣接ノートを指しているが、実際のtickは空だったので配置した」というケースが起こり得る。
+        // ここでガードしないと、そのままドラッグ閾値を超えた際に_startHitの隣接ノートを掴んで
+        // 移動を始めてしまい、配置と移動が二重に発生してしまう。
+        if (_clickHandledOnDown) return DragGesture.None;
+
         // 2026-07-23: 色編集モード中は左ドラッグ(移動・リサイズ)を一切無効化し、
         // 右ドラッグは常に範囲選択(削除ドラッグは無効)にする。範囲選択自体は
         // 一括塗りつぶし用の複数選択構築に必要なため許可する。
@@ -291,10 +340,14 @@ public sealed class SmartToolController
     // セッション終了
     // =====================================================================
 
-    public void End(PointerPos pos)
+    /// <summary>endModifiers=ボタンを離した瞬間の修飾キー状態(2026-08-04、省略時は押下時の状態を維持)。
+    /// Ctrl+ドラッグ=複製(FinishMove参照)の判定に使う。それ以外の判定(範囲選択への追加等)は
+    /// 従来通り押下時の_modifiersを使う(この引数は複製判定専用)。</summary>
+    public void End(PointerPos pos, PointerModifiers? endModifiers = null)
     {
         if (!_sessionActive) return;
         _lastPos = pos;
+        if (endModifiers is { } em) _endModifiers = em;
         var wasDrag = _dragConfirmed || _startPos.DistanceTo(pos) >= DragThreshold;
 
         if (!wasDrag)
@@ -357,6 +410,7 @@ public sealed class SmartToolController
         var action = BuildDeleteAction(hit);
         if (action is null) return;
         _doc.Execute(action);
+        _doc.RecordStat(EditorStatKind.ObjectsDeleted, 1);
         RemoveFromSelection(hit);
     }
 
@@ -604,7 +658,16 @@ public sealed class SmartToolController
         long tickDelta = SnappedTickAt(_lastPos) - SnappedTickAt(_startPos);
         if (laneDelta == 0 && tickDelta == 0) return;
 
-        _doc.Execute(new MoveObjectsAction(targets, laneDelta, tickDelta));
+        // 2026-08-04要望対応: 左ボタンを離した瞬間にCtrlが押されていれば、移動ではなく
+        // 移動先への複製として扱う(ドラッグ開始時ではなく終了時のCtrl状態で判定=ドラッグ中に
+        // 気が変わった場合に対応できるようにするため、_endModifiersを見る)。
+        if (_endModifiers.HasFlag(PointerModifiers.Ctrl))
+        {
+            _doc.Execute(new CopyObjectsAction(targets, laneDelta, tickDelta));
+            _doc.RecordStat(EditorStatKind.ObjectsPlaced, targets.Count);
+        }
+        else
+            _doc.Execute(new MoveObjectsAction(targets, laneDelta, tickDelta));
     }
 
     private int LaneDeltaFor(ObjectKind kind)
@@ -627,6 +690,7 @@ public sealed class SmartToolController
             .ToList();
         if (actions.Count == 0) return;
         _doc.Execute(new CompositeEditAction(actions, "ドラッグ削除"));
+        _doc.RecordStat(EditorStatKind.ObjectsDeleted, actions.Count);
 
         // 2026-07-17: 削除したオブジェクトが選択中だった場合、選択枠(黄色い縁取り)が
         // 実体の消えた位置に残り続ける不具合の対応。削除対象と同一エンティティの選択を解除する。
@@ -695,8 +759,21 @@ public sealed class SmartToolController
         if (actions.Count == 0) return false;
 
         _doc.Execute(new CompositeEditAction(actions, "選択削除"));
+        _doc.RecordStat(EditorStatKind.ObjectsDeleted, actions.Count);
         _doc.Selection.Clear();
         _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択解除の通知のみ
+        return true;
+    }
+
+    /// <summary>選択状態を解除する(Escapeキー、2026-08-04要望対応)。スマートツールのマウス操作
+    /// だけでは選択を解除する手段が無かった(空セルクリックは配置、既存オブジェクトクリックは
+    /// 選択の置き換えになり「何もない状態に戻す」操作が存在しなかった)ための新設。
+    /// 選択が既に空ならfalse(データを変えない=Undo対象外)。</summary>
+    public bool ClearSelection()
+    {
+        if (_doc.Selection.Count == 0) return false;
+        _doc.Selection.Clear();
+        _doc.NotifyChanged(markModified: false);
         return true;
     }
 
@@ -772,34 +849,56 @@ public sealed class SmartToolController
     /// コピー可能な対象が1つも無ければ何もせず(既存クリップボードも保持したまま)falseを返す。</summary>
     public bool CopySelection()
     {
+        if (!TrySetClipboard()) return false;
+        _doc.RecordStat(EditorStatKind.Copy);
+        return true;
+    }
+
+    /// <summary>選択中オブジェクトを切り取る(Ctrl+X = コピー + 選択削除、13章)。
+    /// コピー自体はUndo対象外(クリップボードはドキュメント状態ではない)だが、
+    /// 削除は既存のDeleteSelection(1ジェスチャ=1Undoアクション)がそのまま使われる。
+    /// 2026-08-05: 統計情報(Copy/Cut)を別カウントにするため、CopySelection()は呼ばず
+    /// TrySetClipboard()を直接使う(CutはCopy統計にカウントしない)。</summary>
+    public bool CutSelection()
+    {
+        if (!TrySetClipboard()) return false;
+        DeleteSelection();
+        _doc.RecordStat(EditorStatKind.Cut);
+        return true;
+    }
+
+    /// <summary>選択中オブジェクトからクリップボードエントリを組み立てて設定する(CopySelection/
+    /// CutSelection共通の内部処理、統計カウントは含まない)。</summary>
+    private bool TrySetClipboard()
+    {
         var entries = BuildClipboardEntries(_doc.Selection);
         if (entries.Count == 0) return false;
         EditorClipboard.Set(entries);
         return true;
     }
 
-    /// <summary>選択中オブジェクトを切り取る(Ctrl+X = コピー + 選択削除、13章)。
-    /// コピー自体はUndo対象外(クリップボードはドキュメント状態ではない)だが、
-    /// 削除は既存のDeleteSelection(1ジェスチャ=1Undoアクション)がそのまま使われる。</summary>
-    public bool CutSelection()
-    {
-        if (!CopySelection()) return false;
-        DeleteSelection();
-        return true;
-    }
-
     /// <summary>クリップボードの内容を貼り付ける(Ctrl+V)。
-    /// tick基準点はCurrentTick(マーカーレーンクリックで設定される「現在フレーム」、7.4)。
+    /// tick基準点は再生開始フレーム(Project.PlaybackStartFrame、マーカー/時間情報レーンのダブルクリックで
+    /// 設定される「現在の再生開始位置」、仕様書7.4)。2026-08-04: 従来はCurrentTick(シングルクリックで
+    /// 設定される位置)基準だったが、プレイテストの開始位置と揃えたいという要望により変更した。
     /// 一度も設定されていなければtick0を基準にする。laneはコピー時の元レーンをそのまま使い、
     /// 現在のテンプレートのレーン数に収まらない対象はスキップする(キー種違いのプロジェクトへ
     /// 貼り付けた場合など)。貼り付け後は新規オブジェクトを選択状態にし、そのままグループ移動
-    /// (6.3.2)で位置調整できるようにする。1回の呼び出し=1Undoアクション。</summary>
+    /// (6.3.2)で位置調整できるようにする。2026-08-05: 「frame情報以外は全て保持してコピペしたい」
+    /// との要望対応で、通常ノート/フリーズのColorOverrides(ncolor_data個別色)・Annotations
+    /// (コメント・警告)もコピー元のClipboardEntryから貼り付け先へ複製する(AddSidecarActions参照)。
+    /// 1回の呼び出し=1Undoアクション。</summary>
     public bool Paste()
     {
         var entries = EditorClipboard.Entries;
         if (entries is null || entries.Count == 0) return false;
 
-        long anchorTick = CurrentTick ?? 0;
+        long anchorTick = 0;
+        if (_doc.Project.PlaybackStartFrame is { } startFrame)
+        {
+            var engine = _doc.Project.CreateTimingEngine();
+            anchorTick = (long)Math.Round(engine.FrameToTick(startFrame));
+        }
         int laneCount = _doc.CurrentTemplate.KeyCount;
 
         var actions = new List<IEditAction>();
@@ -815,12 +914,14 @@ public sealed class SmartToolController
                 case ObjectKind.Note:
                     if (e.Lane < 0 || e.Lane >= laneCount) break;
                     actions.Add(new PlaceNoteAction(e.Lane, tick));
+                    AddSidecarActions(actions, e, e.Lane, tick);
                     pasted.Add(new ObjectRef(ObjectKind.Note, e.Lane, tick));
                     break;
 
                 case ObjectKind.FreezeStart:
                     if (e.Lane < 0 || e.Lane >= laneCount) break;
                     actions.Add(new PlaceFreezeAction(e.Lane, tick, tick + e.DurationTicks));
+                    AddSidecarActions(actions, e, e.Lane, tick);
                     pasted.Add(new ObjectRef(ObjectKind.FreezeStart, e.Lane, tick));
                     break;
 
@@ -850,6 +951,8 @@ public sealed class SmartToolController
         if (actions.Count == 0) return false;
 
         _doc.Execute(new CompositeEditAction(actions, "貼り付け"));
+        _doc.RecordStat(EditorStatKind.ObjectsPlaced, pasted.Count);
+        _doc.RecordStat(EditorStatKind.Paste);
         _doc.Selection.Clear();
         foreach (var r in pasted) _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択更新の通知のみ
@@ -878,8 +981,11 @@ public sealed class SmartToolController
             switch (r.Kind)
             {
                 case ObjectKind.Note:
-                    result.Add(new ClipboardEntry(ObjectKind.Note, r.Lane, r.Tick - minTick, 0, 0, ""));
-                    break;
+                    {
+                        var (color, annotation) = FindColorAndAnnotation(r.Lane, r.Tick);
+                        result.Add(new ClipboardEntry(ObjectKind.Note, r.Lane, r.Tick - minTick, 0, 0, "", color, annotation));
+                        break;
+                    }
 
                 case ObjectKind.FreezeStart:
                 case ObjectKind.FreezeEnd:
@@ -887,7 +993,8 @@ public sealed class SmartToolController
                     {
                         var freeze = _doc.CurrentTab.Lanes[r.Lane].Freezes.FirstOrDefault(f => f.StartTick == r.Tick);
                         if (freeze is null) break;
-                        result.Add(new ClipboardEntry(ObjectKind.FreezeStart, r.Lane, r.Tick - minTick, freeze.EndTick - freeze.StartTick, 0, ""));
+                        var (color, annotation) = FindColorAndAnnotation(r.Lane, freeze.StartTick);
+                        result.Add(new ClipboardEntry(ObjectKind.FreezeStart, r.Lane, r.Tick - minTick, freeze.EndTick - freeze.StartTick, 0, "", color, annotation));
                         break;
                     }
 
@@ -925,6 +1032,30 @@ public sealed class SmartToolController
             }
         }
         return result;
+    }
+
+    /// <summary>ClipboardEntryが持つColorOverride/Annotationのスナップショットを、貼り付け先の
+    /// lane/tickへ複製するアクションをactionsへ追記する(2026-08-05、Paste専用)。どちらも無ければ何もしない。</summary>
+    private static void AddSidecarActions(List<IEditAction> actions, ClipboardEntry e, int lane, long tick)
+    {
+        if (e.ColorOverride is { } color) actions.Add(new AddColorOverrideAction(lane, tick, color));
+        if (e.Annotation is { } a) actions.Add(new SetAnnotationAction(lane, tick, a.Comment, a.Warning));
+    }
+
+    /// <summary>指定レーン・tickの通常ノート/フリーズ(始点tickで同定)が持つColorOverrides/Annotationsを
+    /// クリップボード用のスナップショット(tick等の同定情報を除いた値のみ)へ変換する(2026-08-05)。
+    /// どちらも無ければ両方null。</summary>
+    private (ClipboardColor? Color, ClipboardAnnotation? Annotation) FindColorAndAnnotation(int lane, long tick)
+    {
+        var laneData = _doc.CurrentTab.Lanes[lane];
+        var c = laneData.ColorOverrides.FirstOrDefault(x => x.Tick == tick);
+        ClipboardColor? color = c is null ? null
+            : new ClipboardColor(c.Color, c.BandColor, c.AllFlag, c.ShadowColor, c.HitColor, c.HitBarColor, c.HitShadowColor);
+
+        var a = laneData.Annotations.FirstOrDefault(x => x.Tick == tick);
+        ClipboardAnnotation? annotation = a is null ? null : new ClipboardAnnotation(a.Comment, a.Warning);
+
+        return (color, annotation);
     }
 
     // =====================================================================
@@ -988,7 +1119,6 @@ public sealed class SmartToolController
     private ObjectRef? HitAt(PointerPos pos, double hitScale) =>
         _doc.CurrentLayout.HitTest(_doc.CurrentTab, _doc.Project, pos.X, pos.Y, hitScale);
 
-    private long TickAt(PointerPos pos) => (long)Math.Round(_doc.CurrentLayout.YToTick(pos.Y));
     /// <summary>
     /// スナップON時は通常のグリッドスナップ、OFF時は「最寄りの整数フレーム」に丸めたtickを返す
     /// (2026-07-17: OFF時のフリー移動が小数フレーム単位になり扱いづらいとの要望対応。
@@ -1015,13 +1145,6 @@ public sealed class SmartToolController
         _doc.Selection.Clear();
         _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false); // 選択変更のみ(2026-07-19b)
-    }
-
-    private void SetCurrentTick(long tick)
-    {
-        if (CurrentTick == tick) return;
-        CurrentTick = tick;
-        CurrentTickChanged?.Invoke();
     }
 
     private double EffectiveBpmAt(long tick)

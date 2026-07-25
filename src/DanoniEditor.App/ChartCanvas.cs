@@ -479,7 +479,9 @@ public sealed class ChartCanvas : FrameworkElement
         base.OnMouseLeftButtonUp(e);
         if (StartNumberEditMode) { SnUp(e); return; }
         if (Controller is null) return;
-        Controller.End(PosOf(e.GetPosition(this)));
+        // 2026-08-04: Ctrl+ドラッグ=複製の判定はボタンを離した瞬間のCtrl状態で行うため、
+        // ここで最新のModifiersOf(e)を渡す(押下時の状態のまま固定しない)。
+        Controller.End(PosOf(e.GetPosition(this)), ModifiersOf(e));
         ReleaseMouseCapture();
         InvalidateVisual();
     }
@@ -488,7 +490,7 @@ public sealed class ChartCanvas : FrameworkElement
     {
         base.OnMouseRightButtonUp(e);
         if (Controller is null) return;
-        Controller.End(PosOf(e.GetPosition(this)));
+        Controller.End(PosOf(e.GetPosition(this)), ModifiersOf(e));
         ReleaseMouseCapture();
         InvalidateVisual();
     }

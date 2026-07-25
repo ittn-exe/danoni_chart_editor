@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Playtest;
+using DanoniEditor.Core.Settings;
 using DanoniEditor.Editing;
 
 namespace DanoniEditor.App;
@@ -44,6 +45,21 @@ internal sealed class PlaytestWindow : Window
     /// <summary>キー種に応じたプレイ領域幅(本家autoSpreadと同じ計算)</summary>
     internal static double AutoSpreadWidth(string keyTypeId) =>
         Math.Max(BaseWidth, MinWidthByKeyType.TryGetValue(keyTypeId, out var w) ? w : MinWidthDefault);
+
+    /// <summary>環境設定「プレイテスト」のウィンドウ幅設定から、実際に使うフォールバック幅(px)を
+    /// 解決する(2026-08-03)。dos.txtのplayingWidthヘッダーが明示されている場合はこの値より常に
+    /// そちらが優先される(呼び出し元のHeaderDouble経由、仕様書12.2)。ヘッダー未指定時のみここへ来る。</summary>
+    internal static double ResolveWindowWidthFallback(AppSettings settings, string currentTabKeyTypeId)
+    {
+        if (settings.PlaytestWindowWidthMode == "px")
+            return Math.Max(1, settings.PlaytestWindowWidthPx);
+
+        // "keyType"モード: 指定キー種が未設定なら、従来通り実際に開いているタブのキー種を使う
+        var keyTypeId = string.IsNullOrEmpty(settings.PlaytestWindowWidthKeyType)
+            ? currentTabKeyTypeId
+            : settings.PlaytestWindowWidthKeyType;
+        return AutoSpreadWidth(keyTypeId);
+    }
 
     private readonly EditorDocument _doc;
     private readonly KeyTemplate _template;
@@ -101,7 +117,8 @@ internal sealed class PlaytestWindow : Window
     private readonly PlaySurface _surface;
 
     public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0, bool autoPlay = false,
-        bool quitKeyDelete = true, bool quitKeyBackSpace = true, bool quitKeyEscape = true, double playbackSpeed = 1.0, double volume = 1.0)
+        bool quitKeyDelete = true, bool quitKeyBackSpace = true, bool quitKeyEscape = true, double playbackSpeed = 1.0, double volume = 1.0,
+        AppSettings? appSettings = null)
     {
         _doc = doc;
         _template = doc.CurrentTemplate;
@@ -114,8 +131,12 @@ internal sealed class PlaytestWindow : Window
         _quitKeyEscape = quitKeyEscape;
         _playbackSpeed = Math.Clamp(playbackSpeed, 0.1, 2.0); // 2026-07-23: 再生速度スライダー
         _volume = Math.Clamp(volume, 0.0, 1.0); // 2026-07-21: UIの音量設定をプレイテストにも反映
-        // 幅: playingWidthヘッダー指定 > 本家autoSpread準拠のキー種別自動決定(2026-07-17h)
-        _playingWidth = HeaderDouble("playingWidth", AutoSpreadWidth(_template.KeyTypeId));
+        // 幅: playingWidthヘッダー指定 > 環境設定「プレイテスト」のウィンドウ幅設定(2026-08-03、
+        // 未設定時は従来通り本家autoSpread準拠のキー種別自動決定にフォールバック)
+        double widthFallback = appSettings is not null
+            ? ResolveWindowWidthFallback(appSettings, _template.KeyTypeId)
+            : AutoSpreadWidth(_template.KeyTypeId);
+        _playingWidth = HeaderDouble("playingWidth", widthFallback);
         _playingHeight = HeaderDouble("playingHeight", 500);
 
         // 2026-07-20: stepY/stepYRヘッダー(本家C_STEP_Y=70基準)からスクロール速度補正・
@@ -343,8 +364,18 @@ internal sealed class PlaytestWindow : Window
     // 判定表示
     // =====================================================================
 
+    /// <summary>統計情報(2026-08-05)向け: このプレイテストセッション中、オートプレイではなく
+    /// 手動プレイ中に「打鍵によって」消えた(判定された)ノートの累計数。Uwan(通常ノートのタイムアウト
+    /// ミス)・Iknai(フリーズのタイムアウトミス、キー未入力のまま判定枠を過ぎたケース)は
+    /// 打鍵を伴わないため含めない(Iknaiは早すぎる誤押下でも起こり得る点は既知の簡略化)。
+    /// App層(MainWindow.StartPlaytest)がShowDialog()後にこの値を読み、AppSettingsへ加算する。</summary>
+    public int NotesClearedByKeypress { get; private set; }
+
     private void OnJudged(JudgeResult r)
     {
+        if (!_autoPlay && r.Judge is not (PlayJudge.Uwan or PlayJudge.Iknai))
+            NotesClearedByKeypress++;
+
         var (text, brush) = r.Judge switch
         {
             PlayJudge.Ii => ("(・∀・)ｲｲ!!", Brushes.Cyan),

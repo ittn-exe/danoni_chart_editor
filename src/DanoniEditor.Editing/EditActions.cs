@@ -211,6 +211,27 @@ internal static class NColorEntryMerge
         e.HitColor is null && e.HitBarColor is null && e.HitShadowColor is null;
 }
 
+/// <summary>NColorEntryをスナップショット(ClipboardColor、全フィールド分)から丸ごと1件追加する
+/// (2026-08-05、Ctrl+C/V・Ctrl+ドラッグ複製でColorOverridesを保持したままコピーするために新設)。
+/// SetNoteColorAction等の個別フィールド更新とは異なり、「元のエントリの値をそのまま複製先へ再現する」
+/// 専用の単純な追加/削除ペア。対象位置(lane+tick)に既存エントリが無い前提(コピペ/複製の貼り付け先は
+/// 常に空セルであることが呼び出し元で保証されている)。</summary>
+public sealed class AddColorOverrideAction(int lane, long tick, ClipboardColor color) : IEditAction
+{
+    public string Label => "色情報の複製";
+
+    public void Do(EditorDocument doc) => doc.CurrentTab.Lanes[lane].ColorOverrides.Add(
+        new NColorEntry(tick, color.Color, color.BandColor, color.AllFlag,
+            color.ShadowColor, color.HitColor, color.HitBarColor, color.HitShadowColor));
+
+    public void Undo(EditorDocument doc)
+    {
+        var list = doc.CurrentTab.Lanes[lane].ColorOverrides;
+        var e = list.FirstOrDefault(x => x.Tick == tick);
+        if (e is not null) list.Remove(e);
+    }
+}
+
 /// <summary>ノート/フリーズへ色を設定する(色編集モード「通常」サブモードの左クリック/Shift+クリック/
 /// ホイールクリック)。通常ノートはsetColor=true・setBand=falseで固定(BandColorは常にnull)。
 /// フリーズは端点(Normal)と帯(NormalBar)を独立に指定でき、Shift/ホイールクリック時はsetColor・
@@ -1004,6 +1025,217 @@ public sealed class MoveObjectsAction : IEditAction
                 ? 1 : (int)r.Kind + 10;
             if (seen.Add((r.Lane, r.Tick, group))) yield return r;
         }
+    }
+}
+
+/// <summary>選択中オブジェクトを、指定した位置ずらし(lane/tick)の場所へ複製する(Ctrl+ドラッグ、
+/// 2026-08-04要望対応)。MoveObjectsActionと対になる実装だが、対象を元の場所から取り除かず
+/// (laneDelta,tickDelta)ずらした新しい実体を追加するだけの点が異なる。2026-08-05: 「frame情報以外は
+/// 全て保持してコピペしたい」との要望対応で、通常ノート/フリーズのColorOverrides(ncolor_data個別色)・
+/// Annotations(コメント・警告)も複製先へコピーする(CopySidecar参照、Ctrl+C/VのBuildClipboardEntriesと
+/// 同じ方針)。複製に成功した新オブジェクト群を選択状態にする。</summary>
+public sealed class CopyObjectsAction : IEditAction
+{
+    private readonly IReadOnlyList<ObjectRef> _originalTargets;
+    private readonly int _laneDelta;
+    private readonly long _tickDelta;
+    private List<ObjectRef>? _created;
+
+    public CopyObjectsAction(IEnumerable<ObjectRef> targets, int laneDelta, long tickDelta)
+    {
+        var unique = new List<ObjectRef>();
+        foreach (var r in targets)
+            if (!unique.Any(u => u.SameEntity(r))) unique.Add(r);
+        _originalTargets = unique;
+        _laneDelta = laneDelta;
+        _tickDelta = tickDelta;
+    }
+
+    public string Label => "複製";
+
+    public void Do(EditorDocument doc)
+    {
+        int laneCount = doc.CurrentTemplate.KeyCount;
+        var created = new List<ObjectRef>();
+        foreach (var r in _originalTargets)
+        {
+            var c = Create(doc, r, _laneDelta, _tickDelta, laneCount);
+            if (c is { } cc) created.Add(cc);
+        }
+        _created = created;
+        doc.Selection.Clear();
+        foreach (var c in created) doc.Selection.Add(c);
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_created is null) return;
+        foreach (var c in _created) RemoveExact(doc, c);
+        doc.Selection.Clear();
+        foreach (var r in _originalTargets) doc.Selection.Add(r);
+    }
+
+    /// <summary>rで指定されたオブジェクトの複製を(laneDelta,tickDelta)ずらした位置に作る。
+    /// 元のオブジェクトはそのまま残す(MoveObjectsAction.Moveと異なりRemoveしない)。
+    /// 作成後の新ObjectRefを返す(元が見つからない/作成不能なら null)。</summary>
+    private static ObjectRef? Create(EditorDocument doc, ObjectRef r, int laneDelta, long tickDelta, int laneCount)
+    {
+        var tab = doc.CurrentTab;
+        switch (r.Kind)
+        {
+            case ObjectKind.Note:
+                {
+                    if (!tab.Lanes[r.Lane].Notes.Contains(r.Tick)) return null;
+                    int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick < 0) return null;
+                    tab.Lanes[newLane].Notes.Add(newTick);
+                    CopySidecar(tab, r.Lane, r.Tick, newLane, newTick);
+                    return new ObjectRef(ObjectKind.Note, newLane, newTick);
+                }
+            case ObjectKind.FreezeStart:
+            case ObjectKind.FreezeEnd:
+            case ObjectKind.FreezeBody:
+                {
+                    var f = tab.Lanes[r.Lane].Freezes.FirstOrDefault(x => x.StartTick == r.Tick);
+                    if (f is null) return null;
+                    int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
+                    long newStart = f.StartTick + tickDelta;
+                    if (newStart < 0) return null;
+                    var created = new FreezeNote(newStart, f.EndTick + tickDelta);
+                    tab.Lanes[newLane].Freezes.Add(created);
+                    CopySidecar(tab, r.Lane, f.StartTick, newLane, created.StartTick);
+                    return new ObjectRef(ObjectKind.FreezeStart, newLane, created.StartTick);
+                }
+            case ObjectKind.Speed:
+                {
+                    var e = tab.SpeedEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is null) return null;
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick < 0) return null;
+                    var created = new ValueEvent(newTick, e.Value);
+                    tab.SpeedEvents.Add(created);
+                    return new ObjectRef(ObjectKind.Speed, -1, created.Tick);
+                }
+            case ObjectKind.Boost:
+                {
+                    var e = tab.BoostEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is null) return null;
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick < 0) return null;
+                    var created = new ValueEvent(newTick, e.Value);
+                    tab.BoostEvents.Add(created);
+                    return new ObjectRef(ObjectKind.Boost, -1, created.Tick);
+                }
+            case ObjectKind.Bpm:
+                {
+                    if (r.Tick == 0) return null; // tick0は不変条件(既存イベントが常に存在)
+                    var e = doc.Project.BpmEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is null) return null;
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick <= 0) return null; // tick0への複製も不可(Moveと同じ扱い)
+                    var created = new BpmEvent(newTick, e.Bpm);
+                    doc.Project.BpmEvents.Add(created);
+                    return new ObjectRef(ObjectKind.Bpm, -1, created.Tick);
+                }
+            case ObjectKind.Marker:
+                {
+                    var m = doc.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (m is null) return null;
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick < 0) return null;
+                    var created = new Marker(newTick, m.Comment);
+                    doc.Project.Markers.Add(created);
+                    return new ObjectRef(ObjectKind.Marker, -1, created.Tick);
+                }
+            case ObjectKind.Word:
+                {
+                    var lane = tab.WordLanes[r.Lane];
+                    var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (w is null) return null;
+                    long newTick = r.Tick + tickDelta;
+                    if (newTick < 0) return null;
+                    var created = w with { Tick = newTick };
+                    lane.Entries.Add(created);
+                    return new ObjectRef(ObjectKind.Word, r.Lane, created.Tick);
+                }
+            case ObjectKind.TimeSignature:
+            default:
+                return null; // 拍子は本アクションの対象外(MoveObjectsActionと同じ、仕様書7.5)
+        }
+    }
+
+    /// <summary>Do()で作成した複製をUndo時に取り除く(絶対位置での厳密削除)</summary>
+    private static void RemoveExact(EditorDocument doc, ObjectRef r)
+    {
+        var tab = doc.CurrentTab;
+        switch (r.Kind)
+        {
+            case ObjectKind.Note:
+                tab.Lanes[r.Lane].Notes.Remove(r.Tick);
+                RemoveSidecar(tab, r.Lane, r.Tick);
+                break;
+            case ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody:
+                {
+                    var f = tab.Lanes[r.Lane].Freezes.FirstOrDefault(x => x.StartTick == r.Tick);
+                    if (f is not null) tab.Lanes[r.Lane].Freezes.Remove(f);
+                    RemoveSidecar(tab, r.Lane, r.Tick);
+                    break;
+                }
+            case ObjectKind.Speed:
+                {
+                    var e = tab.SpeedEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is not null) tab.SpeedEvents.Remove(e);
+                    break;
+                }
+            case ObjectKind.Boost:
+                {
+                    var e = tab.BoostEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is not null) tab.BoostEvents.Remove(e);
+                    break;
+                }
+            case ObjectKind.Bpm:
+                {
+                    var e = doc.Project.BpmEvents.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (e is not null) doc.Project.BpmEvents.Remove(e);
+                    break;
+                }
+            case ObjectKind.Marker:
+                {
+                    var m = doc.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (m is not null) doc.Project.Markers.Remove(m);
+                    break;
+                }
+            case ObjectKind.Word:
+                {
+                    var lane = tab.WordLanes[r.Lane];
+                    var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
+                    if (w is not null) lane.Entries.Remove(w);
+                    break;
+                }
+        }
+    }
+
+    /// <summary>ColorOverrides/Annotations(付随データ)を、複製元のtickから複製先のtickへコピーする
+    /// (2026-08-05)。同じ趣旨のMoveSidecarEntries(EditActions.cs内、MoveObjectsAction用)と異なり、
+    /// 元のエントリは削除しない(複製なので両方に残す)。どちらも無ければ何もしない。</summary>
+    private static void CopySidecar(DifficultyTab tab, int fromLane, long fromTick, int toLane, long toTick)
+    {
+        var color = tab.Lanes[fromLane].ColorOverrides.FirstOrDefault(c => c.Tick == fromTick);
+        if (color is not null) tab.Lanes[toLane].ColorOverrides.Add(color with { Tick = toTick });
+
+        var annotation = tab.Lanes[fromLane].Annotations.FirstOrDefault(a => a.Tick == fromTick);
+        if (annotation is not null) tab.Lanes[toLane].Annotations.Add(annotation with { Tick = toTick });
+    }
+
+    /// <summary>CopySidecarで複製したColorOverrides/Annotationsを、Undo時に取り除く(2026-08-05)。</summary>
+    private static void RemoveSidecar(DifficultyTab tab, int lane, long tick)
+    {
+        var color = tab.Lanes[lane].ColorOverrides.FirstOrDefault(c => c.Tick == tick);
+        if (color is not null) tab.Lanes[lane].ColorOverrides.Remove(color);
+
+        var annotation = tab.Lanes[lane].Annotations.FirstOrDefault(a => a.Tick == tick);
+        if (annotation is not null) tab.Lanes[lane].Annotations.Remove(annotation);
     }
 }
 

@@ -60,8 +60,6 @@
                     <ToggleButton x:Name="StartNumberEditToggle" Content="StartNumber編集" Width="110" Margin="4,0,0,0"
                                   Checked="StartNumberEditToggle_Changed" Unchecked="StartNumberEditToggle_Changed"
                                   ToolTip="ON: ドラッグで譜面全体を波形に対してスライドしStartNumberを調整。クリック=ガイド線設置。通常編集は無効"/>
-                    <TextBlock Text="現在:" VerticalAlignment="Center" Margin="16,0,4,0"/>
-                    <TextBlock x:Name="CurrentTickText" Text="-" VerticalAlignment="Center"/>
                     <TextBlock Text="カーソル:" VerticalAlignment="Center" Margin="16,0,4,0"/>
                     <TextBlock x:Name="CursorPosText" Text="-" VerticalAlignment="Center"/>
                     <TextBlock Text="開始F:" VerticalAlignment="Center" Margin="16,0,4,0"/>
@@ -384,6 +382,24 @@
                             <Button x:Name="MacroRunButton" Content="実行(現在の難易度タブに適用)" Margin="0,8,0,0" IsEnabled="False" Click="MacroRunButton_Click"/>
                             <TextBlock Text="実行すると、現在の難易度タブの全レーンのノート配置(ノート・フリーズ・ncolor_data・コメント/警告)が、マクロの並び替え内容に従って一括で入れ替わります。レーンの定義(キー割り当て等)自体は変わりません。1操作としてUndo(Ctrl+Z)できます。"
                                        TextWrapping="Wrap" FontSize="10" Foreground="Gray" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem x:Name="AnalysisTabItem" Header="分析" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="ITTNアナライザー(難易度分析)" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <Button x:Name="AnalyzerRunButton" Content="分析を実行(現在の難易度タブ)" HorizontalAlignment="Left"
+                                    Click="AnalyzerRunButton_Click" Margin="0,0,0,8"/>
+                            <TextBlock x:Name="AnalyzerResultText" Text="" TextWrapping="Wrap" FontFamily="Consolas" FontSize="11"/>
+
+                            <Separator Margin="0,12,0,8"/>
+                            <TextBlock Text="おにスター(推定値、統一スケール)" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <TextBlock Text="実測データに基づく回帰式からの目安値です。断定的な値ではありません(誤差が大きい場合があります)。"
+                                       FontSize="10" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            <Button x:Name="OniStarRecalcButton" Content="算出・再算出" HorizontalAlignment="Left"
+                                    Click="OniStarRecalcButton_Click" Margin="0,0,0,8"/>
+                            <TextBlock x:Name="OniStarResultText" Text="？？？" FontWeight="Bold" TextWrapping="Wrap"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

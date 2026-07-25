@@ -82,6 +82,23 @@ public sealed class AppSettings
     /// キー種別の基準サイズ(本家autoSpread準拠の横幅×高さ)に掛けて実ウィンドウサイズとする。</summary>
     public double PlaytestWindowScale { get; set; } = 1.0;
 
+    /// <summary>プレイテスト: ウィンドウ幅の指定方式(2026-08-03要望対応)。dos.txtの
+    /// playingWidthヘッダーが明示されている場合は常にそちらが最優先(仕様書12.2)。ヘッダー未指定時の
+    /// フォールバック値をどう決めるかがこの設定で、"px"=PlaytestWindowWidthPxを直接使う、
+    /// "keyType"=PlaytestWindowWidthKeyTypeで指定したキー種の幅(本家autoSpread準拠)を常に使う
+    /// (実際に開いている難易度タブのキー種に関わらず一定にしたい場合用)。環境設定「プレイテスト」
+    /// カテゴリでのみ変更可能。</summary>
+    public string PlaytestWindowWidthMode { get; set; } = "keyType";
+
+    /// <summary>プレイテスト: ウィンドウ幅を直接指定する場合のpx値
+    /// (PlaytestWindowWidthMode="px"時のみ使用)。</summary>
+    public double PlaytestWindowWidthPx { get; set; } = 600;
+
+    /// <summary>プレイテスト: 「常にこのキー種の幅を使う」場合の基準キー種ID
+    /// (PlaytestWindowWidthMode="keyType"時のみ使用)。既定は5keyの幅(=600px、AutoSpreadWidth準拠)で
+    /// 従来の既定挙動と同じ結果になる。</summary>
+    public string PlaytestWindowWidthKeyType { get; set; } = "5";
+
     /// <summary>プレイテスト: オートプレイON/OFF(2026-07-20)。ONの場合、全ノートを±0Fジャストで
     /// 自動的に拾う(手動キー入力は終了キー以外無効)。</summary>
     public bool PlaytestAutoPlay { get; set; } = false;
@@ -145,6 +162,18 @@ public sealed class AppSettings
 
     /// <summary>未保存の変更があるままエディタを閉じる時に確認ダイアログを出すか(未解決事項§2-6)</summary>
     public bool ConfirmUnsavedOnClose { get; set; } = true;
+
+    // =====================================================================
+    // 自動保存・クラッシュ復旧(2026-07-25、TBD)。B案(復旧用スロット、通常保存とは別領域)。
+    // 既定OFF。ONの間、変更のあるプロジェクトタブだけを一定間隔で./autosave配下へ書き込む。
+    // 次回起動時にクラッシュを検知した場合のみ復旧ダイアログを出す(AutoSaveManager参照)。
+    // =====================================================================
+
+    /// <summary>自動保存を有効にするか(既定OFF)。</summary>
+    public bool AutoSaveEnabled { get; set; } = false;
+
+    /// <summary>自動保存の間隔(分)。AutoSaveEnabled=true時のみ使用(既定5分)。</summary>
+    public double AutoSaveIntervalMinutes { get; set; } = 5.0;
 
     // =====================================================================
     // 最近開いたファイル(2026-07-28、ファイル>最近開いたファイル)
@@ -239,6 +268,61 @@ public sealed class AppSettings
 
     // 2026-07-30: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した
     // swap_macro.json(同じ./settingsフォルダ内)で管理する。LaneSwapMacroFile.Load/Save参照。
+
+    // =====================================================================
+    // 統計情報(2026-08-05、環境設定 > 統計情報で閲覧のみ可能)。
+    // ITTNアナライザー/おにスターの隠し機能解禁条件(docs/progress_and_tbd_2026-07-25.md §2-2)にも
+    // これらのうちStatObjectsPlaced/StatOniStarRecalcPressesを流用する。
+    // プロジェクトを跨いだアプリ全体の累計のため、プロジェクトファイルではなくAppSettings側に持つ。
+    // =====================================================================
+
+    /// <summary>新規配置したオブジェクトの累計数(コピー/貼り付けによる複製含む)。</summary>
+    public int StatObjectsPlaced { get; set; } = 0;
+
+    /// <summary>削除したオブジェクトの累計数(通常削除・ドラッグ削除・切り取りに伴う削除を含む)。</summary>
+    public int StatObjectsDeleted { get; set; } = 0;
+
+    /// <summary>Ctrl+C(コピー)操作の累計回数。切り取り(Cut)はこちらには含めず別カウントする。</summary>
+    public int StatObjectsCopied { get; set; } = 0;
+
+    /// <summary>Ctrl+X(切り取り)操作の累計回数。</summary>
+    public int StatObjectsCut { get; set; } = 0;
+
+    /// <summary>Ctrl+V(貼り付け)操作の累計回数(貼り付けた個々のオブジェクト数はStatObjectsPlacedで別途カウント)。</summary>
+    public int StatObjectsPasted { get; set; } = 0;
+
+    /// <summary>「おにスター(推定star値)」の算出・再算出ボタンの累計押下回数。10回到達で
+    /// 実際の推定値が表示されるようになる(それまではプレースホルダ表示)。</summary>
+    public int StatOniStarRecalcPresses { get; set; } = 0;
+
+    /// <summary>新規プロジェクト作成の累計回数。</summary>
+    public int StatNewProjectCount { get; set; } = 0;
+
+    /// <summary>プロジェクト保存(手動保存)の累計回数。</summary>
+    public int StatProjectSaveCount { get; set; } = 0;
+
+    /// <summary>dos.txtエクスポートの累計回数。</summary>
+    public int StatDosExportCount { get; set; } = 0;
+
+    /// <summary>Undo/Redo実行の累計回数(両方合計、2026-08-05追加)。</summary>
+    public int StatUndoRedoCount { get; set; } = 0;
+
+    /// <summary>プレイテスト起動の累計回数。</summary>
+    public int StatPlaytestLaunchCount { get; set; } = 0;
+
+    /// <summary>プレイテスト中、オートプレイではない手動プレイ中に打鍵によって消えた
+    /// (判定されて画面から消えた)ノートの累計数。Uwan/Iknai(判定枠内で押されずタイムアウトした
+    /// もの)は「打鍵による」ではないため含めない。</summary>
+    public int StatPlaytestNotesCleared { get; set; } = 0;
+
+    /// <summary>レーン入替マクロの実行(右パネル「実行」ボタン)の累計回数。</summary>
+    public int StatMacroRunCount { get; set; } = 0;
+
+    /// <summary>アプリ起動の累計回数。</summary>
+    public int StatAppLaunchCount { get; set; } = 0;
+
+    /// <summary>クラッシュ検出(前回起動時に正常終了フラグが消えていなかった)の累計回数。</summary>
+    public int StatCrashCount { get; set; } = 0;
 
     /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistory/RecentFilesは参照型のため個別に複製する</summary>
     public AppSettings Clone()

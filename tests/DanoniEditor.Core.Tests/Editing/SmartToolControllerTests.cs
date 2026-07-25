@@ -51,6 +51,21 @@ public class SmartToolControllerTests
         ctrl.End(to);
     }
 
+    /// <summary>2026-08-04: Ctrl+ドラッグ=複製の判定は「離した瞬間」のCtrl状態を見るため、
+    /// 押下時(beginMods)と離した時(endMods)を別々に指定できるドラッグヘルパ。</summary>
+    private static void DragLeftWithEndModifiers(SmartToolController ctrl, PointerPos from, PointerPos to,
+        PointerModifiers beginMods, PointerModifiers endMods)
+    {
+        ctrl.BeginLeft(from, beginMods);
+        const int steps = 20;
+        for (int i = 1; i <= steps; i++)
+        {
+            double t = (double)i / steps;
+            ctrl.Move(new PointerPos(from.X + (to.X - from.X) * t, from.Y + (to.Y - from.Y) * t));
+        }
+        ctrl.End(to, endMods);
+    }
+
     // --- 6.3.1: click empty=place ---
 
     [Fact]
@@ -60,6 +75,99 @@ public class SmartToolControllerTests
         var col = layout.NoteColumn(0);
         Click(ctrl, At(col, layout, 96 * T));
         Assert.Contains(96 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    /// <summary>2026-07-25: ノート画像が密集して当たり判定(NoteSize基準の固定ピクセル半径)が
+    /// 隣接ノート同士で重なっているケースでも、実際に空いているグリッドマスへは配置できることの回帰テスト。
+    /// 既定ズームでは16分グリッド間隔(GridTicks×PxPerTick)がNoteSizeの半径(17px)よりずっと狭く
+    /// (既定値で約6px)、画像同士が視覚的に重なる状況を再現できる。</summary>
+    [Fact]
+    public void ClickEmptyGridCellBetweenDenseNotes_PlacesNote_EvenWhenHitboxesOverlap()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Division = 16;
+        long step = doc.Snap.GridTicks;
+        var col = layout.NoteColumn(0);
+
+        Click(ctrl, At(col, layout, 0));
+        Click(ctrl, At(col, layout, step * 2));
+        Assert.Equal(2, doc.CurrentTab.Lanes[0].Notes.Count); // 前提: 両隣にノートが置けている
+
+        // 間の空きグリッド(step)への配置。修正前は両隣ノートの広い当たり判定に阻まれて配置できなかった。
+        Click(ctrl, At(col, layout, step));
+
+        Assert.Equal([0, step, step * 2], doc.CurrentTab.Lanes[0].Notes.OrderBy(t => t));
+    }
+
+    /// <summary>2026-07-25: 上記の修正後も、既存ノート自身の位置をクリックすれば選択(掴み)は
+    /// 従来通り機能することの回帰テスト。密集配置(広い当たり判定同士が重なる状況)ではどのノートが
+    /// 拾われるかは当たり判定の重なり順に依存する既存の別課題(ユーザー確認済み、ズームで対処する
+    /// 前提)のため、ここでは「配置ではなく選択が発火すること」「新規ノートが誤って増えないこと」
+    /// だけを検証する(IsEmptyForPlacementの分岐ミスによる二重動作が無いことの確認が主目的)。</summary>
+    [Fact]
+    public void ClickExistingNote_StillSelects_EvenAmongDenseNeighbors()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Division = 16;
+        long step = doc.Snap.GridTicks;
+        var col = layout.NoteColumn(0);
+
+        doc.Execute(new PlaceNoteAction(0, 0));
+        doc.Execute(new PlaceNoteAction(0, step));
+        doc.Execute(new PlaceNoteAction(0, step * 2));
+
+        Click(ctrl, At(col, layout, step));
+
+        Assert.Single(doc.Selection);
+        Assert.Equal(3, doc.CurrentTab.Lanes[0].Notes.Count); // 誤って配置が発火していないこと
+    }
+
+    /// <summary>2026-07-25: 単独(近隣にノートが無い)ノートをクリックした場合は、当たり判定の
+    /// 重なりに関する曖昧さが無いため、確実にそのノート自身が選択されることを確認する。</summary>
+    [Fact]
+    public void ClickIsolatedExistingNote_SelectsExactNote()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 96 * T));
+        var col = layout.NoteColumn(0);
+        Click(ctrl, At(col, layout, 96 * T));
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 96 * T);
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    // --- 2026-08-05修正: フリーズの帯クリック/掴みが「空セル」誤判定で機能しなくなっていた副作用の対応 ---
+
+    [Fact]
+    public void ClickFreezeBand_Selects_DoesNotSpawnStrayNote()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceFreezeAction(0, 48 * T, 192 * T));
+        var col = layout.NoteColumn(0);
+
+        Click(ctrl, At(col, layout, 96 * T)); // 帯の中央付近(端点ではない)
+
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.FreezeBody && r.Lane == 0 && r.Tick == 48 * T);
+        Assert.Empty(doc.CurrentTab.Lanes[0].Notes); // 誤って通常ノートが配置されていないこと
+        Assert.Single(doc.CurrentTab.Lanes[0].Freezes);
+    }
+
+    [Fact]
+    public void DragFreezeBand_MovesWholeFreeze_ToDestination()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceFreezeAction(0, 48 * T, 192 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 0, 48 * T));
+        var col = layout.NoteColumn(0);
+
+        var from = At(col, layout, 96 * T); // 帯の中央付近を掴む
+        var to = At(col, layout, 96 * T + 48 * T);
+        DragLeft(ctrl, from, to);
+
+        var moved = doc.CurrentTab.Lanes[0].Freezes.FirstOrDefault();
+        Assert.NotNull(moved);
+        Assert.Equal(48 * T + 48 * T, moved!.StartTick);
+        Assert.Equal(192 * T + 48 * T, moved.EndTick);
+        Assert.Empty(doc.CurrentTab.Lanes[0].Notes); // 誤って通常ノートが配置されていないこと
     }
 
     // --- 6.3.1: Shift+click=freeze place (note lanes only) ---
@@ -209,6 +317,242 @@ public class SmartToolControllerTests
         Assert.Contains(96 * T, doc.CurrentTab.Lanes[1].Notes);
     }
 
+    // --- 2026-08-04要望対応: Ctrl+ドラッグ=移動先へ複製、判定は「離した瞬間」のCtrl状態 ---
+
+    [Fact]
+    public void CtrlHeldThroughoutDrag_CopiesToDestination_OriginalStaysPut()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes); // 元のノートは残る
+        Assert.Contains(96 * T, doc.CurrentTab.Lanes[0].Notes); // 複製が移動先に追加される
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Tick == 96 * T); // 選択は複製側へ
+    }
+
+    [Fact]
+    public void CtrlReleasedBeforeMouseUp_BehavesAsNormalMove_NotCopy()
+    {
+        // 「ドラッグ中に気が変わった」ケース: 押下時はCtrl押下、離した瞬間はCtrl未押下
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.None);
+
+        Assert.DoesNotContain(48 * T, doc.CurrentTab.Lanes[0].Notes); // 複製ではなく通常の移動
+        Assert.Contains(96 * T, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes); // 複製が残っていないこと
+    }
+
+    [Fact]
+    public void CtrlPressedOnlyAtMouseUp_StillCopies()
+    {
+        // 押下時はCtrl無し、離す瞬間だけCtrlを押した場合も複製として扱われることの確認
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.None, PointerModifiers.Ctrl);
+
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(96 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void CtrlDragCopy_UndoRemovesCopy_OriginalSelectionRestored()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        var original = new ObjectRef(ObjectKind.Note, 0, 48 * T);
+        doc.Selection.Add(original);
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+        Assert.Equal(2, doc.CurrentTab.Lanes[0].Notes.Count);
+
+        doc.Undo();
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(doc.Selection, r => r == original);
+    }
+
+    // --- 2026-08-05要望対応: Ctrl+ドラッグ複製でもframe情報以外(色情報・警告マーカー)を保持する ---
+
+    [Fact]
+    public void CtrlDragCopy_PreservesColorOverrideAndAnnotation_OriginalUntouched()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.CurrentTab.Lanes[0].ColorOverrides.Add(new NColorEntry(48 * T, "#FF0000", null, true,
+            "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"));
+        doc.CurrentTab.Lanes[0].Annotations.Add(new NoteAnnotation(48 * T, "注意コメント", true));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes); // 元は残る
+        Assert.Contains(96 * T, doc.CurrentTab.Lanes[0].Notes); // 複製先
+
+        var origColor = doc.CurrentTab.Lanes[0].ColorOverrides.FirstOrDefault(c => c.Tick == 48 * T);
+        var copyColor = doc.CurrentTab.Lanes[0].ColorOverrides.FirstOrDefault(c => c.Tick == 96 * T);
+        Assert.NotNull(origColor); // 元のデータも残る
+        Assert.NotNull(copyColor);
+        Assert.Equal("#FF0000", copyColor!.Color);
+        Assert.True(copyColor.AllFlag);
+        Assert.Equal("#00FF00", copyColor.ShadowColor);
+        Assert.Equal("#0000FF", copyColor.HitColor);
+        Assert.Equal("#FFFF00", copyColor.HitBarColor);
+        Assert.Equal("#FF00FF", copyColor.HitShadowColor);
+
+        var origAnnotation = doc.CurrentTab.Lanes[0].Annotations.FirstOrDefault(a => a.Tick == 48 * T);
+        var copyAnnotation = doc.CurrentTab.Lanes[0].Annotations.FirstOrDefault(a => a.Tick == 96 * T);
+        Assert.NotNull(origAnnotation);
+        Assert.NotNull(copyAnnotation);
+        Assert.Equal("注意コメント", copyAnnotation!.Comment);
+        Assert.True(copyAnnotation.Warning);
+    }
+
+    [Fact]
+    public void CtrlDragCopy_WithoutColorOrAnnotation_DoesNotCreateSpuriousEntries()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Empty(doc.CurrentTab.Lanes[0].Annotations);
+    }
+
+    [Fact]
+    public void CtrlDragCopy_ColorOverrideUndo_RemovesCopiedEntry_OriginalRestored()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.CurrentTab.Lanes[0].ColorOverrides.Add(new NColorEntry(48 * T, "#FF0000", null));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+        Assert.Contains(doc.CurrentTab.Lanes[0].ColorOverrides, c => c.Tick == 96 * T);
+
+        doc.Undo();
+        Assert.DoesNotContain(doc.CurrentTab.Lanes[0].ColorOverrides, c => c.Tick == 96 * T);
+        Assert.Contains(doc.CurrentTab.Lanes[0].ColorOverrides, c => c.Tick == 48 * T); // 元は残る
+    }
+
+    [Fact]
+    public void CtrlDragCopy_Freeze_PreservesColorOverrideAndAnnotation()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceFreezeAction(0, 48 * T, 96 * T));
+        doc.CurrentTab.Lanes[0].ColorOverrides.Add(new NColorEntry(48 * T, "#ABCDEF", "#123456"));
+        doc.CurrentTab.Lanes[0].Annotations.Add(new NoteAnnotation(48 * T, "フリーズ注釈", false));
+        doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 0, 48 * T));
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 300 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+
+        var pasted = doc.CurrentTab.Lanes[0].Freezes.FirstOrDefault(f => f.StartTick == 300 * T);
+        Assert.NotNull(pasted);
+
+        var copyColor = doc.CurrentTab.Lanes[0].ColorOverrides.FirstOrDefault(c => c.Tick == 300 * T);
+        Assert.NotNull(copyColor);
+        Assert.Equal("#ABCDEF", copyColor!.Color);
+        Assert.Equal("#123456", copyColor.BandColor);
+
+        var copyAnnotation = doc.CurrentTab.Lanes[0].Annotations.FirstOrDefault(a => a.Tick == 300 * T);
+        Assert.NotNull(copyAnnotation);
+        Assert.Equal("フリーズ注釈", copyAnnotation!.Comment);
+    }
+
+    // --- 2026-08-05: 統計情報(EditorDocument.StatRecorded)のうちObjectsPlacedの検証 ---
+
+    private static void SubscribePlacedCounts(EditorDocument doc, List<int> counts) =>
+        doc.StatRecorded += (kind, c) => { if (kind == EditorStatKind.ObjectsPlaced) counts.Add(c); };
+
+    [Fact]
+    public void ClickEmptyNoteLane_RaisesObjectsPlaced_WithCountOne()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        var counts = new List<int>();
+        SubscribePlacedCounts(doc, counts);
+
+        var col = layout.NoteColumn(0);
+        Click(ctrl, At(col, layout, 48 * T));
+
+        Assert.Equal([1], counts);
+    }
+
+    [Fact]
+    public void ClickExistingNote_DoesNotRaiseObjectsPlaced()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        var counts = new List<int>();
+        SubscribePlacedCounts(doc, counts);
+
+        var col = layout.NoteColumn(0);
+        Click(ctrl, At(col, layout, 48 * T)); // 既存ノートの選択のみ、配置ではない
+
+        Assert.Empty(counts);
+    }
+
+    [Fact]
+    public void CtrlDragCopy_RaisesObjectsPlaced_WithTargetCount()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        var counts = new List<int>();
+        SubscribePlacedCounts(doc, counts);
+
+        var from = At(layout.NoteColumn(0), layout, 48 * T);
+        var to = At(layout.NoteColumn(0), layout, 96 * T);
+        DragLeftWithEndModifiers(ctrl, from, to, PointerModifiers.Ctrl, PointerModifiers.Ctrl);
+
+        Assert.Equal([1], counts);
+    }
+
+    // --- 2026-08-04要望対応: Escapeキーで選択解除(スマートツールのマウス操作のみでは解除手段が無かった) ---
+
+    [Fact]
+    public void ClearSelection_WithSelection_ClearsAndReturnsTrue()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+
+        Assert.True(ctrl.ClearSelection());
+        Assert.Empty(doc.Selection);
+        Assert.Contains(48 * T, doc.CurrentTab.Lanes[0].Notes); // データ自体は変わらない(選択解除のみ)
+    }
+
+    [Fact]
+    public void ClearSelection_WithEmptySelection_ReturnsFalse()
+    {
+        var (doc, ctrl, _) = NewScene();
+        Assert.False(ctrl.ClearSelection());
+    }
+
     [Fact]
     public void SmartToolOff_GroupMoveStillWorks_ButClickPlaceDoesNot()
     {
@@ -228,14 +572,17 @@ public class SmartToolControllerTests
 
     // --- 7.4: マーカーレーン特殊ルール ---
 
+    /// <summary>2026-08-05: CurrentTick機能(シングルクリックでの位置記録)は撤去済み。
+    /// 参照する機能が無くなったための削除で、空マーカーレーンへの単純クリックは何もしない
+    /// (マーカーも置かず、例外も起きない)ことだけを回帰確認する。</summary>
     [Fact]
-    public void ClickEmptyMarkerLane_SetsCurrentTick_WithoutPlacingMarker()
+    public void ClickEmptyMarkerLane_DoesNothing()
     {
         var (doc, ctrl, layout) = NewScene();
         var col = layout.Column(ColumnKind.Marker);
         Click(ctrl, At(col, layout, 96 * T));
-        Assert.Equal(96 * T, ctrl.CurrentTick);
         Assert.Empty(doc.Project.Markers);
+        Assert.Empty(doc.Selection);
     }
 
     [Fact]
@@ -308,15 +655,17 @@ public class SmartToolControllerTests
         Assert.Equal(undoBefore + 1, doc.UndoStack.UndoDepth); // 配置1回ぶんだけ
     }
 
+    /// <summary>2026-08-05: CurrentTick機能撤去に伴い、空マーカーレーンへの押下も何もしない
+    /// (以前は押下即CurrentTick設定だった)。マーカーは置かれず、例外も起きないことを確認する。</summary>
     [Fact]
-    public void PressEmptyMarkerLane_SetsCurrentTickImmediately_BeforeRelease()
+    public void PressEmptyMarkerLane_DoesNothing_BeforeAndAfterRelease()
     {
         var (doc, ctrl, layout) = NewScene();
         var col = layout.Column(ColumnKind.Marker);
         ctrl.BeginLeft(At(col, layout, 96 * T), PointerModifiers.None);
-        Assert.Equal(96 * T, ctrl.CurrentTick); // 離す前に設定済み
         ctrl.End(At(col, layout, 96 * T));
         Assert.Empty(doc.Project.Markers);
+        Assert.Empty(doc.Selection);
     }
 
     // --- 2026-07-17f: マーカーレーンWクリック=再生開始フレーム設定 / Delete=選択削除 ---
@@ -583,8 +932,11 @@ public class SmartToolControllerTests
         Assert.Empty(doc.CurrentTab.Lanes[0].Notes);
     }
 
+    /// <summary>2026-08-05: CurrentTick撤去後も、マーカーレーンの判定は色編集モードの一括ブロック
+    /// (「マーカーレーン以外への新規配置を一切受け付けない」)より先に評価されることの回帰確認
+    /// (マーカーレーンクリックは色編集モード中でも例外を起こさず、何も置かないままであること)。</summary>
     [Fact]
-    public void ColorEditMode_MarkerLaneClick_StillSetsCurrentTick()
+    public void ColorEditMode_MarkerLaneClick_StillDoesNothing_NoException()
     {
         var (doc, ctrl, layout) = NewScene();
         ctrl.ColorEditModeEnabled = true;
@@ -592,7 +944,7 @@ public class SmartToolControllerTests
 
         Click(ctrl, At(col, layout, 48 * T));
 
-        Assert.Equal(48 * T, ctrl.CurrentTick);
+        Assert.Empty(doc.Project.Markers);
     }
 
     [Fact]

@@ -17,6 +17,10 @@ namespace DanoniEditor.App;
 /// - ③直接入力モード(ユーザー確定仕様、2026-08-01): プロジェクト全体で1つのテキスト欄。
 ///   空でなければ①②の内容を完全に無視し、このテキストをそのままdos.txtへ出力する
 ///   (DosExporter.AppendGaugeHeaders参照)。内容がある間は①②のパネルを無効化して事故を防ぐ。
+/// - ④難易度別デフォルトゲージ(2026-08-05、TBD対応): difDataの4フィールド目以降(名前を介さない
+///   border/recovery/damage/initLife%の生値、DifficultyTab.DifDataExtra)を編集する欄。
+///   ②と同じ「ノルマ(またはx),回復,ダメージ,初期ライフ」のCSV形式だが、customGauge/gaugeXXXとは
+///   独立したdifData自体の値のため、③(直接入力)がアクティブでも無効化しない(別ヘッダー行のため干渉しない)。
 /// </summary>
 internal sealed class GaugeEditorWindow : Window
 {
@@ -25,6 +29,8 @@ internal sealed class GaugeEditorWindow : Window
     private readonly ChartProject _project;
     private readonly List<TabGaugeVm> _tabVms;
     private readonly List<ParamRowVm> _paramRows;
+    /// <summary>④難易度別デフォルトゲージ(difData直接指定)のタブごとのCSV入力値(2026-08-05)</summary>
+    private readonly List<string> _difDataExtraCsv;
 
     private readonly TextBox _rawOverrideBox = new()
     {
@@ -86,6 +92,7 @@ internal sealed class GaugeEditorWindow : Window
             GaugeName = name,
             PerTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "").ToList(),
         }).ToList();
+        _difDataExtraCsv = project.Tabs.Select(t => t.DifDataExtra ?? "").ToList();
 
         var root = new DockPanel();
 
@@ -161,6 +168,17 @@ internal sealed class GaugeEditorWindow : Window
         _rawOverrideBox.Text = project.GaugeRawOverrideText ?? "";
         _rawOverrideBox.TextChanged += (_, _) => UpdateRawActiveState();
         outer.Children.Add(_rawOverrideBox);
+
+        outer.Children.Add(SectionLabel("④ 難易度別デフォルトゲージ(difDataへの直接指定)"));
+        outer.Children.Add(new TextBlock
+        {
+            Text = "各タブの欄に「ノルマ(またはx),回復,ダメージ,初期ライフ」のCSVで入力してくださいまし。" +
+                   "②のような名前付きゲージを介さず、difData自体に直接埋め込まれる値ですの。空欄のままで問題ありません。",
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 4),
+        });
+        outer.Children.Add(BuildDifDataExtraPanel());
 
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = outer };
         root.Children.Add(scroll);
@@ -358,6 +376,44 @@ internal sealed class GaugeEditorWindow : Window
     }
 
     // =====================================================================
+    // ④ 難易度別デフォルトゲージ(difData直接指定、2026-08-05)
+    // =====================================================================
+
+    /// <summary>タブごとに「タブ名+CSV入力欄」の縦組を横並びにしたパネルを組み立てる。
+    /// ②のパラメータテーブルと違い行の追加/削除が無い(タブ数固定)ため、都度作り直す必要が無い。</summary>
+    private FrameworkElement BuildDifDataExtraPanel()
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        for (int i = 0; i < _project.Tabs.Count; i++)
+        {
+            int idx = i;
+            var col = new StackPanel { Margin = new Thickness(0, 0, 8, 4) };
+            col.Children.Add(new TextBlock
+            {
+                Text = _project.Tabs[i].DisplayLabel,
+                Width = 110,
+                FontWeight = FontWeights.Bold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+            var box = new TextBox
+            {
+                Width = 110,
+                Text = _difDataExtraCsv[idx],
+                ToolTip = "ノルマ(またはx),回復,ダメージ,初期ライフ(空欄可)",
+            };
+            box.TextChanged += (_, _) => _difDataExtraCsv[idx] = box.Text;
+            col.Children.Add(box);
+            panel.Children.Add(col);
+        }
+        return new ScrollViewer
+        {
+            Content = panel,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+    }
+
+    // =====================================================================
     // 保存
     // =====================================================================
 
@@ -431,6 +487,14 @@ internal sealed class GaugeEditorWindow : Window
         }
 
         _project.GaugeRawOverrideText = rawText;
+
+        // 2026-08-05: ④difData直接指定(名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
+        // ③の直接入力モード(customGauge/gaugeXXX)とは無関係な別ヘッダーのため、rawTextの有無を問わず常に反映する。
+        for (int i = 0; i < _project.Tabs.Count; i++)
+        {
+            var csv = _difDataExtraCsv[i].Trim();
+            _project.Tabs[i].DifDataExtra = string.IsNullOrEmpty(csv) ? null : csv;
+        }
 
         Saved = true;
         DialogResult = true;
