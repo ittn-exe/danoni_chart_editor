@@ -1293,3 +1293,122 @@ public sealed class ApplyLaneSwapMacroAction(IReadOnlyList<int> laneMapping, str
             lanes[i] = _before[i];
     }
 }
+
+/// <summary>
+/// レーン入替マクロの範囲選択適用(2026-07-26要望対応)。ApplyLaneSwapMacroActionの
+/// 「レーン丸ごとポインタ差し替え」とは異なり、各レーンのLaneNotes(Notes/Freezes/
+/// ColorOverrides/Annotations)を「範囲内」「範囲外」の要素単位で分割し、範囲内サブセットだけを
+/// laneMappingに従って入れ替える(範囲外の要素はそのレーンに残したまま)。
+/// フリーズは境界(範囲の始点・終点)をまたぐ場合の扱いをincludeStraddlingFreezesで指定する
+/// (true=フリーズごと範囲内として移動、false=フリーズごと範囲外として据え置き)。
+/// ColorOverrides/Annotationsは対応するNotes/Freezesと同じtick(フリーズはStartTick)で
+/// 同定し、本体の移動先へ追随させる(LaneNotesの規約通り)。
+/// </summary>
+public sealed class ApplyLaneSwapMacroRangeAction(
+    IReadOnlyList<int> laneMapping, string macroName, long rangeStart, long rangeEnd, bool includeStraddlingFreezes)
+    : IEditAction
+{
+    private List<LaneNotes>? _before;
+
+    public string Label => $"マクロ適用(範囲選択): {macroName}";
+
+    public void Do(EditorDocument doc)
+    {
+        long lo = Math.Min(rangeStart, rangeEnd), hi = Math.Max(rangeStart, rangeEnd);
+        var lanes = doc.CurrentTab.Lanes;
+        var snapshot = new List<LaneNotes>(lanes.Select(CloneLaneNotes));
+        _before = new List<LaneNotes>(lanes.Select(CloneLaneNotes));
+
+        var inRange = new LaneNotes[snapshot.Count];
+        var outRange = new LaneNotes[snapshot.Count];
+        for (int i = 0; i < snapshot.Count; i++)
+            SplitByRange(snapshot[i], lo, hi, includeStraddlingFreezes, out inRange[i], out outRange[i]);
+
+        for (int i = 0; i < lanes.Count && i < laneMapping.Count; i++)
+        {
+            int from = laneMapping[i];
+            if (from < 0 || from >= inRange.Length) continue;
+            lanes[i] = MergeLaneNotes(outRange[i], inRange[from]);
+        }
+    }
+
+    public void Undo(EditorDocument doc)
+    {
+        if (_before is null) return;
+        var lanes = doc.CurrentTab.Lanes;
+        for (int i = 0; i < lanes.Count && i < _before.Count; i++)
+            lanes[i] = _before[i];
+    }
+
+    private static LaneNotes CloneLaneNotes(LaneNotes source) => new()
+    {
+        Notes = new List<long>(source.Notes),
+        Freezes = new List<FreezeNote>(source.Freezes),
+        ColorOverrides = new List<NColorEntry>(source.ColorOverrides),
+        Annotations = new List<NoteAnnotation>(source.Annotations),
+    };
+
+    private static void SplitByRange(LaneNotes source, long lo, long hi, bool includeStraddling,
+        out LaneNotes inRange, out LaneNotes outRange)
+    {
+        bool InRangeTick(long t) => t >= lo && t <= hi;
+
+        var movedNotes = source.Notes.Where(InRangeTick).ToList();
+        var keptNotes = source.Notes.Where(t => !InRangeTick(t)).ToList();
+
+        var movedFreezes = new List<FreezeNote>();
+        var keptFreezes = new List<FreezeNote>();
+        foreach (var f in source.Freezes)
+        {
+            bool startIn = InRangeTick(f.StartTick);
+            bool endIn = InRangeTick(f.EndTick);
+            // startIn==endInの場合(完全内包/完全外包)はstartInの値がそのままmoves判定になる。
+            // 一致しない場合(境界をまたぐ)はユーザー選択(includeStraddling)に従う。
+            bool moves = startIn == endIn ? startIn : includeStraddling;
+            (moves ? movedFreezes : keptFreezes).Add(f);
+        }
+
+        var movedTicks = new HashSet<long>(movedNotes);
+        foreach (var f in movedFreezes) movedTicks.Add(f.StartTick);
+
+        inRange = new LaneNotes
+        {
+            Notes = movedNotes,
+            Freezes = movedFreezes,
+            ColorOverrides = source.ColorOverrides.Where(c => movedTicks.Contains(c.Tick)).ToList(),
+            Annotations = source.Annotations.Where(a => movedTicks.Contains(a.Tick)).ToList(),
+        };
+        outRange = new LaneNotes
+        {
+            Notes = keptNotes,
+            Freezes = keptFreezes,
+            ColorOverrides = source.ColorOverrides.Where(c => !movedTicks.Contains(c.Tick)).ToList(),
+            Annotations = source.Annotations.Where(a => !movedTicks.Contains(a.Tick)).ToList(),
+        };
+    }
+
+    private static LaneNotes MergeLaneNotes(LaneNotes outRangePart, LaneNotes inRangePartFromOtherLane) => new()
+    {
+        Notes = [.. outRangePart.Notes, .. inRangePartFromOtherLane.Notes],
+        Freezes = [.. outRangePart.Freezes, .. inRangePartFromOtherLane.Freezes],
+        ColorOverrides = [.. outRangePart.ColorOverrides, .. inRangePartFromOtherLane.ColorOverrides],
+        Annotations = [.. outRangePart.Annotations, .. inRangePartFromOtherLane.Annotations],
+    };
+}
+
+/// <summary>レーン入替マクロの範囲選択適用に関するヘルパー(2026-07-26要望対応)。
+/// UIが「適用前の警告ダイアログを出すべきか」を判定するために使う。</summary>
+public static class LaneSwapMacroRangeHelper
+{
+    /// <summary>指定範囲(tick、順不同で渡してよい)の境界をまたぐフリーズ(始点・終点の
+    /// 範囲内外が一致しないもの)が、いずれかのレーンに1件でも存在するかを調べる。</summary>
+    public static bool HasStraddlingFreezes(DifficultyTab tab, long rangeStart, long rangeEnd)
+    {
+        long lo = Math.Min(rangeStart, rangeEnd), hi = Math.Max(rangeStart, rangeEnd);
+        bool InRange(long t) => t >= lo && t <= hi;
+        foreach (var lane in tab.Lanes)
+            foreach (var f in lane.Freezes)
+                if (InRange(f.StartTick) != InRange(f.EndTick)) return true;
+        return false;
+    }
+}

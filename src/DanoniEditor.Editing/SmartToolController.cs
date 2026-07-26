@@ -379,11 +379,13 @@ public sealed class SmartToolController
         if (_startHit is not { } existing) return;
         // 押下時に処理されなかった空セル(レーン外・スマートツールOFF・色編集モード・tick0のBPM等)は何もしない
 
-        // 2026-07-23: Ctrl+クリックは色編集モードの有無に関わらず「選択に追加」を優先する
+        // 2026-07-23: Ctrl+クリックは色編集モードの有無に関わらず「選択への追加/解除」を優先する
         // (色編集モードで複数選択→一括塗りつぶしを組み立てるために必要)。
+        // 2026-07-26要望対応: 既に選択済みのオブジェクトをCtrl+クリックした場合は、そのオブジェクトだけ
+        // 選択解除する(トグル方式)。
         if (_modifiers.HasFlag(PointerModifiers.Ctrl))
         {
-            AddToSelection(existing);
+            ToggleSelection(existing);
             return;
         }
 
@@ -612,9 +614,12 @@ public sealed class SmartToolController
         return true;
     }
 
-    private void AddToSelection(ObjectRef r)
+    /// <summary>Ctrl+クリックのトグル選択(2026-07-26要望対応)。未選択のオブジェクトなら選択に追加し、
+    /// 既に選択済みのオブジェクトなら、そのオブジェクトだけを選択解除する(他の選択は維持)。</summary>
+    private void ToggleSelection(ObjectRef r)
     {
-        if (!IsInSelection(r)) _doc.Selection.Add(r);
+        if (IsInSelection(r)) _doc.Selection.RemoveWhere(s => s.SameEntity(r));
+        else _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false);
     }
 

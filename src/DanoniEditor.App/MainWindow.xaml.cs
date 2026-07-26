@@ -34,6 +34,20 @@ public partial class MainWindow : Window
     /// <summary>キーボードモード中、Shift+前進後退で範囲選択している間のアンカー位置(2026-07-26)。
     /// 選択中でなければnull。Shiftを離して移動すると選択がクリアされ、これもnullに戻る。</summary>
     private long? _keyboardSelectionAnchorTick;
+
+    // =====================================================================
+    // 譜面ビュー分割表示(2026-07-26要望対応、第三者提案)
+    // =====================================================================
+
+    /// <summary>分割表示ON/OFF(上パネルのトグルボタン、AppSettingsで永続化、エディタ全体で共通)</summary>
+    private bool _splitViewEnabled;
+
+    /// <summary>キーボードモード中のアクティブペイン(false=左/Canvas、true=右/Canvas2)。
+    /// 分割OFF中・マウスモード中は参照されない(常に左=Canvasのみが対象)。Tabキーで切り替える。</summary>
+    private bool _activePaneIsSecondary;
+
+    /// <summary>アクティブペインの目印(枠線)色(固定色、2026-07-26要望対応。設定項目化はせず簡易な目印とする)。</summary>
+    private static readonly Brush ActivePaneIndicatorBrush = Brushes.DeepSkyBlue;
     /// <summary>色編集モードON/OFF(左パネルのトグルボタン、セッションを跨いで保持、2026-07-23)</summary>
     private bool _colorEditModeActive;
     /// <summary>色編集モードの「即時適用(全体色変化)にする」チェック状態(2026-07-24)。
@@ -54,8 +68,8 @@ public partial class MainWindow : Window
     private EditorDocument? _selectionSubscribedDoc;
     private string? _currentFilePath;
 
-    /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-26)。settings.jsonとは独立した
-    /// swap_macro.jsonで管理する(AppPaths.LaneSwapMacroFilePath)。</summary>
+    /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-26)。settings.jsonとは独立した、
+    /// キー種ごとの"s-macro_キー種.json"(AppPaths.SettingsDir内)で管理する(2026-07-26g)。</summary>
     private readonly List<LaneSwapMacro> _macros;
 
     // --- マルチプロジェクトタブ(2026-07-20、TBD#10) ---
@@ -147,7 +161,7 @@ public partial class MainWindow : Window
         _instanceId = instanceId;
         InitializeComponent();
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
-        _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-26: settings.jsonとは独立したファイル
+        _macros = LaneSwapMacroFile.LoadAll(AppPaths.SettingsDir); // 2026-07-26g: キー種ごとのs-macro_*.jsonへ分割(旧swap_macro.jsonは自動移行)
         _pluginManager = new Plugins.PluginManager(() => _document); // 2026-07-26: プラグイン対応の土台
         SnapDivisionCombo.ItemsSource = SnapService.Divisions;
         SnapDivisionCombo.SelectedItem = 16;
@@ -183,12 +197,19 @@ public partial class MainWindow : Window
         // StartNumberドラッグ確定時に右パネルの数値表示を同期する(2026-07-18)
         Canvas.StartNumberChangedByDrag += RefreshProjectPropertiesPanel;
 
+        // マクロ範囲マーカーの設置/移動確定時に右パネルの範囲表示を同期する(2026-07-26)
+        Canvas.MacroRangeChanged += RefreshMacroRangeStatus;
+
         _appSettings = preloadedSettings ?? AppSettings.Load(AppPaths.SettingsFilePath);
         ApplyAutoSaveTimerSettings(); // 2026-07-25
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
         NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-07-26
         ApplyDisplaySettingsToCanvas();
+        // 2026-07-26要望対応: 譜面ビュー分割表示(既定OFF、エディタ全体で共通の設定)
+        SplitViewToggle.IsChecked = _appSettings.SplitViewEnabled;
+        _splitViewEnabled = _appSettings.SplitViewEnabled;
+        ApplySplitViewLayout();
 
         // 2026-07-17g: プレイテスト設定(Reverse/ハイスピ/調整オフセット)の初期化
         PlaytestHiSpeedCombo.ItemsSource = Enumerable.Range(1, 40).Select(i => i * 0.25).ToList(); // x0.25〜x10(2026-07-19: 0.25刻み化、TBD§1-4の一部)
@@ -228,6 +249,7 @@ public partial class MainWindow : Window
         NColorNormalShadowColorBox.Text = "#000000";
 
         RefreshMacroList(); // 2026-07-26: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
+        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に初期化する
 
         // 2026-07-26: プラグイン対応の土台。./pluginsフォルダを読み込み、パネル系プラグインは
         // 右パネルへタブとして追加、オーバーレイ系プラグインは譜面ビューへ登録する。
@@ -336,13 +358,21 @@ public partial class MainWindow : Window
         var cursorLineColor = (Color)ColorConverter.ConvertFromString(_appSettings.CursorLineColorHex)!;
         var cursorHighlightColor = (Color)ColorConverter.ConvertFromString(_appSettings.CursorHighlightColorHex)!;
         Canvas.ApplyCursorLineSettings(_appSettings.CursorLineWidth, cursorLineColor, _appSettings.CursorHighlightWidth, cursorHighlightColor);
+        // 2026-07-26: レーン入替マクロ「選択範囲内のみ適用」の範囲マーカー・ハイライト帯
+        var macroRangeColor = (Color)ColorConverter.ConvertFromString(_appSettings.MacroRangeHighlightColorHex)!;
+        Canvas.ApplyMacroRangeHighlightSettings(_appSettings.MacroRangeMarkerWidth, macroRangeColor);
+        // 2026-07-26: タブリンク機能の背景ノート表示設定
+        var linkedNoteColor = (Color)ColorConverter.ConvertFromString(_appSettings.LinkedNoteColorHex)!;
+        var linkedHighlightColor = (Color)ColorConverter.ConvertFromString(_appSettings.LinkedHighlightColorHex)!;
+        Canvas.ApplyLinkedBackgroundSettings(_appSettings.LinkedNoteSizeRatio, linkedNoteColor,
+            _appSettings.LinkedHighlightWidthRatio, _appSettings.LinkedHighlightHeight, linkedHighlightColor);
         Canvas.MarkerCommentFull = _appSettings.MarkerCommentFull;   // 2026-07-19b
         Canvas.MarkerCommentHeadChars = Math.Max(1, _appSettings.MarkerCommentHeadChars);
         Canvas.TimeInfoFontSize = _appSettings.TimeInfoFontSize;     // 2026-07-26
         Canvas.MarkerFontSize = _appSettings.MarkerFontSize;         // 2026-07-26
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
         Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-07-26
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     private void ShowNoteImagesToggle_Changed(object sender, RoutedEventArgs e)
@@ -421,7 +451,7 @@ public partial class MainWindow : Window
             _wordLaneManagerWindow.Activate();
             return;
         }
-        _wordLaneManagerWindow = new WordLaneManagerWindow(_document, () => Canvas.InvalidateVisual()) { Owner = this };
+        _wordLaneManagerWindow = new WordLaneManagerWindow(_document, () => InvalidateChartViews()) { Owner = this };
         _wordLaneManagerWindow.Show();
     }
 
@@ -446,7 +476,7 @@ public partial class MainWindow : Window
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
         UpdateMusicUrlLoadButtonState(); // 2026-07-26: 機能ON/OFF切替を「読込」ボタンの活性状態へ即反映
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>
@@ -705,7 +735,7 @@ public partial class MainWindow : Window
                     {
                         _document.Project.PlaybackStartFrame = step.Value * 60.0;
                         _document.NotifyChanged();
-                        Canvas.InvalidateVisual();
+                        InvalidateChartViews();
                     }
                     break;
                 case KeyMacroStepKind.StartVisualTest:
@@ -1026,6 +1056,7 @@ public partial class MainWindow : Window
         Minimap.Document = doc;
         Minimap.TargetScrollViewer = ChartScrollViewer;
         Minimap.FocusTarget = Canvas;
+        SyncMinimap2FromDocument(); // 2026-07-26b: 分割ビュー中はMinimap2(右ペイン用)も同じdocへ切り替える
         // 2026-07-23: 色編集モードのON/OFF・塗り色はセッションを跨いで保持する仕様のため、
         // アクティブになったコントローラへ都度反映する(コントローラ自体はセッションごとに使い回される)。
         // 2026-07-24: サブモード(Normal/FrzHit/Shadow)関連の状態もまとめてPushColorEditStateToControllerへ集約。
@@ -1073,7 +1104,9 @@ public partial class MainWindow : Window
         RefreshColorPanel();
         RefreshExtraHeadersPanel();
         RefreshMacroList(); // 2026-07-26: 現在タブのKeyTypeIdに応じて「実行」ボタンの有効/無効が変わるため
+        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に最新化する
         RefreshAnalysisPanel(); // 2026-07-26: 分析タブ(ITTNアナライザー/おにスター)
+        InvalidateChartViews(); // 2026-07-26: 分割ビュー中はCanvas2(右ペイン)へもDocument/Controllerを反映する
     }
 
     /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
@@ -1193,6 +1226,8 @@ public partial class MainWindow : Window
         Canvas.Waveform = null;
         Canvas.PlaybackTick = null;
         Minimap.Document = null;
+        if (_splitViewEnabled) Minimap2.Document = null; // 2026-07-26b: 右ペイン用ミニマップもクリア
+        InvalidateChartViews(); // 2026-07-26: 分割ビュー中はCanvas2(右ペイン)側もまとめてクリアする
 
         ProjectTitleText.Text = "(プロジェクト未作成)";
         _suppressSelectionEvent = true;
@@ -1213,6 +1248,7 @@ public partial class MainWindow : Window
         UpdateWindowTitle();
         RefreshProjectTabBar();
         RefreshMacroList(); // 2026-07-26: ドキュメント無しの間は一覧を空にし「実行」を無効化する
+        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に空にする
     }
 
     // =====================================================================
@@ -1231,6 +1267,7 @@ public partial class MainWindow : Window
         Canvas.Waveform = null;
         Canvas.AudioTotalFrames = null; // 2026-07-26: 曲切替時はいったんクリア(未読込なら8小節下限に戻る)
         Minimap.AudioTotalFrames = null;
+        if (_splitViewEnabled) Minimap2.AudioTotalFrames = null;
 
         if (!string.IsNullOrEmpty(doc.Project.AudioFilePath) && File.Exists(doc.Project.AudioFilePath))
         {
@@ -1263,6 +1300,7 @@ public partial class MainWindow : Window
         {
             Canvas.AudioTotalFrames = null; // 2026-07-26: 読込完了(MediaOpened)まではいったんクリア
             Minimap.AudioTotalFrames = null;
+            if (_splitViewEnabled) Minimap2.AudioTotalFrames = null;
             _audioPlayer.Open(path);
             _document!.Project.AudioFilePath = path;
             AudioFileText.Text = Path.GetFileName(path);
@@ -1284,9 +1322,12 @@ public partial class MainWindow : Window
         double? totalFrames = _audioPlayer.Duration is { } d ? d.TotalSeconds * 60.0 : null;
         Canvas.AudioTotalFrames = totalFrames;
         Minimap.AudioTotalFrames = totalFrames;
+        if (_splitViewEnabled) Minimap2.AudioTotalFrames = totalFrames;
         Canvas.InvalidateMeasure();
-        Canvas.InvalidateVisual();
+        if (_splitViewEnabled) Canvas2.InvalidateMeasure(); // 2026-07-26: 分割ビュー中は右ペインも再計測
+        InvalidateChartViews();
         Minimap.InvalidateVisual();
+        if (_splitViewEnabled) Minimap2.InvalidateVisual();
     }
 
     // =====================================================================
@@ -1591,7 +1632,7 @@ public partial class MainWindow : Window
         double frame = pos.TotalSeconds * 60.0;
         var engine = _document.Project.CreateTimingEngine();
         Canvas.PlaybackTick = engine.FrameToTick(frame);
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
 
         // 2026-07-26f: ハンドクラップの発音判定・PCM重ね合わせは_audioPlayer(NAudioBgmPlayer)自身の
         // レンダースレッド内で直接行われるため、ここでの処理は不要になった(StartVisualTest参照)。
@@ -1680,6 +1721,14 @@ public partial class MainWindow : Window
         var confirm = MessageBox.Show(this, $"タブ「{target.DifficultyName}」を閉じますか？(この操作はUndoできません)",
             "タブを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
+
+        // 2026-07-26要望対応: リンク中のタブを閉じる場合、相手タブ側の参照が宙に浮かないよう
+        // リンクを解除しておく(タブリンク機能)。
+        if (target.LinkedTabId is { } linkedId)
+        {
+            var partner = tabs.FirstOrDefault(t => t.TabId == linkedId);
+            if (partner is not null) partner.LinkedTabId = null;
+        }
 
         ProjectOperations.RemoveTab(_document.Project, idx);
         // 2026-07-24: 単純に CurrentTabIndex に代入するだけだと、閉じたタブが末尾以外の場合
@@ -1786,10 +1835,12 @@ public partial class MainWindow : Window
         if (DifficultyTabControl.SelectedIndex < 0) return;
         _document.CurrentTabIndex = DifficultyTabControl.SelectedIndex;
         Canvas.InvalidateMeasure();
-        Canvas.InvalidateVisual();
+        if (_splitViewEnabled) Canvas2.InvalidateMeasure(); // 2026-07-26: 分割ビュー中は右ペインも再計測
+        InvalidateChartViews();
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
         RefreshMacroList(); // 2026-07-26: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
+        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に切り替える
         RefreshAnalysisPanel(); // 2026-07-26: タブが変わればTotalRating等も変わるため結果表示をリセットする
 
         // 2026-07-26: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
@@ -1955,7 +2006,7 @@ public partial class MainWindow : Window
             targetTab.FrzColorOverride[slot] = box.Text;
         }
         _document.NotifyChanged();
-        Canvas.InvalidateVisual(); // レーン色プレビュー(LaneBrush)へ反映
+        InvalidateChartViews(); // レーン色プレビュー(LaneBrush)へ反映
     }
 
     private void ColorCommonCheck_Changed(object sender, RoutedEventArgs e)
@@ -2317,7 +2368,7 @@ public partial class MainWindow : Window
         if (!ok) { RefreshProjectPropertiesPanel(); return; } // 不正入力は直前の値に戻す
         if (timingChangedDirectly) _document.OnTimingChangedDirectly();
         else _document.NotifyChanged();
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     private static bool TryParseDouble(string text, out double value) =>
@@ -2680,7 +2731,7 @@ public partial class MainWindow : Window
         var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
         if ((a?.Comment ?? "") == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
         _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, ObjectCommentBox.Text, a?.Warning ?? false));
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>歌詞エントリ(Word)専用フィールド(段/フェードフレーム数)のLostFocus共通処理(2026-07-23、TBD 4)。</summary>
@@ -2717,7 +2768,7 @@ public partial class MainWindow : Window
             return; // 変更なしならUndo履歴を汚さない
 
         _document.Execute(new EditWordEntryAction(r.Lane, r.Tick, newEntry));
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>警告フラグのON/OFF(2026-07-26)。インポート時に自動ONになったものを、内容確認後に
@@ -2731,7 +2782,7 @@ public partial class MainWindow : Window
         var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
         if ((a?.Warning ?? false) == warning) return; // 変更なしならUndo履歴を汚さない
         _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, a?.Comment ?? ObjectCommentBox.Text, warning));
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>波形表示トグル(2026-07-18)。初回ONで音声をバックグラウンドデコードする</summary>
@@ -2750,7 +2801,7 @@ public partial class MainWindow : Window
             }
             EnsureWaveformDecoded();
         }
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>音声ファイルをデコードして波形ピークを用意する(非同期、結果はキャッシュ)(2026-07-18)</summary>
@@ -2761,7 +2812,7 @@ public partial class MainWindow : Window
         if (path == _waveformPath && _waveformPeaks is not null)
         {
             Canvas.Waveform = _waveformPeaks;
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
             return;
         }
         _waveformDecoding = true;
@@ -2771,7 +2822,7 @@ public partial class MainWindow : Window
             _waveformPeaks = peaks;
             _waveformPath = path;
             Canvas.Waveform = peaks;
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
         catch (Exception ex)
         {
@@ -2814,7 +2865,7 @@ public partial class MainWindow : Window
             Canvas.StartNumberEditMode = false;
             RefreshProjectPropertiesPanel(); // StartNumber数値表示を最終同期
         }
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>拍情報/フレーム情報モード切替(仕様書7.6、2026-07-17i)。OFF時は丸め衝突を検査し、
@@ -2862,7 +2913,7 @@ public partial class MainWindow : Window
                 _document.ExitFrameEditMode(mergeDuplicates: false);
             }
         }
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     private void SnapToggle_Changed(object sender, RoutedEventArgs e) => ApplySnapToDocument();
@@ -2877,7 +2928,7 @@ public partial class MainWindow : Window
         if (_document is null) return;
         _document.Snap.Enabled = SnapEnabledCheck.IsChecked == true;
         if (SnapDivisionCombo.SelectedItem is int division) _document.Snap.Division = division;
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     // --- 2026-07-26: Ctrl+1〜9,0,-,^ グリッド分解能ショートカット ---
@@ -2931,7 +2982,7 @@ public partial class MainWindow : Window
         _document.Snap.Division = division.Value;
         SnapDivisionCombo.SelectedItem = division.Value;
         SnapKeyboardCursorToNearestGrid();
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>キーボードモード中は「再生開始ライン」(PlaybackStartFrame)がそのままカーソル位置を
@@ -2960,6 +3011,157 @@ public partial class MainWindow : Window
             ChartScrollViewer.ViewportWidth, ChartScrollViewer.ViewportHeight);
         Canvas.UpdateViewport(rect);
         Minimap.InvalidateVisual(); // 2026-07-26: 現在の表示範囲インジケータを最新化
+    }
+
+    /// <summary>分割ビュー(2026-07-26要望対応)の右ペイン(Canvas2)用スクロール連動。左ペインとは
+    /// 完全に独立したスクロール位置を持つため、ChartScrollViewer_ScrollChangedとは別にビューポートを
+    /// 計算する(ミニマップは左ペイン基準のまま、右ペインには連動させない)。</summary>
+    private void ChartScrollViewer2_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        var rect = new Rect(ChartScrollViewer2.HorizontalOffset, ChartScrollViewer2.VerticalOffset,
+            ChartScrollViewer2.ViewportWidth, ChartScrollViewer2.ViewportHeight);
+        Canvas2.UpdateViewport(rect);
+        Minimap2.InvalidateVisual(); // 2026-07-26b: 右ペイン用ミニマップの表示範囲インジケータを最新化
+    }
+
+    // =====================================================================
+    // 譜面ビュー分割表示(2026-07-26要望対応、第三者提案)
+    // =====================================================================
+
+    /// <summary>上パネルの分割トグル。ON/OFFをAppSettingsへ永続化し、レイアウトを切り替える。</summary>
+    private void SplitViewToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _splitViewEnabled = SplitViewToggle.IsChecked == true;
+        _appSettings.SplitViewEnabled = _splitViewEnabled;
+        ApplySplitViewLayout();
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>分割ON/OFFに応じて列幅・可視性を切り替え、ONにした直後はCanvas2の表示状態を
+    /// Canvas(左ペイン)から同期する(スクロール位置だけは独立、それ以外の表示設定・Document・
+    /// Controllerは共有)。分割をONにするたびアクティブペインは左(既定)にリセットする。</summary>
+    private void ApplySplitViewLayout()
+    {
+        if (_splitViewEnabled)
+        {
+            ChartPaneColumn1.Width = new GridLength(1, GridUnitType.Star);
+            ChartSplitterColumn.Width = new GridLength(4);
+            ChartPaneColumn2.Width = new GridLength(1, GridUnitType.Star);
+            Minimap2Column.Width = new GridLength(48);
+            ChartSplitGridSplitter.Visibility = Visibility.Visible;
+            ChartPane2Border.Visibility = Visibility.Visible;
+            Minimap2.Visibility = Visibility.Visible;
+            _activePaneIsSecondary = false;
+            SyncCanvas2FromCanvas();
+            SyncMinimap2FromDocument();
+            Canvas2.InvalidateVisual();
+            Minimap2.InvalidateVisual();
+        }
+        else
+        {
+            ChartSplitterColumn.Width = new GridLength(0);
+            ChartPaneColumn2.Width = new GridLength(0);
+            Minimap2Column.Width = new GridLength(0);
+            ChartSplitGridSplitter.Visibility = Visibility.Collapsed;
+            ChartPane2Border.Visibility = Visibility.Collapsed;
+            Minimap2.Visibility = Visibility.Collapsed;
+        }
+        UpdateActivePaneIndicator();
+    }
+
+    /// <summary>キーボードモード中のカーソル追従スクロール(ScrollKeyboardCursorIntoView)が対象とする
+    /// ScrollViewer。分割OFF、またはアクティブペインが左の間は従来通りChartScrollViewer、分割ON中に
+    /// 右ペインをアクティブにしている間だけChartScrollViewer2を返す(2026-07-26要望対応:
+    /// 「1アクションで両方のペインが動くのは避けたい」ため、非アクティブ側は一切追従させない)。</summary>
+    private ScrollViewer ActiveChartScrollViewer =>
+        _splitViewEnabled && _activePaneIsSecondary ? ChartScrollViewer2 : ChartScrollViewer;
+
+    /// <summary>キーボードモード中、Tabキーでアクティブペインを切り替える(2026-07-26要望対応)。
+    /// 分割OFF中は呼ばれない(HandleKeyboardModeKey側でガード済み)。</summary>
+    private void TogglePaneActive()
+    {
+        _activePaneIsSecondary = !_activePaneIsSecondary;
+        UpdateActivePaneIndicator();
+        StatusText.Text = _activePaneIsSecondary ? "分割ビュー: 右側がアクティブですわ" : "分割ビュー: 左側がアクティブですわ";
+    }
+
+    /// <summary>アクティブペインの目印(枠線)を更新する。分割ONかつキーボードモード中のみ表示する
+    /// (マウスモード中・分割OFF中はどちらのペインで操作しても同じなので目印は不要、2026-07-26要望対応)。</summary>
+    private void UpdateActivePaneIndicator()
+    {
+        bool show = _splitViewEnabled && _keyboardModeActive;
+        bool leftActive = show && !_activePaneIsSecondary;
+        bool rightActive = show && _activePaneIsSecondary;
+        ChartPane1Border.BorderBrush = leftActive ? ActivePaneIndicatorBrush : Brushes.Transparent;
+        ChartPane1Border.BorderThickness = new Thickness(leftActive ? 3 : 0);
+        ChartPane2Border.BorderBrush = rightActive ? ActivePaneIndicatorBrush : Brushes.Transparent;
+        ChartPane2Border.BorderThickness = new Thickness(rightActive ? 3 : 0);
+    }
+
+    /// <summary>Canvas(左ペイン)の再描画に合わせてCanvas2(右ペイン、分割ON時のみ)も再描画する
+    /// (2026-07-26要望対応)。これまで散在していたCanvas.InvalidateVisual()呼び出しをすべて
+    /// このメソッド経由に統一することで、両ペインの再描画・表示設定同期を1箇所に集約している。</summary>
+    private void InvalidateChartViews()
+    {
+        Canvas.InvalidateVisual();
+        if (!_splitViewEnabled) return;
+        SyncCanvas2FromCanvas();
+        Canvas2.InvalidateVisual();
+    }
+
+    /// <summary>Canvas2(右ペイン)の表示設定・参照をCanvas(左ペイン)から丸ごとコピーする。
+    /// ViewportRect(スクロール位置に依存する可視範囲)だけは対象外(分割ビューの目的である
+    /// 「独立スクロール」を保つため、Canvas2自身のChartScrollViewer2_ScrollChangedで別途更新する)。
+    /// RangeSelectMode/StartNumberEditMode(マクロ範囲選択・StartNumber編集の専用モード)は
+    /// 現状Canvas(左ペイン)のみを対象とする仕様のため、Canvas2側は常にOFFのままにする
+    /// (2つのペインで別々の特殊モードが同時に有効になる事故を避けるための簡略化)。</summary>
+    private void SyncCanvas2FromCanvas()
+    {
+        Canvas2.Document = Canvas.Document;
+        Canvas2.Controller = Canvas.Controller;
+        Canvas2.OverlayPlugins = Canvas.OverlayPlugins;
+        Canvas2.Reverse = Canvas.Reverse;
+        Canvas2.ShowNoteImages = Canvas.ShowNoteImages;
+        Canvas2.ShowHighlightGrid = Canvas.ShowHighlightGrid;
+        Canvas2.HighlightLineWidth = Canvas.HighlightLineWidth;
+        Canvas2.HighlightLineColor = Canvas.HighlightLineColor;
+        Canvas2.ExcludeFreezeEndFromHighlight = Canvas.ExcludeFreezeEndFromHighlight;
+        Canvas2.PlaybackStartLineWidth = Canvas.PlaybackStartLineWidth;
+        Canvas2.PlaybackStartLineColor = Canvas.PlaybackStartLineColor;
+        Canvas2.CursorLineWidth = Canvas.CursorLineWidth;
+        Canvas2.CursorLineColor = Canvas.CursorLineColor;
+        Canvas2.CursorHighlightWidth = Canvas.CursorHighlightWidth;
+        Canvas2.CursorHighlightColor = Canvas.CursorHighlightColor;
+        Canvas2.MacroRangeMarkerWidth = Canvas.MacroRangeMarkerWidth;
+        Canvas2.MacroRangeHighlightColor = Canvas.MacroRangeHighlightColor;
+        Canvas2.LinkedNoteSizeRatio = Canvas.LinkedNoteSizeRatio;
+        Canvas2.LinkedNoteColor = Canvas.LinkedNoteColor;
+        Canvas2.LinkedHighlightWidthRatio = Canvas.LinkedHighlightWidthRatio;
+        Canvas2.LinkedHighlightHeight = Canvas.LinkedHighlightHeight;
+        Canvas2.LinkedHighlightColor = Canvas.LinkedHighlightColor;
+        Canvas2.MarkerCommentFull = Canvas.MarkerCommentFull;
+        Canvas2.MarkerCommentHeadChars = Canvas.MarkerCommentHeadChars;
+        Canvas2.TimeInfoFontSize = Canvas.TimeInfoFontSize;
+        Canvas2.MarkerFontSize = Canvas.MarkerFontSize;
+        Canvas2.ShowLaneNoteCount = Canvas.ShowLaneNoteCount;
+        Canvas2.ShowWaveform = Canvas.ShowWaveform;
+        Canvas2.Waveform = Canvas.Waveform;
+        Canvas2.AudioTotalFrames = Canvas.AudioTotalFrames;
+        Canvas2.PlaybackTick = Canvas.PlaybackTick;
+        Canvas2.KeyboardModeActive = Canvas.KeyboardModeActive;
+    }
+
+    /// <summary>Minimap2(右ペイン用ミニマップ、2026-07-26b要望対応「ビュー1つにつき1つのミニマップ」)を
+    /// Minimap(左ペイン用)から同期する。TargetScrollViewer/FocusTargetだけは右ペイン自身
+    /// (ChartScrollViewer2/Canvas2)を指すようにし、そこだけはコピーしない。</summary>
+    private void SyncMinimap2FromDocument()
+    {
+        if (!_splitViewEnabled) return;
+        Minimap2.Document = Minimap.Document;
+        Minimap2.AudioTotalFrames = Minimap.AudioTotalFrames;
+        Minimap2.TargetScrollViewer = ChartScrollViewer2;
+        Minimap2.FocusTarget = Canvas2;
     }
 
     // =====================================================================
@@ -2996,8 +3198,8 @@ public partial class MainWindow : Window
 
         if (ctrl)
         {
-            if (e.Key == Key.Z) { RecordUndoRedoStatIfChanged(_document.Undo()); Canvas.InvalidateVisual(); e.Handled = true; }
-            else if (e.Key == Key.Y) { RecordUndoRedoStatIfChanged(_document.Redo()); Canvas.InvalidateVisual(); e.Handled = true; }
+            if (e.Key == Key.Z) { RecordUndoRedoStatIfChanged(_document.Undo()); InvalidateChartViews(); e.Handled = true; }
+            else if (e.Key == Key.Y) { RecordUndoRedoStatIfChanged(_document.Redo()); InvalidateChartViews(); e.Handled = true; }
             else if (e.Key == Key.S) { SaveProject_Click(this, new RoutedEventArgs()); e.Handled = true; }
             else if (e.Key == Key.E) { ExportDos_Click(this, new RoutedEventArgs()); e.Handled = true; }
             // --- 2026-07-17f: マウスモードのショートカット追加(Ctrl系) ---
@@ -3012,7 +3214,19 @@ public partial class MainWindow : Window
             // 従来通りCtrl+Space。キーボードモード(Enterで開始)ではSpaceがカーソル前進に割り当て済みで
             // 紛らわしいため、開始キーに揃えてCtrl+Enterへ変更(要望対応)。
             else if (!_keyboardModeActive && e.Key == Key.Space && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; }
-            else if (_keyboardModeActive && e.Key == Key.Enter && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; }
+            else if (_keyboardModeActive && e.Key == Key.Enter && _visualTestActive)
+            {
+                // 2026-07-26要望対応: キーボードモード中、Ctrl+Enterでその場中断した際は、中断タイミングの
+                // 最寄りグリッドへ再生開始ラインを設定する(次回の目視テスト・プレイテストが続きから始まるように)。
+                if (_document is not null && Canvas.PlaybackTick is { } liveTick)
+                {
+                    var engine = _document.Project.CreateTimingEngine();
+                    long snappedTick = _document.Snap.Snap(liveTick);
+                    _document.Project.PlaybackStartFrame = engine.TickToFrame(snappedTick);
+                }
+                StopVisualTest(returnToStart: false);
+                e.Handled = true;
+            }
             else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
             else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
             // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
@@ -3026,7 +3240,7 @@ public partial class MainWindow : Window
                 bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
                 _keyboardMode.MoveCursorByMeasure(timeMode ? -amount : (_appSettings.ChartViewReverse ? amount : -amount));
                 ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+                InvalidateChartViews();
                 e.Handled = true;
             }
             else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
@@ -3035,14 +3249,14 @@ public partial class MainWindow : Window
                 bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
                 _keyboardMode.MoveCursorByMeasure(timeMode ? amount : (_appSettings.ChartViewReverse ? -amount : amount));
                 ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+                InvalidateChartViews();
                 e.Handled = true;
             }
             // --- 2026-07-20: Ctrl+X/C/V(仕様書13章)。Z/Y/S/Eと異なりテキスト入力欄フォーカス中は
             // 通常のテキストコピペを優先させ、譜面側のクリップボード処理を奪わない(専用ガード)。
-            else if (!textInputFocused && e.Key == Key.X) { if (_controller is not null && _controller.CutSelection()) Canvas.InvalidateVisual(); e.Handled = true; }
+            else if (!textInputFocused && e.Key == Key.X) { if (_controller is not null && _controller.CutSelection()) InvalidateChartViews(); e.Handled = true; }
             else if (!textInputFocused && e.Key == Key.C) { if (_controller is not null) _controller.CopySelection(); e.Handled = true; }
-            else if (!textInputFocused && e.Key == Key.V) { if (_controller is not null && _controller.Paste()) Canvas.InvalidateVisual(); e.Handled = true; }
+            else if (!textInputFocused && e.Key == Key.V) { if (_controller is not null && _controller.Paste()) InvalidateChartViews(); e.Handled = true; }
             // --- 2026-07-21: Ctrl+A(ノート・フリーズ全選択)/Shift+Ctrl+A(環境設定の対象を全選択、仕様書13章TBD) ---
             else if (!textInputFocused && e.Key == Key.A && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
             {
@@ -3050,12 +3264,12 @@ public partial class MainWindow : Window
                 var options = new SelectAllOptions(
                     s.SelectAllTargetNote, s.SelectAllTargetFreeze, s.SelectAllTargetSpeed,
                     s.SelectAllTargetBoost, s.SelectAllTargetBpm, s.SelectAllTargetTimeSignature, s.SelectAllTargetMarker);
-                if (_controller is not null && _controller.SelectAllTargets(options)) Canvas.InvalidateVisual();
+                if (_controller is not null && _controller.SelectAllTargets(options)) InvalidateChartViews();
                 e.Handled = true;
             }
             else if (!textInputFocused && e.Key == Key.A)
             {
-                if (_controller is not null && _controller.SelectAllNotes()) Canvas.InvalidateVisual();
+                if (_controller is not null && _controller.SelectAllNotes()) InvalidateChartViews();
                 e.Handled = true;
             }
             // --- 2026-07-26要望対応(第三者要望): Ctrl+Shift+1〜9によるキーマクロ実行。
@@ -3098,7 +3312,7 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case Key.Delete: // 選択中オブジェクトの削除(未解決事項§2-3)
-                if (_controller is not null && _controller.DeleteSelection()) Canvas.InvalidateVisual();
+                if (_controller is not null && _controller.DeleteSelection()) InvalidateChartViews();
                 e.Handled = true;
                 break;
             case Key.Back: // 再生開始フレームのリセット
@@ -3114,7 +3328,7 @@ public partial class MainWindow : Window
                 e.Handled = true; // 再生ボタン等のフォーカス誤発火防止(要望メモ07-15の注意点)
                 break;
             case Key.Escape: // 選択解除(2026-07-26要望対応: マウス操作だけでは解除手段が無かったため新設)
-                if (_controller is not null && _controller.ClearSelection()) Canvas.InvalidateVisual();
+                if (_controller is not null && _controller.ClearSelection()) InvalidateChartViews();
                 e.Handled = true;
                 break;
         }
@@ -3135,7 +3349,7 @@ public partial class MainWindow : Window
         ColorEditModeToggle.IsChecked = _colorEditModeActive;
         PushColorEditStateToController();
         if (_colorEditModeActive) PropertyTabControl.SelectedItem = ColorEditTabItem;
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
         StatusText.Text = _colorEditModeActive
             ? "色編集モード: ON(左クリック=着色/Shift・ホイールクリック=端点+帯同時/右クリック=解除、他の配置・移動は無効)"
             : "色編集モード: OFF";
@@ -3171,7 +3385,7 @@ public partial class MainWindow : Window
         if (_controller.BulkFillSelection(code))
         {
             _document.NotifyChanged();
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
     }
 
@@ -3184,7 +3398,7 @@ public partial class MainWindow : Window
         if (_controller.ClearAllNoteColors())
         {
             _document.NotifyChanged();
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
     }
 
@@ -3198,7 +3412,7 @@ public partial class MainWindow : Window
         public override string ToString() => $"{Macro.TargetKeyTypeId} - {Macro.MacroName}";
     }
 
-    private void SaveMacros() => LaneSwapMacroFile.Save(AppPaths.LaneSwapMacroFilePath, _macros);
+    private void SaveMacros() => LaneSwapMacroFile.SaveAll(AppPaths.SettingsDir, _macros);
 
     /// <summary>右パネルの一覧は「現在開いている難易度タブのキー種に対応するものだけ」表示する
     /// (2026-07-26要望。タブ切替でキー種が変わればここも切り替わる)。ドキュメント未オープン時は
@@ -3221,6 +3435,83 @@ public partial class MainWindow : Window
             MacroListBox.SelectedItem = MacroListBox.Items.Cast<MacroListEntry>()
                 .FirstOrDefault(e => e.Macro.MacroId == selectedId);
         UpdateMacroButtonStates();
+        RefreshMacroRangeStatus();
+    }
+
+    /// <summary>範囲マーカー状態を右パネルへ反映する(2026-07-26要望対応)。
+    /// ドキュメント未オープン時は範囲選択モード自体を無効化する(タブが無ければ範囲の意味が無いため)。</summary>
+    private void RefreshMacroRangeStatus()
+    {
+        var tab = _document?.CurrentTab;
+        MacroRangeModeToggle.IsEnabled = tab is not null;
+        if (tab is null)
+        {
+            MacroRangeModeToggle.IsChecked = false;
+            MacroRangeStatusText.Text = "(未オープン)";
+            return;
+        }
+
+        long? st = tab.MacroRangeStartTick, et = tab.MacroRangeEndTick;
+        MacroRangeStatusText.Text = st is null && et is null
+            ? "未設定"
+            : $"始点: {(st?.ToString() ?? "未設定")}  終点: {(et?.ToString() ?? "未設定")}";
+        UpdateMacroButtonStates();
+    }
+
+    /// <summary>範囲選択モードのON/OFF切替(2026-07-27要望対応)。ON中はChartCanvasの通常編集
+    /// (オブジェクトの移動・選択)を無効化し、左ドラッグ1回で範囲(始点〜終点)を指定できる。
+    /// 指定後は始点/終点の線を個別にドラッグして調整できる。</summary>
+    private void MacroRangeModeToggle_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        Canvas.RangeSelectMode = true;
+        StatusText.Text = "マクロ範囲選択モード: ドラッグで範囲を指定できます(通常編集は無効)";
+        UpdateMacroButtonStates(); // 範囲未指定の間は実行不可にする
+    }
+
+    /// <summary>範囲選択モードOFF(2026-07-27要望対応: トグル再クリックによるOFFも含め、モードが
+    /// 外れる経路は必ず範囲マーカーをクリアする。「範囲だけ残ってモードはOFF」という中途半端な
+    /// 状態を作らないための一本化)。</summary>
+    private void MacroRangeModeToggle_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        Canvas.RangeSelectMode = false;
+        ClearMacroRangeMarkers();
+    }
+
+    /// <summary>範囲解除ボタン(2026-07-27要望対応: 名称を「範囲をクリア」→「範囲解除」に変更)。
+    /// 範囲マーカーをクリアし、範囲選択モードも終了する。</summary>
+    private void MacroRangeClearButton_Click(object sender, RoutedEventArgs e) => ClearMacroRangeAndExitMode();
+
+    /// <summary>現在タブの範囲マーカーを両方クリアする(2026-07-26要望対応)。Undo対象外(マーカー自体は
+    /// 譜面データではなく編集用の補助情報のため、他のマーカー系操作と同様に扱う)。</summary>
+    private void ClearMacroRangeMarkers()
+    {
+        if (_document is not null)
+        {
+            _document.CurrentTab.MacroRangeStartTick = null;
+            _document.CurrentTab.MacroRangeEndTick = null;
+            _document.NotifyChanged();
+        }
+        RefreshMacroRangeStatus();
+    }
+
+    /// <summary>マクロ範囲選択(始点/終点マーカー)をクリアし、範囲選択モードも終了する
+    /// (2026-07-26要望対応: 「範囲解除」ボタン、および右パネルのタブ切替時の両方で使う共通処理)。</summary>
+    private void ClearMacroRangeAndExitMode()
+    {
+        ClearMacroRangeMarkers();
+        MacroRangeModeToggle.IsChecked = false; // Unchecked側のハンドラでCanvas.RangeSelectMode=falseになる(既にfalseなら二重クリアだが実害無し)
+    }
+
+    /// <summary>右パネルのタブ切替時、マクロ範囲選択モード中であれば範囲をクリアして終了する
+    /// (2026-07-26要望対応: マクロタブから離れた状態で範囲選択モードだけが残り続ける事故を防ぐ)。
+    /// ListBox/ComboBox等の子要素のSelectionChangedもバブリングしてくるため、TabControl自身の
+    /// 選択変更(タブ切替)だけを対象にする(誤発火防止)。</summary>
+    private void PropertyTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.OriginalSource != PropertyTabControl) return;
+        ClearMacroRangeAndExitMode();
     }
 
     private void UpdateMacroButtonStates()
@@ -3228,7 +3519,13 @@ public partial class MainWindow : Window
         bool hasSelection = MacroListBox.SelectedItem is MacroListEntry;
         MacroEditButton.IsEnabled = hasSelection;
         MacroDeleteButton.IsEnabled = hasSelection;
-        MacroRunButton.IsEnabled = hasSelection && _document is not null
+
+        // 2026-07-27要望対応: 範囲選択モードON中は範囲(始点・終点とも)が確定していないと実行不可
+        // (強制的に「範囲内のみ」を適用対象にするため、範囲が無い状態での実行を許さない)。
+        bool rangeReady = !Canvas.RangeSelectMode
+            || (_document?.CurrentTab.MacroRangeStartTick is not null && _document?.CurrentTab.MacroRangeEndTick is not null);
+
+        MacroRunButton.IsEnabled = hasSelection && _document is not null && rangeReady
             && MacroListBox.SelectedItem is MacroListEntry sel
             && string.Equals(sel.Macro.TargetKeyTypeId, _document.CurrentTab.KeyTypeId, StringComparison.OrdinalIgnoreCase)
             && sel.Macro.LaneMapping.Count == _document.CurrentTab.Lanes.Count;
@@ -3241,7 +3538,8 @@ public partial class MainWindow : Window
     private void MacroAddButton_Click(object sender, RoutedEventArgs e)
     {
         var existingNames = _macros.Select(m => m.MacroName).ToList();
-        var win = new MacroEditorWindow(_templates, null, existingNames) { Owner = this };
+        // 2026-07-26要望対応: 新規作成時はカレント難易度タブのキー種を初期選択しておく
+        var win = new MacroEditorWindow(_templates, null, existingNames, _document?.CurrentTab.KeyTypeId) { Owner = this };
         if (win.ShowDialog() != true || win.SavedMacro is null) return;
         _macros.Add(win.SavedMacro);
         SaveMacros();
@@ -3274,14 +3572,125 @@ public partial class MainWindow : Window
     }
 
     /// <summary>マクロ実行(仕様書11.1)。現在の難易度タブへ順列を適用する。1操作としてUndo履歴に積む
-    /// (ユーザー確定仕様、2026-07-26)。</summary>
+    /// (ユーザー確定仕様、2026-07-26)。範囲選択モードON中は範囲マーカー間の要素だけを対象にする
+    /// (2026-07-27要望対応: チェックボックスでの選択制ではなく、モードONで強制的に範囲内のみ適用)。
+    /// 範囲の境界をまたぐフリーズがある場合は適用前に警告し、「適用(フリーズ込み)」
+    /// 「適用(フリーズ抜き)」「再設定」の3択から選ばせる(ユーザー確定仕様)。</summary>
     private void MacroRunButton_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null || MacroListBox.SelectedItem is not MacroListEntry entry) return;
-        _document.Execute(new ApplyLaneSwapMacroAction(entry.Macro.LaneMapping, entry.Macro.MacroName));
-        StatusText.Text = $"マクロ実行: {entry.Macro.MacroName}";
+
+        if (Canvas.RangeSelectMode
+            && _document.CurrentTab.MacroRangeStartTick is { } rangeStart
+            && _document.CurrentTab.MacroRangeEndTick is { } rangeEnd)
+        {
+            bool includeStraddling = false;
+            if (LaneSwapMacroRangeHelper.HasStraddlingFreezes(_document.CurrentTab, rangeStart, rangeEnd))
+            {
+                var result = MessageBox.Show(this,
+                    "選択範囲の境界をまたぐフリーズアローがあります。どのように適用しますか？\n" +
+                    "「はい」= フリーズ込みで適用(またぐフリーズも範囲内として移動)\n" +
+                    "「いいえ」= フリーズ抜きで適用(またぐフリーズは範囲外として据え置き)\n" +
+                    "「キャンセル」= 適用せず範囲を再設定する",
+                    "境界をまたぐフリーズがあります", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+                if (result == MessageBoxResult.Cancel) return;
+                includeStraddling = result == MessageBoxResult.Yes;
+            }
+
+            _document.Execute(new ApplyLaneSwapMacroRangeAction(
+                entry.Macro.LaneMapping, entry.Macro.MacroName, rangeStart, rangeEnd, includeStraddling));
+            StatusText.Text = $"マクロ実行(範囲選択): {entry.Macro.MacroName}";
+        }
+        else
+        {
+            _document.Execute(new ApplyLaneSwapMacroAction(entry.Macro.LaneMapping, entry.Macro.MacroName));
+            StatusText.Text = $"マクロ実行: {entry.Macro.MacroName}";
+        }
+
         _appSettings.StatMacroRunCount++; // 2026-07-26: 統計情報
         _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    // =====================================================================
+    // 右パネル: リンク(同キー種タブ同士のリンク、2026-07-26要望対応)
+    // アクティブタブ(カレントタブ)と非アクティブタブ(リンク相手)の関係を結び、
+    // アクティブタブの背景に非アクティブタブのノートを薄く表示する(描画自体はChartCanvas側)。
+    // =====================================================================
+
+    /// <summary>リンク候補一覧の表示用ラッパー(タブ一覧と同じDisplayLabel書式)</summary>
+    private sealed record LinkCandidateEntry(DifficultyTab Tab)
+    {
+        public override string ToString() => Tab.DisplayLabel;
+    }
+
+    /// <summary>右パネル「リンク」タブの表示を現在タブの状態に合わせて更新する。
+    /// リンク中は相手タブ名のみ表示(候補一覧は隠す)、未リンクなら同キー種かつ未リンクの
+    /// タブを候補一覧に出す(既に他タブとリンク中の候補は、二重リンクを防ぐため除外する)。</summary>
+    private void RefreshLinkPanel()
+    {
+        var tab = _document?.CurrentTab;
+        if (tab is null)
+        {
+            LinkStatusText.Text = "(未オープン)";
+            LinkUnlinkButton.Visibility = Visibility.Collapsed;
+            LinkCandidatePanel.Visibility = Visibility.Collapsed;
+            LinkCandidateListBox.Items.Clear();
+            return;
+        }
+
+        if (tab.LinkedTabId is { } linkedId)
+        {
+            var partner = _document!.Project.Tabs.FirstOrDefault(t => t.TabId == linkedId);
+            LinkStatusText.Text = partner is not null
+                ? $"リンク中: {partner.DisplayLabel}"
+                : "リンク中(相手タブが見つかりませんでした。リンク解除をお試しくださいませ)";
+            LinkUnlinkButton.Visibility = Visibility.Visible;
+            LinkCandidatePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        LinkStatusText.Text = "未リンク";
+        LinkUnlinkButton.Visibility = Visibility.Collapsed;
+        LinkCandidatePanel.Visibility = Visibility.Visible;
+
+        LinkCandidateListBox.Items.Clear();
+        foreach (var candidate in _document!.Project.Tabs
+                     .Where(t => t != tab && t.KeyTypeId == tab.KeyTypeId && t.LinkedTabId is null)
+                     .OrderBy(t => t.DifficultyName, StringComparer.OrdinalIgnoreCase))
+            LinkCandidateListBox.Items.Add(new LinkCandidateEntry(candidate));
+        LinkButton.IsEnabled = false;
+    }
+
+    private void LinkCandidateListBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        LinkButton.IsEnabled = LinkCandidateListBox.SelectedItem is LinkCandidateEntry;
+
+    /// <summary>リンク開始(2026-07-26要望対応)。相互参照(双方が互いのTabIdを持つ)で結ぶ。
+    /// Undo対象外(タブの並び替え等と同じ、編集用の補助情報のため)。</summary>
+    private void LinkButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null || LinkCandidateListBox.SelectedItem is not LinkCandidateEntry entry) return;
+        var tab = _document.CurrentTab;
+        tab.LinkedTabId = entry.Tab.TabId;
+        entry.Tab.LinkedTabId = tab.TabId;
+        _document.NotifyChanged();
+        RefreshLinkPanel();
+        InvalidateChartViews();
+    }
+
+    /// <summary>リンク解除(2026-07-26要望対応)。相手タブ側の参照も一緒に解除する。</summary>
+    private void LinkUnlinkButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        var tab = _document.CurrentTab;
+        if (tab.LinkedTabId is { } linkedId)
+        {
+            var partner = _document.Project.Tabs.FirstOrDefault(t => t.TabId == linkedId);
+            if (partner is not null) partner.LinkedTabId = null;
+        }
+        tab.LinkedTabId = null;
+        _document.NotifyChanged();
+        RefreshLinkPanel();
+        InvalidateChartViews();
     }
 
     // =====================================================================
@@ -3619,7 +4028,7 @@ public partial class MainWindow : Window
         NColorFrzHitPanel.Visibility = NColorSubModeFrzHitRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         NColorShadowPanel.Visibility = NColorSubModeShadowRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         PushColorEditStateToController();
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
     }
 
     /// <summary>Hit/HitBar/HitShadowの対象チェックボックス変更。3つとも未チェックになった場合、
@@ -3656,7 +4065,7 @@ public partial class MainWindow : Window
         if (_controller.BulkFillFrzHitSelection())
         {
             _document.NotifyChanged();
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
     }
 
@@ -3666,7 +4075,7 @@ public partial class MainWindow : Window
         if (_controller.BulkFillShadowSelection())
         {
             _document.NotifyChanged();
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
     }
 
@@ -3728,7 +4137,9 @@ public partial class MainWindow : Window
         _keyboardSelectionAnchorTick = null; // 2026-07-26: モード切替時は範囲選択の状態を持ち越さない
         if (_keyboardModeActive) _keyboardMode?.EnterMode();
         Canvas.KeyboardModeActive = _keyboardModeActive; // 2026-07-22: レーンラベル2行目表示の切替
-        Canvas.InvalidateVisual();
+        _activePaneIsSecondary = false; // 2026-07-26: モード切替のたびアクティブペインは左にリセット
+        UpdateActivePaneIndicator();
+        InvalidateChartViews();
         StatusText.Text = _keyboardModeActive
             ? "キーボードモード: ON(↑=後退/↓=前進、Space=前進/B=後退、←=1小節戻る(小節頭なら1つ前へ)、→=1小節先へ、Ctrl+←/→=2小節、Shift+Ctrl+←/→=4小節、Shift+移動で範囲内の全レーンを選択、Enterで目視テスト、Backspaceでカーソル位置削除。Ctrl+,で解除)"
             : "キーボードモード: OFF";
@@ -3743,7 +4154,10 @@ public partial class MainWindow : Window
     private void ScrollKeyboardCursorIntoView()
     {
         if (_document is null || _keyboardMode is null) return;
-        double vh = ChartScrollViewer.ViewportHeight;
+        // 2026-07-26要望対応: 分割ビュー中はアクティブペインのScrollViewerだけを追従させる
+        // (非アクティブ側は1アクションで一緒に動いてしまわないよう、常に現状維持のままにする)。
+        var sv = ActiveChartScrollViewer;
+        double vh = sv.ViewportHeight;
         if (vh <= 0) return; // 未レイアウト(初期化直後等)
 
         var engine = _document.Project.CreateTimingEngine();
@@ -3751,14 +4165,14 @@ public partial class MainWindow : Window
         var layout = _document.CurrentLayout;
         double lineY = layout.TickToY(tick);
 
-        double off = ChartScrollViewer.VerticalOffset;
+        double off = sv.VerticalOffset;
         if (lineY >= off && lineY <= off + vh) return; // 画面内なら何もしない
 
         double measurePx = engine.SignatureAt(tick).TicksPerMeasure * layout.PxPerTick;
         bool reverse = _appSettings.ChartViewReverse;
         double target = reverse ? lineY - vh + measurePx : lineY - measurePx;
-        double max = Math.Max(0, ChartScrollViewer.ScrollableHeight);
-        ChartScrollViewer.ScrollToVerticalOffset(Math.Clamp(target, 0, max));
+        double max = Math.Max(0, sv.ScrollableHeight);
+        sv.ScrollToVerticalOffset(Math.Clamp(target, 0, max));
     }
 
     private bool HandleKeyboardModeKey(KeyEventArgs e)
@@ -3803,7 +4217,7 @@ public partial class MainWindow : Window
                 _keyboardSelectionAnchorTick = null; // アンカーのみ解除、選択済みオブジェクトはそのまま維持
             }
             ScrollKeyboardCursorIntoView();
-            Canvas.InvalidateVisual();
+            InvalidateChartViews();
         }
         switch (e.Key)
         {
@@ -3846,7 +4260,7 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 return true;
             case Key.Back:
-                if (_keyboardMode.DeleteAtCursor()) Canvas.InvalidateVisual();
+                if (_keyboardMode.DeleteAtCursor()) InvalidateChartViews();
                 e.Handled = true;
                 return true;
             case Key.Enter: // 2026-07-26: キーボードモード中の目視テスト開始/終了ボタン
@@ -3855,7 +4269,20 @@ public partial class MainWindow : Window
                 ToggleVisualTest();
                 e.Handled = true;
                 return true;
+            case Key.Tab when _splitViewEnabled:
+                // 2026-07-26要望対応: 譜面ビュー分割中、Tabキーでアクティブペイン(カーソル追従
+                // スクロールの対象)を切り替える。分割OFF中は素通し(既定のフォーカス移動やレーンの
+                // ノート入力キー割当があればそちらへフォールバックする、下のlaneMap判定を参照)。
+                TogglePaneActive();
+                e.Handled = true;
+                return true;
         }
+
+        // 2026-07-26要望対応: 目視テスト中の「ノート配置受付」(環境設定「テスト再生」、既定OFF)。
+        // ONの間はノート入力キー配置をプレイテスト用(KeyAssign)に切り替え、キー押下時点の
+        // 再生位置(スナップ後)へノートをトグル配置する(通常の編集キー配置=KeyboardInputKeysは使わない)。
+        if (_visualTestActive && _appSettings.VisualTestAcceptNoteInput
+            && HandleVisualTestNoteInput(e)) return true;
 
         // ノート入力キー(テンプレートのKeyboardInputKeysで定義されたレーンのみ反応。
         // 未設定(空配列)のレーン/テンプレートでは何も起きない。Shift併用でフリーズ開始/完了)。
@@ -3870,13 +4297,33 @@ public partial class MainWindow : Window
             {
                 // 2026-07-26: ノート/フリーズ入力でカーソルが進んだ場合も画面外に出うるためスクロール判定
                 ScrollKeyboardCursorIntoView();
-                Canvas.InvalidateVisual();
+                InvalidateChartViews();
             }
             e.Handled = true;
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>目視テスト中の「ノート配置受付」(2026-07-26要望対応)。プレイテスト用キー配置
+    /// (KeyAssign)でレーンを判定し、キー押下時点の再生位置(Canvas.PlaybackTick、スナップ後)へ
+    /// ノートをトグル配置する。通常編集操作としてUndo履歴に積む(ユーザー確定仕様)。
+    /// 対応キーでなければ、または再生位置が未確定(理論上起きないが保険)ならfalseを返し、
+    /// 呼び出し元(HandleKeyboardModeKey)の通常キー処理へフォールバックさせる。</summary>
+    private bool HandleVisualTestNoteInput(KeyEventArgs e)
+    {
+        if (_document is null || Canvas.PlaybackTick is not { } liveTick) return false;
+        var template = _document.CurrentTemplate;
+        var laneMap = KeyLabelMapper.BuildKeyMap(template.Lanes.Count, l => template.Lanes[l].KeyAssign);
+        if (!laneMap.TryGetValue(e.Key, out int lane)) return false;
+
+        long tick = _document.Snap.Snap(liveTick);
+        bool existed = _document.CurrentTab.Lanes[lane].Notes.Contains(tick);
+        _document.Execute(existed ? new DeleteNoteAction(lane, tick) : new PlaceNoteAction(lane, tick));
+        InvalidateChartViews();
+        e.Handled = true;
+        return true;
     }
 
     // =====================================================================
@@ -4016,7 +4463,7 @@ public partial class MainWindow : Window
         _audioPlayer.Stop();
         _playbackTimer.Stop();
         Canvas.PlaybackTick = null;
-        Canvas.InvalidateVisual();
+        InvalidateChartViews();
         AudioTimeText.Text = "-";
         _audioPlayer.SetClapSchedule(null, null, _appSettings.HandClapVolume); // 2026-07-26f
 

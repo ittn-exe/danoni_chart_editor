@@ -90,6 +90,16 @@ public sealed class ChartProject
 /// <summary>難易度タブ(仕様書5章)。難易度ごとにキー種(テンプレート)が異なってよい。</summary>
 public sealed class DifficultyTab
 {
+    /// <summary>タブの一意識別子(2026-07-26要望対応、タブリンク機能)。並び順や名前が変わっても
+    /// リンク相手を一意に指し示すために使う(index参照だと並び替え・削除でズレるため)。
+    /// プロジェクトファイルへ永続化するが、dos.txtには一切出力しない。</summary>
+    public string TabId { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>リンク中の相手タブのTabId(2026-07-26要望対応)。null=リンクなし。相互参照(双方が
+    /// 互いのTabIdを持つ)。同じキー種のタブ同士でのみ結べる(App層が保証する、Core層では未検証)。
+    /// リンク中はアクティブタブの背景に、非アクティブタブ(リンク相手)のノートを薄く表示する。</summary>
+    public string? LinkedTabId { get; set; }
+
     public string DifficultyName { get; set; } = "";
     public string KeyTypeId { get; set; } = "5";
     public double InitialSpeed { get; set; } = 3.5;
@@ -137,6 +147,15 @@ public sealed class DifficultyTab
     /// (DosExporter参照)。</summary>
     public List<WordLane> WordLanes { get; set; } = [];
 
+    /// <summary>レーン入替マクロの「選択範囲内のみ適用」機能(2026-07-26要望対応)で使う範囲マーカー
+    /// (tick単位)。右パネル「マクロ」タブの範囲選択モードでユーザーが設置・ドラッグ移動する。
+    /// 片方だけ設置された状態(null混在)もあり得る(その間はハイライト非表示、適用も不可)。
+    /// タブごとに独立して保持し、プロジェクトファイルへ永続化する。</summary>
+    public long? MacroRangeStartTick { get; set; }
+
+    /// <summary>MacroRangeStartTick参照。範囲の終点マーカー(tick単位)。</summary>
+    public long? MacroRangeEndTick { get; set; }
+
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
     {
@@ -158,6 +177,9 @@ public sealed class DifficultyTab
     {
         var clone = new DifficultyTab
         {
+            // TabIdは複製先固有の新規値を採番する(元タブと同一視されないように)。
+            // LinkedTabIdは意図的に複製しない(複製直後は誰ともリンクしていない状態にする、
+            // 2026-07-26要望対応。片方だけコピーすると相互参照が崩れて事故のもとになるため)。
             DifficultyName = DifficultyName,
             KeyTypeId = KeyTypeId,
             InitialSpeed = InitialSpeed,
@@ -172,6 +194,8 @@ public sealed class DifficultyTab
                 Entries = new List<GaugeListEntry>(Gauge.Entries),
             },
             GaugeParams = GaugeParams is null ? null : new Dictionary<string, string>(GaugeParams),
+            MacroRangeStartTick = MacroRangeStartTick,
+            MacroRangeEndTick = MacroRangeEndTick,
         };
         foreach (var lane in Lanes)
         {

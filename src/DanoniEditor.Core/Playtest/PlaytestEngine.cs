@@ -54,7 +54,12 @@ public sealed class PlaytestEngine
     /// <summary>判定確定のたびに発火(UI側の判定文字・コンボ表示用)</summary>
     public event Action<JudgeResult>? Judged;
 
-    public PlaytestEngine(DifficultyTab tab, TimingEngine timing, double frzAttempt, double offsetFrames = 0)
+    /// <param name="minFrame">2026-07-26要望対応: 「再生開始ラインから始まる譜面を遊ぶ」形式のための
+    /// 下限フレーム(タイミング調整offsetFrames適用前の素のフレームで判定)。この値未満のノート/フリーズ
+    /// (始点基準)は判定対象から一切除外する(存在しないものとして扱う)。既定は無効(全ノート対象、
+    /// 従来通り)。</param>
+    public PlaytestEngine(DifficultyTab tab, TimingEngine timing, double frzAttempt, double offsetFrames = 0,
+        double minFrame = double.NegativeInfinity)
     {
         int n = tab.Lanes.Count;
         _arrows = new List<ArrowState>[n];
@@ -63,14 +68,14 @@ public sealed class PlaytestEngine
         for (int i = 0; i < n; i++)
         {
             _arrows[i] = tab.Lanes[i].Notes.OrderBy(t => t)
-                .Select(t => new ArrowState { Frame = timing.TickToFrame(t) + offsetFrames })
+                .Select(t => timing.TickToFrame(t))
+                .Where(f => f >= minFrame)
+                .Select(f => new ArrowState { Frame = f + offsetFrames })
                 .ToList();
             _freezes[i] = tab.Lanes[i].Freezes.OrderBy(f => f.StartTick)
-                .Select(f => new FreezeState
-                {
-                    StartFrame = timing.TickToFrame(f.StartTick) + offsetFrames,
-                    EndFrame = timing.TickToFrame(f.EndTick) + offsetFrames,
-                })
+                .Select(f => (Start: timing.TickToFrame(f.StartTick), End: timing.TickToFrame(f.EndTick)))
+                .Where(f => f.Start >= minFrame)
+                .Select(f => new FreezeState { StartFrame = f.Start + offsetFrames, EndFrame = f.End + offsetFrames })
                 .ToList();
         }
     }

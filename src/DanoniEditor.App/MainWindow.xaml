@@ -127,6 +127,13 @@
                                   Checked="NoteCountToggle_Changed" Unchecked="NoteCountToggle_Changed"
                                   ToolTip="レーンラベル欄に各レーンのノート数(通常+フリーズ)を表示する"/>
                     <Button x:Name="DisplaySettingsButton" Content="表示設定..." Width="80" Click="DisplaySettings_Click"/>
+                    <!-- 2026-07-26要望対応(第三者提案): 譜面ビューを左右に分割し、同じ難易度タブを
+                         両方に表示する(既定OFF、エディタ全体で共通の設定)。左右とも独立してスクロール可能で、
+                         どちらで編集しても即座にもう一方へ反映される。キーボードモード中はTabキーで
+                         アクティブ側(カーソル追従スクロールの対象)を切り替える。 -->
+                    <ToggleButton x:Name="SplitViewToggle" Content="譜面ビュー分割" Width="90" Margin="8,0,0,0"
+                                  Checked="SplitViewToggle_Changed" Unchecked="SplitViewToggle_Changed"
+                                  ToolTip="譜面ビューを左右に分割し、同じ難易度タブを両方に表示します(独立スクロール、どちらでも編集可。キーボードモード中はTabキーでアクティブ側を切替)"/>
                 </StackPanel>
             </StackPanel>
         </Border>
@@ -153,7 +160,7 @@
                 <ColumnDefinition x:Name="RightPanelColumn" Width="280"/>
             </Grid.ColumnDefinitions>
         <Border Grid.Column="2" Background="#E8E8E8">
-            <TabControl x:Name="PropertyTabControl">
+            <TabControl x:Name="PropertyTabControl" SelectionChanged="PropertyTabControl_SelectionChanged">
                 <TabItem Header="プロジェクト">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
@@ -372,6 +379,15 @@
                                 <Button x:Name="MacroDeleteButton" Content="削除" Width="60" Margin="4,0,0,0" IsEnabled="False" Click="MacroDeleteButton_Click"/>
                             </StackPanel>
                             <Button x:Name="MacroRunButton" Content="実行(現在の難易度タブに適用)" Margin="0,8,0,0" IsEnabled="False" Click="MacroRunButton_Click"/>
+
+                            <!-- 2026-07-27要望対応: 範囲選択モードON中はドラッグ1回で範囲指定、実行対象は強制的に範囲内のみ -->
+                            <Separator Margin="0,12,0,8"/>
+                            <TextBlock Text="適用範囲" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <ToggleButton x:Name="MacroRangeModeToggle" Content="範囲選択モード" IsEnabled="False"
+                                          Checked="MacroRangeModeToggle_Checked" Unchecked="MacroRangeModeToggle_Unchecked"/>
+                            <TextBlock x:Name="MacroRangeStatusText" Text="(未オープン)" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            <Button x:Name="MacroRangeClearButton" Content="範囲解除" Width="100" HorizontalAlignment="Left" Margin="0,4,0,0" Click="MacroRangeClearButton_Click"/>
+                            <TextBlock Text="※範囲選択モードON中は、実行時に範囲内のみへ強制適用されます" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="11" Foreground="Gray"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -381,6 +397,20 @@
                         <StackPanel Margin="8">
                             <TextBlock Text="マーカー一覧(ダブルクリックでジャンプ)" FontWeight="Bold" Margin="0,0,0,4"/>
                             <ListBox x:Name="MarkerListBox" Height="320" MouseDoubleClick="MarkerListBox_MouseDoubleClick"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <!-- 2026-07-26要望対応: 同キー種タブ同士のリンク(非アクティブタブを背景に薄く表示) -->
+                <TabItem x:Name="LinkTabItem" Header="リンク">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock x:Name="LinkStatusText" Text="(未オープン)" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            <Button x:Name="LinkUnlinkButton" Content="リンク解除" HorizontalAlignment="Left" Visibility="Collapsed" Click="LinkUnlinkButton_Click"/>
+                            <StackPanel x:Name="LinkCandidatePanel">
+                                <TextBlock Text="同じキー種のタブ一覧(リンク相手を選択)" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <ListBox x:Name="LinkCandidateListBox" Height="200" SelectionChanged="LinkCandidateListBox_SelectionChanged"/>
+                                <Button x:Name="LinkButton" Content="リンク" Margin="0,8,0,0" IsEnabled="False" Click="LinkButton_Click"/>
+                            </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -441,18 +471,38 @@
                             PreviewDragOver="TabControl_PreviewDragOver"
                             Drop="DifficultyTabControl_Drop"/>
             </DockPanel>
+            <!-- 2026-07-26要望対応: 譜面ビュー分割表示。既定は分割用の列(スプリッタ/ペイン2/ミニマップ2)が
+                 幅0・非表示(分割OFF)で、SplitViewToggle_ChangedがApplySplitViewLayoutで列幅とVisibilityを
+                 切り替える。Border(ChartPane1Border/ChartPane2Border)はキーボードモード中のアクティブペイン
+                 目印(枠線)専用で、通常時はBorderThickness=0のまま見た目に影響しない。ミニマップは
+                 ビュー1つにつき1つ対応させる(Minimap=左ペイン用、Minimap2=右ペイン用、2026-07-26b要望対応)。 -->
             <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition x:Name="ChartPaneColumn1" Width="*"/>
                     <ColumnDefinition Width="48"/>
+                    <ColumnDefinition x:Name="ChartSplitterColumn" Width="0"/>
+                    <ColumnDefinition x:Name="ChartPaneColumn2" Width="0"/>
+                    <ColumnDefinition x:Name="Minimap2Column" Width="0"/>
                 </Grid.ColumnDefinitions>
-                <ScrollViewer x:Name="ChartScrollViewer" Grid.Column="0"
-                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                              ScrollChanged="ChartScrollViewer_ScrollChanged">
-                    <local:ChartCanvas x:Name="Canvas"/>
-                </ScrollViewer>
-                <!-- 2026-07-26: 譜面ビュー全体の概観+クリック/ドラッグでジャンプできるミニマップ -->
+                <Border x:Name="ChartPane1Border" Grid.Column="0" BorderThickness="0" BorderBrush="Transparent">
+                    <ScrollViewer x:Name="ChartScrollViewer"
+                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                  ScrollChanged="ChartScrollViewer_ScrollChanged">
+                        <local:ChartCanvas x:Name="Canvas"/>
+                    </ScrollViewer>
+                </Border>
                 <local:ChartMinimap x:Name="Minimap" Grid.Column="1"/>
+                <GridSplitter x:Name="ChartSplitGridSplitter" Grid.Column="2" Width="4" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Stretch" Background="#CCCCCC" ResizeBehavior="PreviousAndNext"
+                              Cursor="SizeWE" Visibility="Collapsed" ToolTip="ドラッグで分割の幅を調整"/>
+                <Border x:Name="ChartPane2Border" Grid.Column="3" Visibility="Collapsed" BorderThickness="0" BorderBrush="Transparent">
+                    <ScrollViewer x:Name="ChartScrollViewer2"
+                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                  ScrollChanged="ChartScrollViewer2_ScrollChanged">
+                        <local:ChartCanvas x:Name="Canvas2"/>
+                    </ScrollViewer>
+                </Border>
+                <local:ChartMinimap x:Name="Minimap2" Grid.Column="4" Visibility="Collapsed"/>
             </Grid>
         </Grid>
         </Grid>

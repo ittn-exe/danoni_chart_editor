@@ -765,13 +765,33 @@ public class SmartToolControllerTests
     }
 
     [Fact]
-    public void CtrlClick_AlreadySelected_DoesNotDuplicate()
+    public void CtrlClick_AlreadySelected_TogglesOff()
     {
+        // 2026-07-26要望対応: 選択済みオブジェクトをCtrl+クリックすると、そのオブジェクトだけ選択解除される
+        // (以前は「追加のみ・既に選択済みなら何もしない」だったが、トグル方式に変更)。
         var (doc, ctrl, layout) = NewScene();
         doc.Execute(new PlaceNoteAction(0, 48 * T));
         Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
         Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T), PointerModifiers.Ctrl);
-        Assert.Single(doc.Selection);
+        Assert.Empty(doc.Selection);
+    }
+
+    [Fact]
+    public void CtrlClick_TogglesOffOnlyClickedObject_KeepsOtherSelected()
+    {
+        // Ctrl+クリックでの選択解除は、クリックしたオブジェクトだけが対象で他の選択は維持される。
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(2, 240 * T));
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+        Click(ctrl, At(layout.NoteColumn(2), layout, 240 * T), PointerModifiers.Ctrl);
+        Assert.Contains(doc.Selection, r => r.Lane == 0 && r.Tick == 48 * T);
+        Assert.Contains(doc.Selection, r => r.Lane == 2 && r.Tick == 240 * T);
+        Assert.Equal(2, doc.Selection.Count);
+
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T), PointerModifiers.Ctrl);
+        var remaining = Assert.Single(doc.Selection);
+        Assert.Equal(2, remaining.Lane);
     }
 
     [Fact]

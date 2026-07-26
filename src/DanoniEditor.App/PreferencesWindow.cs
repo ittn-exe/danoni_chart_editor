@@ -40,12 +40,23 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _cursorHighlightWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _cursorHighlightColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _cursorHighlightPreview = MakePreview();
+    private readonly TextBox _macroRangeWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _macroRangeColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border _macroRangePreview = MakePreview();
+    private readonly TextBox _linkedNoteSizeRatio = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _linkedNoteColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border _linkedNotePreview = MakePreview();
+    private readonly TextBox _linkedHighlightWidthRatio = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _linkedHighlightHeight = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _linkedHighlightColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border _linkedHighlightPreview = MakePreview();
 
     // --- テスト再生 > 全般: ノート音として鳴らす./sounds内の音声ファイル選択 ---
     private readonly ComboBox _noteSoundFile = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 目視テスト ---
     private readonly ComboBox _followMode = new() { Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _visualTestAcceptNotes = new() { Content = "ノート配置受付(ONの間、キー配置をプレイテスト用に切り替えて配置できます)" };
 
     // --- プレイテスト ---
     private readonly CheckBox _ptReverse = new() { Content = "Reverse(スクロール反転)" };
@@ -285,6 +296,33 @@ internal sealed class PreferencesWindow : Window
         _cursorHighlightColor.TextChanged += (_, _) => _cursorHighlightPreview.Background = SafeBrush(_cursorHighlightColor.Text);
         _cursorHighlightColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _cursorHighlightColor.Text);
 
+        p.Children.Add(Label("マクロ範囲マーカー(レーン入替マクロの選択範囲)", section: true));
+        p.Children.Add(Label("マーカー線の太さ(px):"));
+        p.Children.Add(_macroRangeWidth);
+        p.Children.Add(Label("マーカー線・ハイライト帯の色(#RRGGBB):"));
+        p.Children.Add(ColorFieldRow(_macroRangeColor));
+        p.Children.Add(_macroRangePreview);
+        _macroRangeColor.TextChanged += (_, _) => _macroRangePreview.Background = SafeBrush(_macroRangeColor.Text);
+        _macroRangeColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _macroRangeColor.Text);
+
+        p.Children.Add(Label("タブリンクの背景ノート(右パネル「リンク」タブ)", section: true));
+        p.Children.Add(Label("ノートのサイズ比率(1.0=通常サイズ、既定0.85=-15%):"));
+        p.Children.Add(_linkedNoteSizeRatio);
+        p.Children.Add(Label("ノートの色(#RRGGBB):"));
+        p.Children.Add(ColorFieldRow(_linkedNoteColor));
+        p.Children.Add(_linkedNotePreview);
+        _linkedNoteColor.TextChanged += (_, _) => _linkedNotePreview.Background = SafeBrush(_linkedNoteColor.Text);
+        _linkedNoteColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _linkedNoteColor.Text);
+        p.Children.Add(Label("強調表示バーの幅比率(レーン幅に対する倍率、既定0.5=50%):"));
+        p.Children.Add(_linkedHighlightWidthRatio);
+        p.Children.Add(Label("強調表示バーの高さ(px):"));
+        p.Children.Add(_linkedHighlightHeight);
+        p.Children.Add(Label("強調表示バーの色(#RRGGBB):"));
+        p.Children.Add(ColorFieldRow(_linkedHighlightColor));
+        p.Children.Add(_linkedHighlightPreview);
+        _linkedHighlightColor.TextChanged += (_, _) => _linkedHighlightPreview.Background = SafeBrush(_linkedHighlightColor.Text);
+        _linkedHighlightColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _linkedHighlightColor.Text);
+
         p.Children.Add(Label("マーカーのコメント表示(仕様書7.4)", section: true));
         _markerFull.Margin = new Thickness(0, 0, 0, 2);
         _markerHead.Margin = new Thickness(0, 0, 0, 2);
@@ -333,6 +371,8 @@ internal sealed class PreferencesWindow : Window
         _followMode.Items.Add("ページ送り(画面外に出たら次の1画面へ)");
         _followMode.Items.Add("スムーズスクロール(ライン位置固定で譜面が流れる)");
         p.Children.Add(_followMode);
+        _visualTestAcceptNotes.Margin = new Thickness(0, 8, 0, 0);
+        p.Children.Add(_visualTestAcceptNotes);
 
         p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
 
@@ -394,7 +434,8 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_ptQuitEscape);
 
         p.Children.Add(Label("起動時ウェイト(ms単位)", section: true));
-        p.Children.Add(Label("プレイテスト画面表示後、この時間だけ待ってから再生を開始する(0=待たない):"));
+        p.Children.Add(Label("再生開始ラインより指定時間だけ手前から再生を始める、いわゆるリードイン(0=無し)。" +
+            "この区間にあるノート/フリーズは判定対象外(再生開始ラインから始まる譜面として扱う):"));
         p.Children.Add(_ptStartupWaitMs);
 
         p.Children.Add(Label("キー種ごとのReverse既定値", section: true));
@@ -806,9 +847,20 @@ internal sealed class PreferencesWindow : Window
         _cursorHighlightWidth.Text = s.CursorHighlightWidth.ToString(CultureInfo.InvariantCulture);
         _cursorHighlightColor.Text = s.CursorHighlightColorHex;
         _cursorHighlightPreview.Background = SafeBrush(s.CursorHighlightColorHex);
+        _macroRangeWidth.Text = s.MacroRangeMarkerWidth.ToString(CultureInfo.InvariantCulture);
+        _macroRangeColor.Text = s.MacroRangeHighlightColorHex;
+        _macroRangePreview.Background = SafeBrush(s.MacroRangeHighlightColorHex);
+        _linkedNoteSizeRatio.Text = s.LinkedNoteSizeRatio.ToString(CultureInfo.InvariantCulture);
+        _linkedNoteColor.Text = s.LinkedNoteColorHex;
+        _linkedNotePreview.Background = SafeBrush(s.LinkedNoteColorHex);
+        _linkedHighlightWidthRatio.Text = s.LinkedHighlightWidthRatio.ToString(CultureInfo.InvariantCulture);
+        _linkedHighlightHeight.Text = s.LinkedHighlightHeight.ToString(CultureInfo.InvariantCulture);
+        _linkedHighlightColor.Text = s.LinkedHighlightColorHex;
+        _linkedHighlightPreview.Background = SafeBrush(s.LinkedHighlightColorHex);
         if (_noteSoundFile.Items.Contains(s.NoteSoundFileName)) _noteSoundFile.SelectedItem = s.NoteSoundFileName;
         else if (_noteSoundFile.Items.Count > 0) _noteSoundFile.SelectedIndex = 0;
         _followMode.SelectedIndex = s.VisualTestFollowMode == "smooth" ? 1 : 0;
+        _visualTestAcceptNotes.IsChecked = s.VisualTestAcceptNoteInput;
         _ptReverse.IsChecked = s.PlaytestReverse;
         _ptHiSpeed.SelectedItem = _ptHiSpeed.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestHiSpeed)).First();
         _ptOffset.Text = s.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
@@ -893,6 +945,20 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "カーソルライン(強調帯)の太さは正の数値で入力してくださいまし"; return false; }
         if (!TryColor(_cursorHighlightColor.Text))
         { _error.Text = "カーソルライン(強調帯)の色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        if (!TryPositive(_macroRangeWidth.Text, out var mrw))
+        { _error.Text = "マクロ範囲マーカーの太さは正の数値で入力してくださいまし"; return false; }
+        if (!TryColor(_macroRangeColor.Text))
+        { _error.Text = "マクロ範囲マーカーの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        if (!TryPositive(_linkedNoteSizeRatio.Text, out var lnsr))
+        { _error.Text = "タブリンク背景ノートのサイズ比率は正の数値で入力してくださいまし"; return false; }
+        if (!TryColor(_linkedNoteColor.Text))
+        { _error.Text = "タブリンク背景ノートの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        if (!TryPositive(_linkedHighlightWidthRatio.Text, out var lhwr))
+        { _error.Text = "タブリンク強調表示バーの幅比率は正の数値で入力してくださいまし"; return false; }
+        if (!TryPositive(_linkedHighlightHeight.Text, out var lhh))
+        { _error.Text = "タブリンク強調表示バーの高さは正の数値で入力してくださいまし"; return false; }
+        if (!TryColor(_linkedHighlightColor.Text))
+        { _error.Text = "タブリンク強調表示バーの色は #RRGGBB 形式で入力してくださいまし"; return false; }
         if (!double.TryParse(_ptOffset.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var ofs))
         { _error.Text = "調整オフセットは数値で入力してくださいまし"; return false; }
         if (!TryPositive(_ptWidthPx.Text, out var ptWidthPx))
@@ -935,8 +1001,16 @@ internal sealed class PreferencesWindow : Window
         _work.CursorLineColorHex = _cursorLineColor.Text;
         _work.CursorHighlightWidth = chw;
         _work.CursorHighlightColorHex = _cursorHighlightColor.Text;
+        _work.MacroRangeMarkerWidth = mrw;
+        _work.MacroRangeHighlightColorHex = _macroRangeColor.Text;
+        _work.LinkedNoteSizeRatio = lnsr;
+        _work.LinkedNoteColorHex = _linkedNoteColor.Text;
+        _work.LinkedHighlightWidthRatio = lhwr;
+        _work.LinkedHighlightHeight = lhh;
+        _work.LinkedHighlightColorHex = _linkedHighlightColor.Text;
         if (_noteSoundFile.Items.Count > 0 && _noteSoundFile.SelectedItem is string ns) _work.NoteSoundFileName = ns;
         _work.VisualTestFollowMode = _followMode.SelectedIndex == 1 ? "smooth" : "page";
+        _work.VisualTestAcceptNoteInput = _visualTestAcceptNotes.IsChecked == true;
         _work.PlaytestReverse = _ptReverse.IsChecked == true;
         if (_ptHiSpeed.SelectedItem is double hs) _work.PlaytestHiSpeed = hs;
         _work.PlaytestOffsetFrames = ofs;

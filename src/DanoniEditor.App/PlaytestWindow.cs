@@ -97,6 +97,13 @@ internal sealed class PlaytestWindow : Window
     private readonly double _playbackSpeed;
     private readonly double _volume;
     private readonly int _startupWaitMs;
+
+    /// <summary>2026-07-26g要望対応: 起動時ウェイトの仕様変更。旧仕様は「再生開始ラインの位置で一時停止
+    /// してからウェイト後に再生開始」だったが、新仕様は「再生開始ラインからウェイト分だけ手前の位置から
+    /// 連続再生を始める(=ノーツ側は再生開始ラインから始まる譜面として扱い、ウェイト区間はリードイン)」。
+    /// この値が実際に_player.Positionへ設定する開始フレーム(_startFrameからウェイト分だけ手前、0未満には
+    /// ならない)。</summary>
+    private double PlayStartFrame => Math.Max(0, _startFrame - _startupWaitMs * 60.0 / 1000.0);
     private readonly int _patternIndex; // 2026-07-26e: 採用中のキーパターン番号(0=既定)
     private bool _closed;
     private double _currentFrame;
@@ -159,6 +166,9 @@ internal sealed class PlaytestWindow : Window
     {
         _doc = doc;
         _appSettings = appSettings;
+        // 2026-07-26: プレイテスト中は日本語入力ON状態だと判定キー等がIME変換確定操作に
+        // 奪われてしまうため、ウィンドウ全体でIMEを無効化する(譜面ビューと同様の対応)。
+        InputMethod.SetIsInputMethodEnabled(this, false);
         // 2026-07-26e: キー種ごとの採用キーパターン(環境設定「プレイテスト」)を反映する。
         // エディタ本体の譜面ビューはdoc.CurrentTemplate(パターン0)をそのまま使い続けており、
         // プレイテストのみここでKeyTemplate.WithPatternにより見た目・キー入力を差し替える。
@@ -205,11 +215,14 @@ internal sealed class PlaytestWindow : Window
             .OrderBy(b => b.Frame)
             .ToList();
 
+        // 2026-07-26g要望対応: 「再生開始ラインから始まる譜面を遊ぶ」形式。再生開始ライン(_startFrame)
+        // より手前のノート/フリーズは判定対象から除外する(存在しないものとして扱う)。
         _engine = new PlaytestEngine(
             doc.CurrentTab,
             timing,
             doc.Project.FrzAttempt,
-            offsetFrames);
+            offsetFrames,
+            minFrame: startFrame);
         _engine.Judged += OnJudged;
 
         // ノート音。環境設定でONの場合のみ選択中の音声ファイル(./sounds内)を読み込み、
@@ -385,18 +398,13 @@ internal sealed class PlaytestWindow : Window
             return;
         }
 
-        _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
+        // 2026-07-26g要望対応: 起動時ウェイトの仕様変更。旧来のTask.Delayによる一時停止ではなく、
+        // 再生開始ラインからウェイト分だけ手前(PlayStartFrame)から連続再生を始める(リードイン方式)。
+        // ノート側は_engine構築時にminFrame指定で再生開始ライン未満を除外済みのため、この区間には
+        // 判定対象のノートが一切存在しない(存在しないものとして扱う、要望通り)。
+        _player.Position = TimeSpan.FromSeconds(PlayStartFrame / 60.0);
         _player.SpeedRatio = _playbackSpeed; // 2026-07-23: 再生速度スライダー(ピッチ補正は行わない)
         _player.Volume = _volume; // 2026-07-21: UIの音量設定をプレイテストにも反映
-
-        // 2026-07-26d: プレイテスト起動時ウェイト(環境設定>プレイテスト、ms単位)。
-        // ウィンドウ表示直後の初回起動時に適用(BackSpaceによるやり直し時はRestartFromStartFrame側で同様に適用)。
-        if (_startupWaitMs > 0)
-        {
-            try { await Task.Delay(_startupWaitMs); }
-            catch { /* ウィンドウが閉じられた場合等は再生開始をスキップ */ }
-            if (_closed) return;
-        }
 
         _player.Play();
         if (!_renderingSubscribed) { CompositionTarget.Rendering += Timer_Tick; _renderingSubscribed = true; }
@@ -407,10 +415,9 @@ internal sealed class PlaytestWindow : Window
 
     /// <summary>再生開始フレームからのやり直し(2026-07-26d要望対応、プレイテスト中のBackSpace)。
     /// 判定エンジン・オートプレイカーソル・ステップヒット演出・判定表示・押下中キー・ハンドクラップの
-    /// カーソルを全てリセットし、音楽位置を_startFrameへ戻す。起動時ウェイト(環境設定>プレイテスト、
-    /// ms単位)が設定されている場合は、初回起動時と同様にこのやり直しにも適用する(2026-07-26要望対応、
-    /// 従来は初回起動時のみ適用していた)。</summary>
-    private async void RestartFromStartFrame()
+    /// カーソルを全てリセットし、音楽位置をPlayStartFrame(再生開始ラインからウェイト分だけ手前)へ戻す
+    /// (2026-07-26g要望対応: 起動時ウェイトの仕様変更、StartPlayback参照)。</summary>
+    private void RestartFromStartFrame()
     {
         if (_restarting) return;
         _restarting = true;
@@ -428,20 +435,11 @@ internal sealed class PlaytestWindow : Window
             _freezeComboText = "";
             NotesClearedByKeypress = 0;
 
-            _currentFrame = _startFrame;
+            _currentFrame = PlayStartFrame;
             // 2026-07-26f: Position設定時に_player内部でクラップの発音カーソルも自動的に巻き戻される
             // (NAudioBgmPlayer.RecomputeClapCursorLocked)ため、ここで別途リセットする必要は無い。
-            _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
-            _player.Stop(); // ウェイト中は再生させない(待機無しの場合は直後にPlay()するだけなので実質即時)
+            _player.Position = TimeSpan.FromSeconds(PlayStartFrame / 60.0);
             _surface.InvalidateVisual();
-
-            if (_startupWaitMs > 0)
-            {
-                try { await Task.Delay(_startupWaitMs); }
-                catch { /* ウィンドウが閉じられた場合等は再生開始をスキップ */ }
-                if (_closed) return;
-            }
-
             _player.Play(); // 既に再生中でも安全(再入可能)
         }
         finally

@@ -264,6 +264,42 @@ public sealed class ChartCanvas : FrameworkElement
         InvalidateVisual();
     }
 
+    /// <summary>マクロ範囲マーカー・ハイライト帯の太さ・色(2026-07-26要望対応、AppSettingsから適用)</summary>
+    public double MacroRangeMarkerWidth { get; set; } = 2.0;
+
+    /// <summary>マクロ範囲マーカー・ハイライト帯の色(同上)</summary>
+    public Color MacroRangeHighlightColor { get; set; } = Color.FromRgb(0xFF, 0xA5, 0x00);
+
+    /// <summary>マクロ範囲マーカーの表示設定を適用して再描画する(2026-07-26)</summary>
+    public void ApplyMacroRangeHighlightSettings(double width, Color color)
+    {
+        MacroRangeMarkerWidth = width;
+        MacroRangeHighlightColor = color;
+        InvalidateVisual();
+    }
+
+    // =====================================================================
+    // タブリンク機能(2026-07-26要望対応、AppSettingsから適用)
+    // =====================================================================
+
+    public double LinkedNoteSizeRatio { get; set; } = 0.85;
+    public Color LinkedNoteColor { get; set; } = Color.FromRgb(0x99, 0x99, 0x99);
+    public double LinkedHighlightWidthRatio { get; set; } = 0.5;
+    public double LinkedHighlightHeight { get; set; } = 2.0;
+    public Color LinkedHighlightColor { get; set; } = Color.FromRgb(0x99, 0x99, 0x99);
+
+    /// <summary>タブリンク機能の背景ノート表示設定を適用して再描画する(2026-07-26)</summary>
+    public void ApplyLinkedBackgroundSettings(double noteSizeRatio, Color noteColor,
+        double highlightWidthRatio, double highlightHeight, Color highlightColor)
+    {
+        LinkedNoteSizeRatio = noteSizeRatio;
+        LinkedNoteColor = noteColor;
+        LinkedHighlightWidthRatio = highlightWidthRatio;
+        LinkedHighlightHeight = highlightHeight;
+        LinkedHighlightColor = highlightColor;
+        InvalidateVisual();
+    }
+
     // =====================================================================
     // 波形表示+StartNumber編集モード(2026-07-18、要望メモ07-15項目7・8)
     // =====================================================================
@@ -390,6 +426,117 @@ public sealed class ChartCanvas : FrameworkElement
         e.Handled = true;
     }
 
+    // =====================================================================
+    // レーン入替マクロ「選択範囲内のみ適用」の範囲選択モード(2026-07-26要望対応)
+    // =====================================================================
+
+    /// <summary>範囲選択モード。ON中は通常編集を無効化する(StartNumber編集モードと同様の排他制御)。
+    /// マーカーの無い状態からのドラッグは「始点〜終点を1回のドラッグで指定」する新規範囲作成となり
+    /// (2026-07-27要望対応、以前の「クリックで始点→もう一度クリックで終点」の2ステップ方式は廃止)、
+    /// 既存マーカー付近を掴んでのドラッグは、その端点(始点/終点)だけを個別に移動する。</summary>
+    public bool RangeSelectMode { get; set; }
+
+    /// <summary>範囲マーカーの設置/ドラッグ移動があった後に発火。MainWindowが右パネルの
+    /// 範囲表示の更新に使う。</summary>
+    public event Action? MacroRangeChanged;
+
+    // --- 範囲マーカードラッグ状態 ---
+    private int _rsDraggingWhich; // 0=なし、1=始点、2=終点
+    private const double RangeMarkerHitToleranceY = 10.0;
+
+    /// <summary>新規範囲をドラッグ中か(2026-07-27要望対応)。ドラッグ開始位置を_rsCreateAnchorTickに
+    /// 固定し、ドラッグ中のY座標との間で常にMin/Maxを取って始点/終点を更新する(上下どちらへ
+    /// ドラッグしても正しい範囲になる)。</summary>
+    private bool _rsCreatingNewRange;
+    private long _rsCreateAnchorTick;
+
+    private void RsDown(MouseButtonEventArgs e)
+    {
+        if (Document is null) return;
+        Focus();
+        var tab = Document.CurrentTab;
+        double y = e.GetPosition(this).Y;
+        var layout = Document.CurrentLayout;
+
+        // 既存マーカーへのヒット判定(端点個別ドラッグ)を優先する
+        int hitWhich = 0;
+        double bestDist = RangeMarkerHitToleranceY;
+        if (tab.MacroRangeStartTick is { } st)
+        {
+            double d = Math.Abs(layout.TickToY(st) - y);
+            if (d <= bestDist) { bestDist = d; hitWhich = 1; }
+        }
+        if (tab.MacroRangeEndTick is { } et)
+        {
+            double d = Math.Abs(layout.TickToY(et) - y);
+            if (d <= bestDist) { bestDist = d; hitWhich = 2; }
+        }
+
+        if (hitWhich != 0)
+        {
+            CaptureMouse();
+            _rsDraggingWhich = hitWhich;
+            e.Handled = true;
+            return;
+        }
+
+        // 2026-07-27要望対応: マーカー以外の場所からのドラッグは新規範囲作成
+        // (ドラッグ1回で始点〜終点を一気に指定する)。
+        long anchorTick = Math.Max(0, Document.Snap.Snap(layout.YToTick(y)));
+        CaptureMouse();
+        _rsCreatingNewRange = true;
+        _rsCreateAnchorTick = anchorTick;
+        tab.MacroRangeStartTick = anchorTick;
+        tab.MacroRangeEndTick = anchorTick;
+        Document.NotifyChanged();
+        MacroRangeChanged?.Invoke();
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    private void RsMove(MouseEventArgs e)
+    {
+        if (Document is null) return;
+        var layout = Document.CurrentLayout;
+        var tab = Document.CurrentTab;
+        long tick = Math.Max(0, Document.Snap.Snap(layout.YToTick(e.GetPosition(this).Y)));
+
+        if (_rsCreatingNewRange)
+        {
+            tab.MacroRangeStartTick = Math.Min(_rsCreateAnchorTick, tick);
+            tab.MacroRangeEndTick = Math.Max(_rsCreateAnchorTick, tick);
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+        if (_rsDraggingWhich == 0) return;
+        if (_rsDraggingWhich == 1) tab.MacroRangeStartTick = tick;
+        else tab.MacroRangeEndTick = tick;
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    private void RsUp(MouseButtonEventArgs e)
+    {
+        if (_rsCreatingNewRange)
+        {
+            _rsCreatingNewRange = false;
+            ReleaseMouseCapture();
+            Document?.NotifyChanged();
+            MacroRangeChanged?.Invoke();
+            e.Handled = true;
+            return;
+        }
+
+        if (_rsDraggingWhich == 0) return;
+        _rsDraggingWhich = 0;
+        ReleaseMouseCapture();
+        Document?.NotifyChanged();
+        MacroRangeChanged?.Invoke();
+        e.Handled = true;
+    }
+
     public void UpdateViewport(Rect rect)
     {
         ViewportRect = rect;
@@ -428,6 +575,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
+        if (RangeSelectMode) { RsDown(e); return; } // 2026-07-26: マクロ範囲選択モード(通常編集無効)
         if (StartNumberEditMode) { SnDown(e); return; } // 2026-07-18: 専用モード(通常編集無効)
         if (Controller is null) return;
         Focus();
@@ -450,6 +598,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseRightButtonDown(e);
+        if (RangeSelectMode) { e.Handled = true; return; } // 2026-07-26: マクロ範囲選択モード中は右クリック編集も無効
         if (StartNumberEditMode) { e.Handled = true; return; } // モード中は右クリック編集も無効(2026-07-18)
         if (Controller is null) return;
         Focus();
@@ -463,6 +612,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
+        if (RangeSelectMode) return; // 2026-07-26: マクロ範囲選択モード中は中ボタン配置も無効
         if (StartNumberEditMode) return; // モード中は中ボタン配置も無効(2026-07-18)
         if (e.ChangedButton != MouseButton.Middle || Controller is null) return;
         Focus();
@@ -477,6 +627,7 @@ public sealed class ChartCanvas : FrameworkElement
         // 2026-07-25: カーソルライン(最寄りスナップ位置の可視化)のため、ボタン押下の有無に関わらず
         // 常にホバー座標を更新して再描画する(以前はドラッグ中=IsMouseCaptured時のみ再描画していた)。
         _hoverPos = e.GetPosition(this);
+        if (RangeSelectMode) { RsMove(e); return; }
         if (StartNumberEditMode) { SnMove(e); return; }
         if (Controller is null) { InvalidateVisual(); return; }
         if (IsMouseCaptured) Controller.Move(PosOf(e.GetPosition(this)));
@@ -494,6 +645,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e);
+        if (RangeSelectMode) { RsUp(e); return; }
         if (StartNumberEditMode) { SnUp(e); return; }
         if (Controller is null) return;
         // 2026-07-26: Ctrl+ドラッグ=複製の判定はボタンを離した瞬間のCtrl状態で行うため、
@@ -675,6 +827,7 @@ public sealed class ChartCanvas : FrameworkElement
         DrawColumnBackgrounds(dc, layout, yTop, yBottom);
         DrawColumnSeparators(dc, layout, yTop, yBottom);
         DrawGridAndMeasureLines(dc, layout, engine, Document.Snap, tickMin, tickMax);
+        DrawLinkedBackgroundNotes(dc, layout, tab, tickMin, tickMax); // 2026-07-26: タブリンクの背景ノート(本体より奥)
         DrawNotesAndFreezes(dc, layout, tab, project, tickMin, tickMax);
         DrawValueEvents(dc, layout, tab, project, tickMin, tickMax);
         DrawMarkers(dc, layout, project, tickMin, tickMax);
@@ -685,6 +838,7 @@ public sealed class ChartCanvas : FrameworkElement
         DrawDragPreview(dc, layout, tab, project);
         DrawPlaybackLine(dc, layout, tickMin, tickMax);
         DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
+        DrawMacroRangeHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-26: レーン入替マクロの範囲選択
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
         DrawLaneLabels(dc, layout, viewport); // 2026-07-22: レーンラベル(常に最前面)
@@ -960,6 +1114,62 @@ public sealed class ChartCanvas : FrameworkElement
     {
         double size = Math.Max(10, noteSize * 0.55);
         dc.DrawImage(WarningIcon, new Rect(cx, y - size, size, size));
+    }
+
+    /// <summary>タブリンク機能(2026-07-26要望対応)。リンク中の相手タブ(非アクティブタブ)のノート・
+    /// フリーズを、本体のノート描画より奥に、固定色・縮小サイズで簡易表示する。2026-07-26b要望対応:
+    /// ノートは(ベクター丸ではなく)各レーンのノート画像をLinkedNoteColorで着色して表示し
+    /// (画像素材が無いレーンは従来通りベクターフォールバック)、フリーズは端点の画像表示に加えて
+    /// 帯(胴体)も同じ色で半透明表示する。非アクティブタブの色設定(ncolor_data等)は一切反映せず、
+    /// AppSettings由来の固定色で統一する(ユーザー確定仕様)。この描画はDrawingContextへの直接描画のみで、
+    /// HitTest/Controller側のデータ構造には一切登録しないため、クリック・ドラッグ等の編集操作の
+    /// 対象には絶対にならない。</summary>
+    private void DrawLinkedBackgroundNotes(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
+    {
+        if (Document is null || tab.LinkedTabId is not { } linkedId) return;
+        var partner = Document.Project.Tabs.FirstOrDefault(t => t.TabId == linkedId);
+        if (partner is null) return;
+
+        double noteSize = layout.NoteSize * LinkedNoteSizeRatio;
+        var noteBrush = Freeze(new SolidColorBrush(LinkedNoteColor));
+        var highlightBrush = Freeze(new SolidColorBrush(LinkedHighlightColor));
+        var bandBrush = Freeze(new SolidColorBrush(LinkedNoteColor) { Opacity = 0.5 });
+
+        int laneCount = Math.Min(tab.Lanes.Count, partner.Lanes.Count);
+        for (int i = 0; i < laneCount; i++)
+        {
+            var col = layout.NoteColumn(i);
+            var laneDef = layout.Template.Lanes[i];
+            var image = GetNoteImage(laneDef.NoteGraphic); // ./img/{noteGraphic}.png、無ければベクターフォールバック
+            double cx = col.CenterX;
+            double hw = col.Width * LinkedHighlightWidthRatio;
+
+            void DrawMark(long tick)
+            {
+                if (tick < tickMin || tick > tickMax) return;
+                double y = layout.TickToY(tick);
+                dc.DrawRectangle(highlightBrush, null, new Rect(cx - hw / 2, y - LinkedHighlightHeight / 2, hw, LinkedHighlightHeight));
+                if (image is not null)
+                    DrawNoteImage(dc, image, laneDef, cx, y, noteSize, LinkedNoteColor);
+                else
+                    dc.DrawEllipse(noteBrush, null, new Point(cx, y), noteSize / 2, noteSize / 2);
+            }
+
+            foreach (var t in partner.Lanes[i].Notes) DrawMark(t);
+
+            foreach (var f in partner.Lanes[i].Freezes)
+            {
+                if (f.EndTick < tickMin || f.StartTick > tickMax) continue;
+                double y1 = layout.TickToY(f.StartTick), y2 = layout.TickToY(f.EndTick);
+                // 2026-07-26d要望対応: 帯の横幅は「強調表示の幅比率」ではなく「ノートのサイズ比率」
+                // (LinkedNoteSizeRatio、noteSizeに反映済み)に従う。本体側の帯幅(half/2、halfはノートサイズの半分)
+                // と同じ比率関係を保つ(noteSize/2 = 本体のhalfに相当、その半分が帯幅)。
+                double bandWidth = noteSize / 2;
+                dc.DrawRectangle(bandBrush, null, new Rect(cx - bandWidth / 2, Math.Min(y1, y2), bandWidth, Math.Abs(y2 - y1)));
+                DrawMark(f.StartTick);
+                DrawMark(f.EndTick);
+            }
+        }
     }
 
     private void DrawNotesAndFreezes(DrawingContext dc, ChartLayout layout, DifficultyTab tab, ChartProject project, long tickMin, long tickMax)
@@ -1758,6 +1968,38 @@ public sealed class ChartCanvas : FrameworkElement
         var pen = new Pen(Freeze(new SolidColorBrush(PlaybackStartLineColor)), PlaybackStartLineWidth);
         pen.Freeze();
         dc.DrawLine(pen, new Point(left, y), new Point(right, y));
+    }
+
+    /// <summary>レーン入替マクロ「選択範囲内のみ適用」の範囲マーカー・ハイライト帯(2026-07-26要望対応)。
+    /// 始点/終点それぞれのマーカー線は設置済みなら単独でも表示し(範囲選択モード中に片方だけ
+    /// 置いた状態が視認できるように)、両方設置済みの場合はその間を半透明の帯で塗る
+    /// (DrawPlaybackStartLine/CursorHighlight帯の描画パターンを踏襲)。</summary>
+    private void DrawMacroRangeHighlight(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
+    {
+        if (tab.MacroRangeStartTick is null && tab.MacroRangeEndTick is null) return;
+        double left = layout.Columns[0].X;
+        double right = layout.Columns[^1].X + layout.Columns[^1].Width;
+
+        if (tab.MacroRangeStartTick is { } st && tab.MacroRangeEndTick is { } et)
+        {
+            double loTick = Math.Min(st, et), hiTick = Math.Max(st, et);
+            if (!(hiTick < tickMin || loTick > tickMax))
+            {
+                double y0 = layout.TickToY(loTick), y1 = layout.TickToY(hiTick);
+                var fillColor = Color.FromArgb(0x40, MacroRangeHighlightColor.R, MacroRangeHighlightColor.G, MacroRangeHighlightColor.B);
+                var rect = new Rect(left, Math.Min(y0, y1), right - left, Math.Abs(y1 - y0));
+                dc.DrawRectangle(Freeze(new SolidColorBrush(fillColor)), null, rect);
+            }
+        }
+
+        var markerPen = new Pen(Freeze(new SolidColorBrush(MacroRangeHighlightColor)), MacroRangeMarkerWidth);
+        markerPen.Freeze();
+        foreach (var tick in new[] { tab.MacroRangeStartTick, tab.MacroRangeEndTick })
+        {
+            if (tick is not { } t || t < tickMin || t > tickMax) continue;
+            double y = layout.TickToY(t);
+            dc.DrawLine(markerPen, new Point(left, y), new Point(right, y));
+        }
     }
 
     private void DrawPlaybackLine(DrawingContext dc, ChartLayout layout, long tickMin, long tickMax)

@@ -36,7 +36,7 @@ internal sealed class MacroEditorWindow : Window
     /// <summary>保存に成功した場合の結果(呼び出し元がAppSettings.Macrosへ反映する用)</summary>
     public LaneSwapMacro? SavedMacro { get; private set; }
 
-    public MacroEditorWindow(TemplateRepository templates, LaneSwapMacro? existing, IReadOnlyCollection<string> existingNames)
+    public MacroEditorWindow(TemplateRepository templates, LaneSwapMacro? existing, IReadOnlyCollection<string> existingNames, string? initialKeyTypeId = null)
     {
         _templates = templates;
         _originalMacroId = existing?.MacroId;
@@ -110,6 +110,12 @@ internal sealed class MacroEditorWindow : Window
             _macroNameBox.Text = existing.MacroName;
             _keyTypeCombo.SelectedItem = existing.TargetKeyTypeId; // SelectionChangedが一旦走る(確認抑制中)
             LoadTemplateForSelection(resetMapping: false, presetMapping: existing.LaneMapping); // ここで正しい並びに上書き
+        }
+        else if (initialKeyTypeId is not null && _keyTypeCombo.Items.Contains(initialKeyTypeId))
+        {
+            // 2026-07-26要望対応: 新規作成時はカレント難易度タブのキー種を初期選択しておく
+            // (別のキー種を編集したい場合はここから選び直せる)
+            _keyTypeCombo.SelectedItem = initialKeyTypeId;
         }
         else if (_keyTypeCombo.Items.Count > 0)
         {

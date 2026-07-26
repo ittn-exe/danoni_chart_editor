@@ -39,6 +39,11 @@ public sealed class AppSettings
     /// "smooth"=(B)スムーズスクロール: ラインを画面上の固定位置に据えて譜面側を流す。</summary>
     public string VisualTestFollowMode { get; set; } = "page";
 
+    /// <summary>キーボードモード目視テスト中の「ノート配置受付」(2026-07-26要望対応)。既定OFF。
+    /// ONの間は目視テスト中のノート入力キー配置をプレイテスト用(KeyAssign)に切り替え、キー押下時点の
+    /// 再生位置(スナップ後)へノートをトグル配置する(通常の編集操作としてUndo履歴に積む)。</summary>
+    public bool VisualTestAcceptNoteInput { get; set; } = false;
+
     /// <summary>再生開始フレーム可視化ラインの太さ(px)(2026-07-17f、未解決事項§2-2)。</summary>
     public double PlaybackStartLineWidth { get; set; } = 2.0;
 
@@ -62,6 +67,40 @@ public sealed class AppSettings
 
     /// <summary>カーソル強調帯の色(6桁カラーコード)。</summary>
     public string CursorHighlightColorHex { get; set; } = "#00E5FF";
+
+    /// <summary>レーン入替マクロ「選択範囲内のみ適用」の範囲マーカー・ハイライト帯の色
+    /// (6桁カラーコード、2026-07-26要望対応)。始点/終点マーカーの線と、その間のハイライト帯を
+    /// 同じ色で描画する(帯は半透明、線は不透明)。</summary>
+    public string MacroRangeHighlightColorHex { get; set; } = "#FFA500";
+
+    /// <summary>マクロ範囲マーカー(始点/終点)の線の太さ(px)。</summary>
+    public double MacroRangeMarkerWidth { get; set; } = 2.0;
+
+    // =====================================================================
+    // タブリンク機能(2026-07-26要望対応): 同キー種タブ同士をリンクし、アクティブタブの背景に
+    // 非アクティブタブ(リンク相手)のノートを薄く表示する(DAW的な参照表示、編集対象にはならない)。
+    // =====================================================================
+
+    /// <summary>背景ノートのサイズ比率(通常ノートサイズに対する倍率)。既定0.85(=-15%)。</summary>
+    public double LinkedNoteSizeRatio { get; set; } = 0.85;
+
+    /// <summary>背景ノートの色(6桁カラーコード)。非アクティブタブの実際の色設定は反映せず、この色で
+    /// 統一して表示する(ユーザー確定仕様)。</summary>
+    public string LinkedNoteColorHex { get; set; } = "#999999";
+
+    /// <summary>背景ノートの強調表示(バー)の幅比率(レーン幅に対する倍率)。既定0.5(=50%)。</summary>
+    public double LinkedHighlightWidthRatio { get; set; } = 0.5;
+
+    /// <summary>背景ノートの強調表示(バー)の高さ(px)。既定2.0。</summary>
+    public double LinkedHighlightHeight { get; set; } = 2.0;
+
+    /// <summary>背景ノートの強調表示(バー)の色(6桁カラーコード)。</summary>
+    public string LinkedHighlightColorHex { get; set; } = "#999999";
+
+    /// <summary>譜面ビュー分割表示(2026-07-26要望対応、第三者提案)。ONの間、譜面ビューを左右に分割し、
+    /// 同じ難易度タブを両方に表示する(独立スクロール、どちらでも編集可)。既定OFF、エディタ全体で
+    /// 共通の設定(タブごとには持たない)。</summary>
+    public bool SplitViewEnabled { get; set; } = false;
 
     /// <summary>プレイテスト: Reverse(スクロール反転)ON/OFF(2026-07-17g)。
     /// 難易度タブ切替時にPlaytestReverseByKeyTypeの値で自動上書きされる(2026-07-26)。</summary>
@@ -317,8 +356,9 @@ public sealed class AppSettings
     /// <summary>色コード使用履歴(新しい順)</summary>
     public List<string> ColorHistory { get; set; } = [];
 
-    // 2026-07-26: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した
-    // swap_macro.json(同じ./settingsフォルダ内)で管理する。LaneSwapMacroFile.Load/Save参照。
+    // 2026-07-26: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した、
+    // キー種ごとの s-macro_キー種.json(同じ./settingsフォルダ内)で管理する(2026-07-26g)。
+    // LaneSwapMacroFile.LoadAll/SaveAll参照。
 
     // =====================================================================
     // 統計情報(2026-07-26、環境設定 > 統計情報で閲覧のみ可能)。
