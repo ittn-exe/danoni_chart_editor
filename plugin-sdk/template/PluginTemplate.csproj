@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- このプロジェクトをコピー&リネームするだけでプラグイン開発を始められます。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- HintPathは「このcsprojから見た、DanoniEditor.PluginContracts.dllの場所」です。
+         plugin-sdkフォルダをそのままの階層でお使いの場合はこのままで参照できます。
+         別の場所へ移動した場合はパスを書き換えてください。 -->
+    <Reference Include="DanoniEditor.PluginContracts">
+      <HintPath>..\DanoniEditor.PluginContracts.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- ビルドしたDLLを直接エディタのpluginsフォルダへ置きたい場合は、以下のコメントを外して
+       EDITOR_DIRを実際のエディタexeがあるフォルダへ書き換えてください(任意)。 -->
+  <!--
+  <PropertyGroup>
+    <EditorDir>C:\path\to\danoni_editor</EditorDir>
+  </PropertyGroup>
+  <Target Name="CopyToEditorPlugins" AfterTargets="Build" Condition="'$(EditorDir)' != ''">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(EditorDir)\plugins" SkipUnchangedFiles="true" />
+  </Target>
+  -->
+</Project>

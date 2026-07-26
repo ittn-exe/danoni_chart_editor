@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- 動作するサンプル(HandMovementSamplePlugin)のビルド用プロジェクトです。中のソースコードは
+         本体リポジトリのsrc/DanoniEditor.SamplePlugin配下と常に同じ内容に自動更新されます。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="DanoniEditor.PluginContracts">
+      <HintPath>..\DanoniEditor.PluginContracts.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

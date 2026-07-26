@@ -70,7 +70,10 @@ internal sealed class GaugeEditorWindow : Window
     };
 
     private readonly TabControl _tabGaugeTabs = new();
-    private readonly StackPanel _paramTablePanel = new();
+    /// <summary>2026-07-26追加: ②ゲージ別パラメータ表の左側固定列(ゲージ名)。横スクロールに追従させない。</summary>
+    private readonly StackPanel _paramNameColumnPanel = new();
+    /// <summary>2026-07-26追加: ②ゲージ別パラメータ表の右側(難易度タブごとの値)。ここだけ横スクロールする。</summary>
+    private readonly StackPanel _paramScrollPanel = new();
     private readonly Button _addParamButton = new() { Content = "ゲージ名を追加", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
 
     /// <summary>2026-07-26: ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。
@@ -140,15 +143,38 @@ internal sealed class GaugeEditorWindow : Window
         BuildTabGaugeTabs();
         outer.Children.Add(_tabGaugeTabs);
 
-        outer.Children.Add(SectionLabel("ゲージ別パラメータ (gaugeXXX、プロジェクト全体で共有)"));
+        var paramHeaderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 2) };
+        paramHeaderRow.Children.Add(new TextBlock { Text = "ゲージ別パラメータ (gaugeXXX、プロジェクト全体で共有)", FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center });
+        paramHeaderRow.Children.Add(new TextBlock
+        {
+            Text = "  各譜面ごとに設定可能、書式→ ノルマ,回復量,ダメージ(,初期値)",
+            Foreground = Brushes.Gray,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 0, 0, 0),
+        });
+        outer.Children.Add(paramHeaderRow);
+        outer.Children.Add(new TextBlock
+        {
+            Text = "※本体ゲージ(上のタブで「本体ゲージを上書きする」ON)の難易度は、この表では使われないため列を隠しています。",
+            Foreground = Brushes.Gray,
+            Margin = new Thickness(0, 0, 0, 4),
+        });
+
         RefreshParamTable();
+        var paramGrid = new Grid();
+        paramGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        paramGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(_paramNameColumnPanel, 0);
         var paramScroll = new ScrollViewer
         {
-            Content = _paramTablePanel,
+            Content = _paramScrollPanel,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        outer.Children.Add(paramScroll);
+        Grid.SetColumn(paramScroll, 1);
+        paramGrid.Children.Add(_paramNameColumnPanel);
+        paramGrid.Children.Add(paramScroll);
+        outer.Children.Add(paramGrid);
         _addParamButton.Click += (_, _) =>
         {
             _paramRows.Add(new ParamRowVm { GaugeName = "", PerTabCsv = Enumerable.Repeat("", _project.Tabs.Count).ToList() });
@@ -169,6 +195,16 @@ internal sealed class GaugeEditorWindow : Window
         _rawOverrideBox.Text = project.GaugeRawOverrideText ?? "";
         _rawOverrideBox.TextChanged += (_, _) => UpdateRawActiveState();
         outer.Children.Add(_rawOverrideBox);
+        var loadFromRawButton = new Button
+        {
+            Content = "この内容を読み取って上の各入力欄に反映する",
+            Width = 260,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 4, 0, 0),
+            ToolTip = "customGauge/gaugeXXXのヘッダー行を解析し、「譜面ごとのゲージ設定」と「ゲージ別パラメータ」を上書きします。このテキスト欄自体はクリアされません(直接入力が優先されたままになります)。",
+        };
+        loadFromRawButton.Click += LoadFromRawOverride_Click;
+        outer.Children.Add(loadFromRawButton);
 
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = outer };
         root.Children.Add(scroll);
@@ -208,7 +244,8 @@ internal sealed class GaugeEditorWindow : Window
         bool rawActive = !manualEdit && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
         _rawActiveNotice.Visibility = rawActive ? Visibility.Visible : Visibility.Collapsed;
         _tabGaugeTabs.IsEnabled = !manualEdit && !rawActive;
-        _paramTablePanel.IsEnabled = !manualEdit && !rawActive;
+        _paramNameColumnPanel.IsEnabled = !manualEdit && !rawActive;
+        _paramScrollPanel.IsEnabled = !manualEdit && !rawActive;
         _addParamButton.IsEnabled = !manualEdit && !rawActive;
         // 2026-07-26: 「dos作成後に直接編集する」がON中は直接入力モードも無効化する
         // (エディタでは一切触らせない、というユーザー確定仕様のため)。
@@ -332,8 +369,8 @@ internal sealed class GaugeEditorWindow : Window
             borderValueBox.IsEnabled = !vm.BorderIsX;
         }
 
-        enabledCheck.Checked += (_, _) => { vm.Enabled = true; RefreshEnabledState(); };
-        enabledCheck.Unchecked += (_, _) => { vm.Enabled = false; RefreshEnabledState(); };
+        enabledCheck.Checked += (_, _) => { vm.Enabled = true; RefreshEnabledState(); RefreshParamTable(); };
+        enabledCheck.Unchecked += (_, _) => { vm.Enabled = false; RefreshEnabledState(); RefreshParamTable(); };
         borderXRadio.Checked += (_, _) => { vm.BorderIsX = true; RefreshEnabledState(); };
         borderNumRadio.Checked += (_, _) => { vm.BorderIsX = false; RefreshEnabledState(); };
         borderValueBox.TextChanged += (_, _) => vm.BorderValue = borderValueBox.Text;
@@ -401,8 +438,23 @@ internal sealed class GaugeEditorWindow : Window
                 foreach (var entry in vm.Entries)
                 {
                     var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-                    var nameBox = new TextBox { Width = 120, Text = entry.Name, ToolTip = "ゲージ名(例: Original, Heavy, 独自名)" };
-                    nameBox.TextChanged += (_, _) => entry.Name = nameBox.Text;
+                    // 2026-07-26: gaugeX表(_paramRows)に登録済みの名前から選ぶドロップダウンと、
+                    // 未登録の新規名を直接打つ自由入力の両方を、編集可能ComboBoxで両立させる。
+                    var nameBox = new ComboBox
+                    {
+                        Width = 140,
+                        IsEditable = true,
+                        Text = entry.Name,
+                        ToolTip = "ゲージ名(下の「ゲージ別パラメータ」表に登録済みの名前から選択、または新規名を直接入力)",
+                    };
+                    nameBox.DropDownOpened += (_, _) =>
+                        nameBox.ItemsSource = _paramRows
+                            .Select(r => r.GaugeName.Trim())
+                            .Where(n => n.Length > 0)
+                            .Distinct()
+                            .ToList();
+                    nameBox.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
+                        new TextChangedEventHandler((_, _) => entry.Name = nameBox.Text));
                     var varCheck = new CheckBox { Content = "V(可変)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0), IsChecked = entry.IsVariable };
                     varCheck.Checked += (_, _) => entry.IsVariable = true;
                     varCheck.Unchecked += (_, _) => entry.IsVariable = false;
@@ -443,30 +495,61 @@ internal sealed class GaugeEditorWindow : Window
         public List<string> PerTabCsv = [];
     }
 
+    /// <summary>2026-07-26: 本体ゲージ(difData直接指定)を上書き中の難易度は、この表(customGaugeの
+    /// 明示リストが参照するgaugeXXXパラメータ)では使われないため列を隠す対象にする。</summary>
+    private bool IsParamColumnVisible(int tabIndex) => !_difDataVms[tabIndex].Enabled;
+
+    /// <summary>2026-07-26: 左側固定列(ゲージ名)と右側スクロール領域(タブ値)は別々のStackPanelで
+    /// 独立に縦積みしているため、行の高さがAuto任せだと中身次第(TextBox単体 vs TextBox+削除ボタン等)で
+    /// 微妙にズレが生じ、行数が増えるほど「段がずれる」不具合が起きていた。両側の全行(ヘッダー含む)に
+    /// 同じ固定高さを明示することで、中身の違いに関わらずピクセル単位で行位置を一致させる。</summary>
+    private const double ParamRowHeight = 26;
+
     private void RefreshParamTable()
     {
-        _paramTablePanel.Children.Clear();
+        _paramNameColumnPanel.Children.Clear();
+        _paramScrollPanel.Children.Clear();
 
-        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-        headerRow.Children.Add(new TextBlock { Text = "ゲージ名", Width = 110, FontWeight = FontWeights.Bold });
+        // --- 左側固定列: ゲージ名 ---
+        _paramNameColumnPanel.Children.Add(new TextBlock
+        {
+            Text = "ゲージ名", Width = 110, Height = ParamRowHeight, FontWeight = FontWeights.Bold,
+            Margin = new Thickness(0, 0, 0, 4),
+        });
+        foreach (var row in _paramRows)
+        {
+            var nameBox = new TextBox
+            {
+                Width = 110, Height = ParamRowHeight, Text = row.GaugeName,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 4),
+            };
+            nameBox.TextChanged += (_, _) => row.GaugeName = nameBox.Text;
+            _paramNameColumnPanel.Children.Add(nameBox);
+        }
+
+        // --- 右側スクロール領域: 難易度タブごとの値+削除ボタン ---
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Height = ParamRowHeight, Margin = new Thickness(0, 0, 0, 4) };
         for (int i = 0; i < _project.Tabs.Count; i++)
+        {
+            if (!IsParamColumnVisible(i)) continue;
             headerRow.Children.Add(new TextBlock { Text = _project.Tabs[i].DisplayLabel, Width = 110, FontWeight = FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis });
+        }
         headerRow.Children.Add(new TextBlock { Text = "", Width = 50 });
-        _paramTablePanel.Children.Add(headerRow);
+        _paramScrollPanel.Children.Add(headerRow);
 
         foreach (var row in _paramRows)
         {
-            var rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-            var nameBox = new TextBox { Width = 110, Text = row.GaugeName };
-            nameBox.TextChanged += (_, _) => row.GaugeName = nameBox.Text;
-            rowPanel.Children.Add(nameBox);
+            var rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Height = ParamRowHeight, Margin = new Thickness(0, 0, 0, 4) };
 
             for (int i = 0; i < _project.Tabs.Count; i++)
             {
+                if (!IsParamColumnVisible(i)) continue;
                 int idx = i;
                 var cell = new TextBox
                 {
-                    Width = 105,
+                    Width = 105, Height = ParamRowHeight,
+                    VerticalContentAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(2, 0, 2, 0),
                     Text = idx < row.PerTabCsv.Count ? row.PerTabCsv[idx] : "",
                     ToolTip = "ノルマ(またはx),回復,ダメージ,初期ライフ(空欄=先頭タブと同じ)",
@@ -479,12 +562,102 @@ internal sealed class GaugeEditorWindow : Window
                 rowPanel.Children.Add(cell);
             }
 
-            var removeButton = new Button { Content = "削除", Width = 50, Margin = new Thickness(2, 0, 0, 0) };
+            var removeButton = new Button { Content = "削除", Width = 50, Height = ParamRowHeight, Margin = new Thickness(2, 0, 0, 0) };
             removeButton.Click += (_, _) => { _paramRows.Remove(row); RefreshParamTable(); };
             rowPanel.Children.Add(removeButton);
 
-            _paramTablePanel.Children.Add(rowPanel);
+            _paramScrollPanel.Children.Add(rowPanel);
         }
+    }
+
+    // =====================================================================
+    // 直接入力欄からの読み取り反映(2026-07-26)
+    // =====================================================================
+
+    /// <summary>「この内容を読み取って上の各入力欄に反映する」ボタン。_rawOverrideBoxに貼り付けられた
+    /// customGaugeN/gaugeXXXのヘッダー行(|key=value|形式、DosExporter.AppendGaugeHeadersが書き出す
+    /// フォーマットの逆変換)を解析し、①「譜面ごとのゲージ設定」と②「ゲージ別パラメータ」表を
+    /// 丸ごと上書きする。_rawOverrideBox自体はクリアしない(ユーザー確定仕様: 直接入力モードが
+    /// 優先されたままにする。反映結果は①②のUI上で見た目確認できるが、無効化されたまま表示される)。</summary>
+    private void LoadFromRawOverride_Click(object sender, RoutedEventArgs e)
+    {
+        _error.Text = "";
+        string text = _rawOverrideBox.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _error.Text = "直接入力欄が空のため読み取れませんの。";
+            return;
+        }
+
+        int tabCount = _project.Tabs.Count;
+        var parsedTabVms = Enumerable.Range(0, tabCount).Select(_ => new TabGaugeVm()).ToList();
+        var parsedRows = new List<ParamRowVm>();
+        bool anyMatched = false;
+
+        foreach (var rawLine in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.Length < 2 || line[0] != '|' || line[^1] != '|') continue;
+            var body = line[1..^1];
+            int eq = body.IndexOf('=');
+            if (eq < 0) continue;
+            var key = body[..eq];
+            var value = body[(eq + 1)..];
+
+            if (key.StartsWith("customGauge", StringComparison.Ordinal))
+            {
+                var suffix = key["customGauge".Length..];
+                int tabIndex;
+                if (suffix.Length == 0) tabIndex = 0;
+                else if (int.TryParse(suffix, out var n)) tabIndex = n - 1;
+                else continue;
+                if (tabIndex < 0 || tabIndex >= tabCount) continue;
+
+                anyMatched = true;
+                if (InheritKeywords.Contains(value))
+                {
+                    parsedTabVms[tabIndex] = new TabGaugeVm { Mode = "inherit", InheritKeyword = value };
+                }
+                else
+                {
+                    var entries = value.Split(',').Where(s => s.Length > 0).Select(s =>
+                    {
+                        var parts = s.Split("::");
+                        return new EntryVm
+                        {
+                            Name = parts.Length > 0 ? parts[0] : "",
+                            IsVariable = parts.Length > 1 && parts[1] == "V",
+                            DisplayName = parts.Length > 2 ? parts[2] : "",
+                        };
+                    }).ToList();
+                    parsedTabVms[tabIndex] = new TabGaugeVm { Mode = "list", Entries = entries };
+                }
+            }
+            else if (key.StartsWith("gauge", StringComparison.Ordinal) && key.Length > "gauge".Length)
+            {
+                var name = key["gauge".Length..];
+                anyMatched = true;
+                var perTab = value.Split('$').ToList();
+                while (perTab.Count < tabCount) perTab.Add("");
+                if (perTab.Count > tabCount) perTab = perTab.Take(tabCount).ToList();
+                parsedRows.Add(new ParamRowVm { GaugeName = name, PerTabCsv = perTab });
+            }
+        }
+
+        if (!anyMatched)
+        {
+            _error.Text = "customGauge/gaugeXXXの行が見つかりませんでしたの(|key=value|形式の行のみ読み取れます)。";
+            return;
+        }
+
+        for (int i = 0; i < tabCount; i++)
+            _tabVms[i] = parsedTabVms[i];
+
+        _paramRows.Clear();
+        _paramRows.AddRange(parsedRows);
+
+        BuildTabGaugeTabs();
+        RefreshParamTable();
     }
 
     // =====================================================================

@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ダンおに譜面エディタ プラグイン開発ガイド&APIリファレンス</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --panel: #ffffff;
+    --accent: #b3557a;
+    --accent-light: #f3e3ea;
+    --text: #333333;
+    --muted: #777777;
+    --border: #e6d9d0;
+    --code-bg: #f5f0ea;
+    --step: #6a8caf;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Yu Gothic", "Hiragino Sans", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+  }
+  header {
+    background: linear-gradient(120deg, var(--accent), #d98aa8);
+    color: #fff;
+    padding: 40px 24px 32px;
+    text-align: center;
+  }
+  header h1 { margin: 0 0 8px; font-size: 1.9em; letter-spacing: 0.03em; }
+  header p { margin: 0; opacity: 0.92; font-size: 0.95em; }
+  .layout { display: flex; max-width: 1180px; margin: 0 auto; align-items: flex-start; }
+  nav {
+    position: sticky;
+    top: 0;
+    width: 250px;
+    flex-shrink: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 24px 16px;
+    font-size: 0.88em;
+  }
+  nav a {
+    display: block;
+    color: var(--text);
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin-bottom: 2px;
+  }
+  nav a:hover { background: var(--accent-light); color: var(--accent); }
+  nav .nav-section { font-weight: bold; color: var(--accent); margin-top: 14px; margin-bottom: 2px; padding: 5px 10px 0; }
+  main { flex: 1; padding: 24px 32px 80px; min-width: 0; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 28px;
+    margin-bottom: 22px;
+  }
+  h2 {
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent-light);
+    padding-bottom: 8px;
+    margin-top: 0;
+    font-size: 1.3em;
+  }
+  h3 { color: #a3456a; font-size: 1.05em; margin-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92em; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--accent-light); color: #8a3a58; }
+  tr:nth-child(even) td { background: #fcfaf7; }
+  code, kbd {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #2b2b2b;
+    color: #e8e6e3;
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.55;
+    margin: 12px 0;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    white-space: pre;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 4px; }
+  .note {
+    background: #fff8ec;
+    border: 1px solid #eddcb0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9em;
+    color: #7a6633;
+    margin-top: 10px;
+  }
+  .cat {
+    background: #eef4fa;
+    border: 1px solid #c6d8ea;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9em;
+    color: #3d5a78;
+    margin-top: 10px;
+  }
+  .step {
+    display: inline-block;
+    background: var(--step);
+    color: #fff;
+    border-radius: 999px;
+    width: 1.7em;
+    height: 1.7em;
+    line-height: 1.7em;
+    text-align: center;
+    font-size: 0.85em;
+    margin-right: 8px;
+  }
+  footer { text-align: center; color: var(--muted); font-size: 0.85em; padding: 20px; }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    nav { position: static; width: auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>プラグイン開発ガイド&APIリファレンス</h1>
+  <p>ダンおに譜面エディタ — 猫でもわかるプラグインの作り方つき</p>
+</header>
+
+<div class="layout">
+<nav>
+  <div class="nav-section">猫でもわかるプラグインの作り方</div>
+  <a href="#cat-what">プラグインってなに?</a>
+  <a href="#cat-prepare">準備するもの</a>
+  <a href="#cat-first">はじめてのプラグイン</a>
+  <a href="#cat-panel">パネルに何か表示する</a>
+  <a href="#cat-overlay">譜面に何か描く</a>
+  <a href="#cat-note">ノートを置いてみる</a>
+  <a href="#cat-trouble">動かないときは</a>
+  <div class="nav-section">APIリファレンス</div>
+  <a href="#loading">読み込みの仕組み</a>
+  <a href="#base">IEditorPlugin</a>
+  <a href="#panel">IEditorPanelPlugin</a>
+  <a href="#overlay">IChartOverlayPlugin</a>
+  <a href="#host">IPluginHost</a>
+  <a href="#edit">IPluginEditApi</a>
+  <a href="#datatypes">データ型</a>
+  <a href="#persist">データ永続化</a>
+  <div class="nav-section">その他</div>
+  <a href="#compat">互換性の保証</a>
+  <a href="#limits">制約・注意点</a>
+  <a href="#sample">付属サンプル</a>
+</nav>
+
+<main>
+
+<!-- ============================================================= -->
+<!-- 猫でもわかるプラグインの作り方 -->
+<!-- ============================================================= -->
+
+<section id="cat-what">
+<h2>🐱 プラグインってなに?</h2>
+<p>エディタ本体を改造せずに、あなたの作った機能をエディタへ「後付け」できる仕組みです。作ったプラグインは1個のファイル(.dll)になり、エディタの<code>plugins</code>フォルダへ置くだけで動きます。</p>
+<p>プラグインができることは、今のところ大きく3つです。</p>
+<table>
+<tr><th>できること</th><th>例</th></tr>
+<tr><td>右パネルに自分のタブ(画面)を追加する</td><td>設定画面、解析結果の表示</td></tr>
+<tr><td>譜面ビューの上に好きな図形・文字を重ねて描く</td><td>「ここが右手移動だよ」のマーク表示</td></tr>
+<tr><td>譜面にノートを置く/消す</td><td>パターン自動配置(Ctrl+Zで取り消せる形で)</td></tr>
+</table>
+<div class="cat">🐾 逆に、判定の仕組みやゲージ計算などエディタの中身そのものを書き換えることはできません。「読む・見せる・ちょっと書く」が守備範囲です。</div>
+</section>
+
+<section id="cat-prepare">
+<h2>🐱 準備するもの</h2>
+<ol>
+<li><b>Windowsのパソコン</b>(エディタ本体が動く環境)</li>
+<li><b>.NET 8 SDK</b> — <a href="https://dotnet.microsoft.com/download/dotnet/8.0">公式サイト</a>から無料で入手できます。インストール後、コマンドプロンプトで<code>dotnet --version</code>と打って数字が出ればOKです</li>
+<li><b>plugin-sdkフォルダ</b> — エディタの配布元から受け取ってください。この中に必要なもの(参照用DLL・雛形・サンプル・この文書)が全部入っています</li>
+<li>(あると便利)<b>Visual Studio</b> または <b>VS Code</b> — 無くてもメモ帳とコマンドだけで作れますが、あると入力補完が効いて楽です</li>
+</ol>
+<div class="cat">🐾 C#というプログラミング言語で書きます。「クラス」「メソッド」が何かくらいの知識があれば大丈夫です。わからなくなったらsampleフォルダの実物を真似してください。</div>
+</section>
+
+<section id="cat-first">
+<h2>🐱 はじめてのプラグイン(5分コース)</h2>
+<p><span class="step">1</span><b>雛形をコピーする</b><br>
+<code>plugin-sdk/template/</code>フォルダをまるごとコピーして、好きな名前(例: <code>MyFirstPlugin</code>)にリネームします。</p>
+<p><span class="step">2</span><b>名前を決める</b><br>
+コピーした中の<code>MyPlugin.cs</code>を開き、<code>Id</code>(他の人と被らないID)と<code>Name</code>(表示名)を書き換えます。</p>
+<pre><code>public string Id =&gt; "neko.myfirstplugin";  // ← 自分だけのIDに
+public string Name =&gt; "はじめてのプラグイン"; // ← 好きな表示名に</code></pre>
+<p><span class="step">3</span><b>ビルドする</b><br>
+コピーしたフォルダの中でコマンドを1つ打ちます。</p>
+<pre><code>dotnet build</code></pre>
+<p>成功すると<code>bin\Debug\net8.0-windows\</code>の中に<code>(プロジェクト名).dll</code>ができています。</p>
+<p><span class="step">4</span><b>エディタに置く</b><br>
+できた.dllを、エディタ本体(exe)と同じ場所にある<code>plugins</code>フォルダへコピーします。<code>plugins</code>フォルダが無ければ自分で作ってください。</p>
+<p><span class="step">5</span><b>エディタを起動する</b><br>
+右パネルに「マイプラグイン」というタブが増えていたら成功です。おめでとうございます!</p>
+<div class="cat">🐾 雛形は「そのままビルドしても一応動く」状態になっています。まず何も書き換えずに手順3〜5を試して、動くことを確かめてから改造を始めるのがおすすめです。</div>
+</section>
+
+<section id="cat-panel">
+<h2>🐱 パネルに何か表示する</h2>
+<p>右パネルのタブの中身は<code>CreatePanel()</code>で作ります。WPFの部品(TextBlock、Buttonなど)を組み合わせて返すだけです。</p>
+<pre><code>public UIElement CreatePanel()
+{
+    var panel = new StackPanel { Margin = new Thickness(8) };
+    panel.Children.Add(new TextBlock { Text = "こんにちは、プラグインです!" });
+    return panel;
+}</code></pre>
+<p>「今開いている譜面の情報」は<code>_host.CurrentChart</code>から取れます。譜面が切り替わったり編集されたりしたときは<code>ChartChanged</code>イベントが飛んでくるので、表示を更新したい場合はこれを購読します。</p>
+<pre><code>public void Initialize(IPluginHost host)
+{
+    _host = host;
+    host.ChartChanged += () =>
+    {
+        var chart = host.CurrentChart;
+        if (chart is null) return; // プロジェクトが開かれていない時はnull
+        // 例: レーン数やノート数を数えて表示を更新する
+    };
+}</code></pre>
+<div class="cat">🐾 <code>CurrentChart</code>はnullのことがある(プロジェクト未オープン時)ので、必ずnullチェックしてから使ってください。これを忘れるのが一番よくあるつまずきポイントです。</div>
+</section>
+
+<section id="cat-overlay">
+<h2>🐱 譜面に何か描く</h2>
+<p><code>RenderOverlay</code>は譜面ビューが描き直されるたびに呼ばれます。<code>transform</code>がtick(時間)とレーン番号を画面の座標へ変換してくれるので、あとは好きな図形を描くだけです。</p>
+<pre><code>public void RenderOverlay(DrawingContext dc, PluginChartViewTransform transform, PluginChartContext? chart)
+{
+    if (chart is null) return;
+
+    // 例: レーン0の全ノートの位置に、半透明の水色の丸を重ねる
+    var brush = new SolidColorBrush(Color.FromArgb(0xA0, 0x40, 0xC0, 0xFF));
+    double x = transform.LaneToScreenX(0);           // レーン0の中心X座標
+    foreach (var tick in chart.Lanes[0].NoteTicks)
+    {
+        double y = transform.TickToScreenY(tick);    // そのノートのY座標
+        if (y &lt; 0 || y &gt; transform.ViewportHeight) continue; // 画面外なら描かない
+        dc.DrawEllipse(brush, null, new Point(x, y), 6, 6);
+    }
+}</code></pre>
+<div class="cat">🐾 「画面外なら描かない」の1行は必ず入れてください。長い曲でこれを忘れると、見えないところまで全部描こうとして動作が重くなります。</div>
+</section>
+
+<section id="cat-note">
+<h2>🐱 ノートを置いてみる</h2>
+<p><code>_host.Edit</code>からノートを置いたり消したりできます。この方法で置いたノートは、ユーザーが<kbd>Ctrl+Z</kbd>で取り消せます。</p>
+<pre><code>// レーン0の先頭(tick 0)にノートを置く。置けたらtrueが返る
+bool ok = _host.Edit.PlaceNote(laneIndex: 0, tick: 0);
+
+// 消すのはこちら
+_host.Edit.DeleteNote(laneIndex: 0, tick: 0);</code></pre>
+<p>「すでにノートがある場所に置こうとした」「そこにノートが無いのに消そうとした」場合は、何も起きずに<code>false</code>が返ります。エラーにはならないので安心してください。</p>
+<div class="cat">🐾 tickは時間の単位です(1拍=1680tick)。「◯小節目の頭」のような位置を計算したい場合は、4/4拍子なら1小節=6720tickと覚えておくと便利です。</div>
+</section>
+
+<section id="cat-trouble">
+<h2>🐱 動かないときは</h2>
+<table>
+<tr><th>症状</th><th>確認すること</th></tr>
+<tr><td>タブが増えない/何も起きない</td><td><code>plugins/plugin_log.txt</code>を開いてください。読み込みの成功・失敗が全部書いてあります</td></tr>
+<tr><td>起動時に警告ダイアログが出た</td><td>ダイアログの内容と<code>plugin_log.txt</code>に失敗理由が書いてあります(ビルドし忘れ・古いdllのままが定番です)</td></tr>
+<tr><td>NuGetパッケージを使ったら動かなくなった</td><td>出力フォルダにある依存DLL一式と<code>(名前).deps.json</code>も一緒に<code>plugins</code>へコピーしてください</td></tr>
+<tr><td>パネルやオーバーレイが途中で表示されなくなった</td><td>プラグイン内で例外(エラー)が起きています。<code>plugin_log.txt</code>に記録されているので内容を確認してください</td></tr>
+<tr><td>直したのに変わらない</td><td>エディタは起動時にしかプラグインを読みません。dllを差し替えたらエディタを再起動してください</td></tr>
+</table>
+<div class="cat">🐾 <code>DanoniEditor.PluginContracts.dll</code>はpluginsフォルダへコピーしなくて大丈夫です(コピーしても無視されます)。</div>
+</section>
+
+<!-- ============================================================= -->
+<!-- APIリファレンス -->
+<!-- ============================================================= -->
+
+<section id="loading">
+<h2>読み込みの仕組み</h2>
+<ul>
+<li>本体の起動時に<code>./plugins</code>フォルダ(exeと同じ階層)直下の<code>*.dll</code>を全て読み込み、<code>IEditorPlugin</code>を実装し、かつ引数無しの公開コンストラクタを持つ型を自動的にインスタンス化します。</li>
+<li>プラグインDLLはそれぞれ専用の<code>AssemblyLoadContext</code>で読み込まれます。</li>
+<li><b>依存DLLの解決</b>: ①プラグインの<code>.deps.json</code>(あれば)→②プラグインと同じフォルダ、の順で自動解決されます。</li>
+<li><b>契約DLLの扱い</b>: <code>DanoniEditor.PluginContracts</code>への参照は常に本体側の読み込み済みインスタンスへ委ねられます(型不一致事故の防止)。</li>
+<li><b>診断ログ</b>: 読み込みの成功/失敗、初期化失敗、描画中の例外は全て<code>plugins/plugin_log.txt</code>へ記録されます。</li>
+<li>1つのDLL・型の失敗は他のプラグインの読み込みを妨げません。ホットリロード・有効/無効切替UIはありません(DLL配置=有効化、反映には再起動が必要)。</li>
+</ul>
+</section>
+
+<section id="base">
+<h2>基底インターフェース: IEditorPlugin</h2>
+<pre><code>public interface IEditorPlugin
+{
+    string Id { get; }       // 一意なID(半角英数字推奨、他プラグインと重複させない)
+    string Name { get; }     // UI上に表示するプラグイン名
+    string Version { get; }  // 表示用のバージョン文字列(本体側は検証しない)
+    void Initialize(IPluginHost host);  // 読み込み直後に一度だけ呼ばれる
+}</code></pre>
+<p>これ単体では何もしません。下記の派生インターフェースを1つ以上組み合わせて実装します(1つのプラグインが複数を同時に実装しても構いません)。</p>
+</section>
+
+<section id="panel">
+<h2>UIパネル差し込み: IEditorPanelPlugin</h2>
+<pre><code>public interface IEditorPanelPlugin : IEditorPlugin
+{
+    string PanelTitle { get; }      // 右パネルのタブ見出し
+    UIElement CreatePanel();        // タブの中身(WPF UIElement)を1つ生成する
+}</code></pre>
+<ul>
+<li>本体は<code>CreatePanel()</code>の戻り値をそのまま右パネルの<code>TabItem.Content</code>へ設定します。内部のレイアウト・状態管理は全てプラグイン側の責任です。</li>
+<li>呼ばれるのはアプリ起動時に1回だけです。以後の表示更新は<code>IPluginHost.ChartChanged</code>を購読して行います。</li>
+</ul>
+</section>
+
+<section id="overlay">
+<h2>譜面ビューへのオーバーレイ描画: IChartOverlayPlugin</h2>
+<pre><code>public interface IChartOverlayPlugin : IEditorPlugin
+{
+    void RenderOverlay(DrawingContext dc, PluginChartViewTransform transform, PluginChartContext? chart);
+}</code></pre>
+<ul>
+<li>譜面ビューの再描画のたびに、本体の描画が完了した後、最前面に呼び出されます。</li>
+<li><code>chart</code>はプロジェクト未作成・タブ未選択の場合<code>null</code>になりえます。</li>
+<li>描画中の例外は本体を止めず、<code>plugins/plugin_log.txt</code>へ記録された上でその回の描画だけスキップされます。</li>
+<li><strong>呼び出し頻度</strong>: 固定fps(毎フレーム等)での呼び出しではありません。WPFの<code>OnRender</code>パス、つまり<code>InvalidateVisual()</code>が呼ばれた時にのみ発生します。スクロール・ズーム・ノート編集・選択操作・Undo/Redo・プロジェクト読み込みなど、譜面ビューの見た目が変わりうる操作のたびに呼ばれる仕組みのため、実運用では「操作されるたびに数回〜」程度の頻度になります。重い処理を書く場合はこの前提で計測してください。</li>
+<li><strong>複数プラグイン間の描画順</strong>: 明示的な優先度指定はありません。<code>plugins</code>フォルダ内のDLLファイル名を英数字順(大文字小文字を区別しない)に並べて読み込むため、オーバーレイもその順で呼び出されます。重なりの順序を制御したい場合はファイル名の先頭に連番などを付けてください。</li>
+</ul>
+<h3>PluginChartViewTransform(座標変換)</h3>
+<pre><code>public sealed class PluginChartViewTransform
+{
+    public Func&lt;long, double&gt; TickToScreenY { get; }   // tick → 譜面ビュー上のY座標(px)
+    public Func&lt;int, double&gt; LaneToScreenX { get; }     // レーンindex(0始まり) → レーン列の中心X座標(px)
+    public double NoteLaneWidth { get; }                // ノートレーン1本分の幅(px)
+    public double ViewportWidth { get; }                // 表示中ビューポート幅(px)
+    public double ViewportHeight { get; }               // 表示中ビューポート高さ(px)
+    public bool IsReverse { get; }                       // Reverse表示が有効か
+}</code></pre>
+</section>
+
+<section id="host">
+<h2>IPluginHost(本体とのやり取りの入口)</h2>
+<pre><code>public interface IPluginHost
+{
+    PluginChartContext? CurrentChart { get; }
+    IPluginEditApi Edit { get; }
+    event Action? ChartChanged;
+    string? GetPluginData(string key);
+    void SetPluginData(string key, string value);
+}</code></pre>
+<table>
+<tr><th>メンバー</th><th>内容</th></tr>
+<tr><td>CurrentChart</td><td>呼び出しのたびに最新の読み取り専用スナップショットを返す。プロジェクト未作成・タブ未選択の場合はnull</td></tr>
+<tr><td>Edit</td><td>譜面データを書き換えるための限定API(下記)</td></tr>
+<tr><td>ChartChanged</td><td>プロジェクト・難易度タブの切替や譜面編集のタイミングで発火。表示更新のトリガーに使う</td></tr>
+<tr><td>GetPluginData / SetPluginData</td><td>プラグイン専用データのプロジェクトファイルへの永続化(下記)</td></tr>
+</table>
+<p><strong>ChartChangedの発火条件</strong>: 譜面の状態が変わりうる操作のほぼ全てで発火します。ノート配置・削除等の編集操作(プラグイン自身の<code>Edit.PlaceNote</code>/<code>DeleteNote</code>経由の変更も含む)、Undo・Redo、難易度タブの切替・追加・削除・並び替え・複製、BPM等ヘッダー値の直接編集、キー種変更、Reverse切替、プロジェクトの新規作成・オープン・保存完了・クローズ、プラグイン自身の<code>SetPluginData</code>呼び出し、などが対象です。選択操作など軽微な操作でも発火しうるため、呼び出し頻度が高くなる前提でハンドラを書いてください(重い処理を避ける、または前回スナップショットとの差分検知を行う)。</p>
+</section>
+
+<section id="edit">
+<h2>編集API: IPluginEditApi</h2>
+<pre><code>public interface IPluginEditApi
+{
+    bool PlaceNote(int laneIndex, long tick);   // 通常ノート配置(成功でtrue)
+    bool DeleteNote(int laneIndex, long tick);  // 通常ノート削除(成功でtrue)
+}</code></pre>
+<ul>
+<li>本体のUndo/Redoスタックへ正しく積まれるため、プラグインによる変更もユーザーが<kbd>Ctrl+Z</kbd>で取り消せます。</li>
+<li>配置先に既にノートがある・対象が無い・レーン/tickが不正・プロジェクト未作成、の場合は<code>false</code>を返し何もしません。</li>
+<li>現状は「通常ノートの配置/削除」のみです。拡張は要望に応じて行います。</li>
+<li><strong>座標範囲の詳細</strong>: <code>laneIndex</code>は<code>0</code>以上、現在の難易度タブのレーン数未満(固定値ではなくキー種によって変わります)。範囲外は<code>false</code>。<code>tick</code>は<code>PlaceNote</code>では<code>tick &lt; 0</code>のみ弾かれ、<strong>上限チェックはありません</strong>(曲の長さを超える値も配置自体は成功しえます)。<code>DeleteNote</code>はtickの範囲チェック自体を行わず、対象位置に既存ノートがあるかどうかのみで判定します。</li>
+</ul>
+</section>
+
+<section id="datatypes">
+<h2>データ型</h2>
+<h3>PluginChartContext(現在の難易度タブの読み取り専用スナップショット)</h3>
+<pre><code>public sealed class PluginChartContext
+{
+    public string KeyTypeId { get; }
+    public string DifficultyName { get; }
+    public IReadOnlyList&lt;PluginLaneInfo&gt; Lanes { get; }
+    public Func&lt;long, double&gt; TickToFrame { get; }
+    public Func&lt;double, long&gt; FrameToTick { get; }
+}</code></pre>
+<h3>PluginLaneInfo(1レーン分の情報)</h3>
+<pre><code>public sealed record PluginLaneInfo(
+    string LaneId,
+    string KeyAssign,                              // プレイテスト時の割当キー("/"区切り)
+    int ColorGroup,
+    IReadOnlyList&lt;long&gt; NoteTicks,
+    IReadOnlyList&lt;(long Start, long End)&gt; FreezeTicks);</code></pre>
+<p>本体内部のモデルを直接公開せず、この形へ変換した上で渡しています。内部実装がどう変わってもこのデータ型自体は維持されます。</p>
+</section>
+
+<section id="persist">
+<h2>データ永続化</h2>
+<p><code>GetPluginData</code>/<code>SetPluginData</code>は、プロジェクトファイル内の自由記述領域を、呼び出し元プラグインのIDで自動的に名前空間分け(<code>"{プラグインID}.{key}"</code>)した上で読み書きします。</p>
+<ul>
+<li>値は文字列のみです(構造化データはJSON文字列にして保存してください)。</li>
+<li><b>dos.txtへは出力されません</b>。エディタのプロジェクトファイル内だけに保存されます。</li>
+<li>本体はこの中身を一切解釈しません。</li>
+</ul>
+</section>
+
+<section id="compat">
+<h2>互換性の保証</h2>
+<p>エディタ本体側は追記専用(append-only)ポリシーを採用しており、以下を約束します。</p>
+<ul>
+<li>公開済みのインターフェース・型・メンバーの削除・改名・シグネチャ変更は行いません。機能追加は「新メンバー・新型の追加」だけで行います。</li>
+<li>プラグインが実装するインターフェースへのメンバー追加は必ず既定実装付きで行うため、<b>古いSDKでビルドしたプラグインDLLは、再ビルド不要のまま新しいエディタでも動き続けます</b>。</li>
+<li><code>DanoniEditor.PluginContracts.dll</code>のアセンブリバージョンは固定されており、バージョン不一致による読み込み失敗は発生しません。</li>
+</ul>
+</section>
+
+<section id="limits">
+<h2>制約・注意点</h2>
+<ul>
+<li>全API呼び出しはUIスレッド(WPFのDispatcherスレッド)上で行われる想定です。バックグラウンドスレッドを使う場合、UI操作・ホストAPI呼び出しは必ずUIスレッドへディスパッチしてください。</li>
+<li>判定ロジック・ゲージ計算式・マウス操作の基本挙動・ノート自体の描画方法など、エンジン中核の差し替えAPIは提供していません。</li>
+<li>プレイテスト画面へのオーバーレイは未対応です(現状は譜面ビューのみ。将来課題)。</li>
+<li>プラグインの有効/無効切替・アンインストール・ホットリロードといった運用機能はありません。</li>
+</ul>
+</section>
+
+<section id="sample">
+<h2>付属サンプル: HandMovementSamplePlugin</h2>
+<p><code>plugin-sdk/sample/</code>に同梱されています。<code>IEditorPanelPlugin</code>・<code>IChartOverlayPlugin</code>の両方を実装し、右パネルタブ・オーバーレイ描画・ノート配置API・<code>ChartChanged</code>購読の一通りを実際に使っています。</p>
+<ul>
+<li>右パネルに「右手移動(サンプル)」タブを追加し、現在のキー種・難易度名・レーン数を表示</li>
+<li>「レーン0 tick0 にテスト配置」ボタンで<code>PlaceNote</code>を実行(Undo対応)</li>
+<li>譜面ビューへ、後半半分のレーンのノート位置に丸印をオーバーレイ描画</li>
+</ul>
+<p>実運用のプラグインを作る際の出発点として参照してください。</p>
+</section>
+
+</main>
+</div>
+
+<footer>ダンおに譜面エディタ プラグイン開発ガイド&APIリファレンス — 実装内容に基づき随時更新</footer>
+
+</body>
+</html>

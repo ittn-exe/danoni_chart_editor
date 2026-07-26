@@ -49,4 +49,8 @@ internal static class AppPaths
     /// (DanoniEditor.Core.Persistence.AutoSaveManager参照)。
     /// </summary>
     public static string AutoSaveDir => Path.Combine(AppContext.BaseDirectory, "autosave");
+
+    /// <summary>プラグインDLLの格納フォルダ(exe直下の./plugins、2026-07-26、プラグイン対応の土台)。
+    /// フォルダが無ければ「プラグイン無し」として扱う(自動作成はしない)。</summary>
+    public static string PluginsDir => Path.Combine(AppContext.BaseDirectory, "plugins");
 }

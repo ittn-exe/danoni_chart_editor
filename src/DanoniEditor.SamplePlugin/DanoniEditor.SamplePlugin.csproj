@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- 2026-07-26: プラグイン対応の土台の動作確認用サンプル。実際のプラグインDLLと同じ形
+         (DanoniEditor.PluginContractsのみを参照し、本体プロジェクトへは依存しない)で作る。
+         本体側のAppPaths.PluginsDir(exe直下の./plugins)へ手動でコピーして読み込ませる想定。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DanoniEditor.PluginContracts\DanoniEditor.PluginContracts.csproj" />
+  </ItemGroup>
+</Project>

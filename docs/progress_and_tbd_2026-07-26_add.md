@@ -36,7 +36,26 @@
 
 ## 3. 将来実装候補
 
-`docs/progress_and_tbd_2026-07-26.md`の3章(1〜5)から変更なし。
+`docs/progress_and_tbd_2026-07-26.md`の3章(1〜5)に加え、以下を追加。
+
+### 3-6. プラグインAPI: ノート色の読み取り・変更対応
+
+外部制作者から「プラグインからノート色を変更したい」との要望あり。現状`PluginChartContext`/`PluginLaneInfo`は位置(tick)のみを公開しており、`ncolor_data`相当の色情報(Color/BandColor/AllFlag等)は未対応。対応する場合の実装方針(調査済み):
+
+- 読み取り: `PluginLaneInfo`へ色情報のリスト(tick, Color, BandColor, AllFlag等)を追加、`PluginChartContextBuilder`で`LaneNotes.ColorOverrides`から埋める。
+- 書き込み: `IPluginEditApi`へ`SetNoteColor`/`ResetNoteColor`を追加。内部は本体の色編集モードUIが使っている既存のUndo安全なアクション(`EditActions.cs`の`SetNoteColorAction`/`ResetNoteColorAction`)をラップし、`PlaceNote`/`DeleteNote`と同じ「検証→`doc.Execute(...)`」パターンに揃える。
+- Shadow/Hit系の色(`SetShadowColorAction`/`SetFrzHitColorsAction`)まで対応するかは範囲未確定(要望に応じて別途検討)。
+
+### 3-7. プラグインAPIドキュメントの拡充(ChatGPTレビュー指摘、2026-07-26)
+
+外部レビューで指摘を受けた項目。実装変更を伴わないドキュメント調査・加筆が中心:
+
+- `IPluginHost.ApiVersion`のようなAPIバージョン番号の追加(プラグイン側が機能有無を実行時判定できるようにする、小規模なコード変更)。
+- `ChartChanged`イベントの発火条件一覧(ノート配置/削除、Undo/Redo、BPM変更、Reverse変更、難易度切替、キー種変更、プロジェクトを閉じる、等)をリファレンスへ明記。
+- `RenderOverlay`の呼び出し頻度(毎フレームか、再描画時のみか等)を明記。
+- `PlaceNote`の座標範囲(最大レーン数・tick上限)を明記。
+- 複数プラグイン利用時のオーバーレイ描画順(読み込み順か等)を明記。
+- サンプルプラグインの追加種類(Overlay特化・自動配置特化など)およびスクリーンショットの掲載。
 
 ## 4. テスト状況
 

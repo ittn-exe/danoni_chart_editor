@@ -163,9 +163,10 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("キーボードモード");
         categories.Items.Add("musicURL取得");
         categories.Items.Add("テンプレート");
+        categories.Items.Add("キーマクロ");
         categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildStatsPanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -611,6 +612,143 @@ internal sealed class PreferencesWindow : Window
         if (win.OriginalKeyTypeId is { } oldId) _templates?.Invalidate(oldId);
         if (win.SavedKeyTypeId is { } newId) _templates?.Invalidate(newId);
         RefreshTemplateList();
+    }
+
+    // =====================================================================
+    // キーマクロ(2026-07-26要望対応、第三者要望): Ctrl+Shift+1〜9へ割り当てる、複数の機能を
+    // 順番に実行するマクロ。既存の「レーン入替マクロ」(右パネル「マクロ」タブ)とは別機能。
+    // レーン入替マクロと同じく「自分で決定して組み立てる」形にしてあり、選べる手順の種類
+    // (KeyMacroStepKind)は今後の要望に応じて増やしていく想定(2026-07-26、ユーザー確定方針)。
+    // _workを直接編集する(他カテゴリと異なり専用のLoadFrom/TryCommit処理を持たない。OK確定時に
+    // Result=_workがそのまま返るため、ここでの編集は自動的に反映される)。
+    // =====================================================================
+
+    private static readonly (KeyMacroStepKind Kind, string Label, bool NeedsValue)[] KeyMacroKindItems =
+    [
+        (KeyMacroStepKind.SetPlaybackSpeed, "再生速度を設定(倍率)", true),
+        (KeyMacroStepKind.SetPlaybackStartSeconds, "再生開始位置を設定(秒)", true),
+        (KeyMacroStepKind.StartVisualTest, "目視テストを開始", false),
+        (KeyMacroStepKind.StartPlaytest, "プレイテストを開始", false),
+    ];
+
+    private static string DescribeKeyMacroStep(KeyMacroStep step) => step.Kind switch
+    {
+        KeyMacroStepKind.SetPlaybackSpeed => $"再生速度を x{step.Value.ToString("0.00", CultureInfo.InvariantCulture)} に設定",
+        KeyMacroStepKind.SetPlaybackStartSeconds => $"再生開始位置を {step.Value.ToString("0.00", CultureInfo.InvariantCulture)}秒 に設定",
+        KeyMacroStepKind.StartVisualTest => "目視テストを開始",
+        KeyMacroStepKind.StartPlaytest => "プレイテストを開始",
+        _ => step.Kind.ToString(),
+    };
+
+    private UIElement BuildKeyMacroPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+
+        p.Children.Add(Label("キーマクロ", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "Ctrl+Shift+数字キーへ割り当てる、複数の機能を順番に実行するマクロですわ。レーン入替マクロと同じく、手順を自分で組み立てる形になっております。選べる手順は今後の要望に応じて増やしていく予定ですわ。",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+
+        p.Children.Add(Label("スロット"));
+        var slotCombo = new ComboBox
+        {
+            ItemsSource = Enumerable.Range(1, 9).Select(i => $"Ctrl+Shift+{i}").ToList(),
+            SelectedIndex = 0,
+            Width = 150,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        p.Children.Add(slotCombo);
+
+        var stepsList = new ListBox { Height = 140, Margin = new Thickness(0, 0, 0, 8) };
+        p.Children.Add(stepsList);
+
+        KeyMacroDefinition? FindDef() => _work.KeyMacros.FirstOrDefault(m => m.Slot == slotCombo.SelectedIndex + 1);
+        KeyMacroDefinition GetOrCreateDef()
+        {
+            var def = FindDef();
+            if (def is null)
+            {
+                def = new KeyMacroDefinition { Slot = slotCombo.SelectedIndex + 1 };
+                _work.KeyMacros.Add(def);
+            }
+            return def;
+        }
+        void RefreshSteps() => stepsList.ItemsSource = FindDef()?.Steps.Select(DescribeKeyMacroStep).ToList() ?? [];
+
+        slotCombo.SelectionChanged += (_, _) => RefreshSteps();
+
+        var reorderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+        var up = new Button { Content = "↑", Width = 32, Margin = new Thickness(0, 0, 4, 0) };
+        var down = new Button { Content = "↓", Width = 32, Margin = new Thickness(0, 0, 4, 0) };
+        var remove = new Button { Content = "削除", Width = 50 };
+        up.Click += (_, _) =>
+        {
+            var def = FindDef();
+            int idx = stepsList.SelectedIndex, newIdx = idx - 1;
+            if (def is null || idx < 0 || newIdx < 0) return;
+            (def.Steps[idx], def.Steps[newIdx]) = (def.Steps[newIdx], def.Steps[idx]);
+            RefreshSteps();
+            stepsList.SelectedIndex = newIdx;
+        };
+        down.Click += (_, _) =>
+        {
+            var def = FindDef();
+            int idx = stepsList.SelectedIndex, newIdx = idx + 1;
+            if (def is null || idx < 0 || newIdx >= def.Steps.Count) return;
+            (def.Steps[idx], def.Steps[newIdx]) = (def.Steps[newIdx], def.Steps[idx]);
+            RefreshSteps();
+            stepsList.SelectedIndex = newIdx;
+        };
+        remove.Click += (_, _) =>
+        {
+            var def = FindDef();
+            int idx = stepsList.SelectedIndex;
+            if (def is null || idx < 0 || idx >= def.Steps.Count) return;
+            def.Steps.RemoveAt(idx);
+            _work.KeyMacros.RemoveAll(m => m.Steps.Count == 0); // 空になったスロット定義は残さない
+            RefreshSteps();
+        };
+        reorderRow.Children.Add(up);
+        reorderRow.Children.Add(down);
+        reorderRow.Children.Add(remove);
+        p.Children.Add(reorderRow);
+
+        p.Children.Add(Label("手順を追加", section: true));
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+        var kindCombo = new ComboBox
+        {
+            ItemsSource = KeyMacroKindItems.Select(k => k.Label).ToList(),
+            SelectedIndex = 0,
+            Width = 220,
+            Margin = new Thickness(0, 0, 4, 0),
+        };
+        var valueBox = new TextBox { Width = 70, Text = "1.0", Margin = new Thickness(0, 0, 4, 0) };
+        kindCombo.SelectionChanged += (_, _) => valueBox.IsEnabled = KeyMacroKindItems[kindCombo.SelectedIndex].NeedsValue;
+        var add = new Button { Content = "追加", Width = 50 };
+        add.Click += (_, _) =>
+        {
+            var (kind, _, needsValue) = KeyMacroKindItems[kindCombo.SelectedIndex];
+            double value = 0;
+            if (needsValue && (!double.TryParse(valueBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) || value < 0))
+            {
+                _error.Text = "キーマクロの値は0以上の数値で入力してくださいませ。";
+                return;
+            }
+            _error.Text = "";
+            GetOrCreateDef().Steps.Add(new KeyMacroStep { Kind = kind, Value = value });
+            RefreshSteps();
+        };
+        addRow.Children.Add(kindCombo);
+        addRow.Children.Add(valueBox);
+        addRow.Children.Add(add);
+        p.Children.Add(addRow);
+
+        RefreshSteps();
+        return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
     // =====================================================================

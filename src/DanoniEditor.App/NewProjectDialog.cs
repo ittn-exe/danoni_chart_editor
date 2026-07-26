@@ -9,7 +9,13 @@ internal static class NewProjectDialog
 {
     public readonly record struct Choice(string KeyTypeId, string DifficultyName, double Bpm);
 
-    public static Choice? Ask(Window owner, TemplateRepository templates, double defaultBpm = 120)
+    /// <summary>
+    /// <paramref name="showBpm"/>=false(難易度タブ追加時、2026-07-26要望対応): カレントプロジェクトは
+    /// 既にBPMを持っており、このダイアログで入力してもタブ追加処理側では使用されない(プロジェクト側の
+    /// 値で上書きされる)ため、欄自体を非表示にする。戻り値のBpmは<paramref name="defaultBpm"/>をそのまま
+    /// 返すのみで、呼び出し側でも使用しないこと。
+    /// </summary>
+    public static Choice? Ask(Window owner, TemplateRepository templates, double defaultBpm = 120, bool showBpm = true)
     {
         var keyTypeIds = templates.ListKeyTypeIds().ToList();
 
@@ -18,7 +24,7 @@ internal static class NewProjectDialog
             Title = "新規プロジェクト",
             Owner = owner,
             Width = 360,
-            Height = 260,
+            Height = showBpm ? 260 : 210,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             ResizeMode = ResizeMode.NoResize,
             WindowStyle = WindowStyle.ToolWindow,
@@ -35,9 +41,13 @@ internal static class NewProjectDialog
         var nameBox = new TextBox { Text = "Normal", Margin = new Thickness(0, 0, 0, 12) };
         panel.Children.Add(nameBox);
 
-        panel.Children.Add(new TextBlock { Text = "BPM", Margin = new Thickness(0, 0, 0, 4) });
-        var bpmBox = new TextBox { Text = defaultBpm.ToString(System.Globalization.CultureInfo.InvariantCulture), Margin = new Thickness(0, 0, 0, 16) }; // 環境設定のデフォルトBPM(2026-07-19b)
-        panel.Children.Add(bpmBox);
+        TextBox? bpmBox = null;
+        if (showBpm)
+        {
+            panel.Children.Add(new TextBlock { Text = "BPM", Margin = new Thickness(0, 0, 0, 4) });
+            bpmBox = new TextBox { Text = defaultBpm.ToString(System.Globalization.CultureInfo.InvariantCulture), Margin = new Thickness(0, 0, 0, 16) }; // 環境設定のデフォルトBPM(2026-07-19b)
+            panel.Children.Add(bpmBox);
+        }
 
         var errorText = new TextBlock { Foreground = System.Windows.Media.Brushes.Red, Margin = new Thickness(0, 0, 0, 8), TextWrapping = TextWrapping.Wrap };
         panel.Children.Add(errorText);
@@ -64,7 +74,8 @@ internal static class NewProjectDialog
                 errorText.Text = "難易度名を入力してくださいませ。";
                 return;
             }
-            if (!double.TryParse(bpmBox.Text, out var bpm) || bpm <= 0)
+            double bpm = defaultBpm;
+            if (bpmBox is not null && (!double.TryParse(bpmBox.Text, out bpm) || bpm <= 0))
             {
                 errorText.Text = "BPMは正の数で入力してくださいませ。";
                 return;

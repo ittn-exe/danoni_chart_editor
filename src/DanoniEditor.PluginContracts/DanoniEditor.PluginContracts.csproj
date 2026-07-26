@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- 2026-07-26: プラグイン対応の土台。本体アプリ・プラグインDLLの双方から参照される
+         「安定した窓口」用の契約(インターフェース・DTO)だけを収録するプロジェクト。
+         Core/Editing/Appのいずれにも依存させず、プラグイン側から見て内部実装の変更に
+         巻き込まれない層として独立させてある。UIパネル差し込み(UserControl)・オーバーレイ
+         描画(DrawingContext)を扱うためWPFプロファイルを使う。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- 互換性ポリシー(docs/plugin_api_compatibility_policy.md): 旧プラグインDLLのバインドを
+         壊さないよう、AssemblyVersionは1.0.0.0に固定する(変更しない)。人間向けのバージョン表示は
+         Version/FileVersionのみ上げる。 -->
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <!-- 2026-07-26: ビルドのたびに、外部制作者へ配布する「plugin-sdk」フォルダ(リポジトリ直下)を
+       最新の内容へ自動更新する。手作業でDLL・ドキュメント・サンプルソースを探して配り直す手間を
+       無くすのが狙い。plugin-sdk/template と plugin-sdk/README.md は自動生成の対象外(手動管理)。 -->
+  <Target Name="PublishPluginSdk" AfterTargets="Build">
+    <ItemGroup>
+      <SdkDocs Include="$(MSBuildProjectDirectory)\..\..\docs\plugin_api_reference.md;$(MSBuildProjectDirectory)\..\..\docs\plugin_api_reference.html" />
+      <SdkSampleSource Include="$(MSBuildProjectDirectory)\..\DanoniEditor.SamplePlugin\*.cs" />
+    </ItemGroup>
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MSBuildProjectDirectory)\..\..\plugin-sdk" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\..\plugin-sdk')" />
+    <Copy SourceFiles="@(SdkDocs)" DestinationFolder="$(MSBuildProjectDirectory)\..\..\plugin-sdk\docs" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\..\plugin-sdk')" />
+    <Copy SourceFiles="@(SdkSampleSource)" DestinationFolder="$(MSBuildProjectDirectory)\..\..\plugin-sdk\sample" SkipUnchangedFiles="true" Condition="Exists('$(MSBuildProjectDirectory)\..\..\plugin-sdk')" />
+  </Target>
+</Project>

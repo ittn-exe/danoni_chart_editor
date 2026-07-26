@@ -53,6 +53,12 @@ public sealed class ChartProject
     /// <summary>その他のヘッダーパラメータ(仕様書6.4.4)。「使用する」チェックONのもののみ格納。</summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = [];
 
+    /// <summary>プラグイン用の自由記述領域(2026-07-26、プラグイン対応の土台)。キーは
+    /// "{プラグインID}.{任意のキー名}" の形で自動的に名前空間分けされ(PluginHostImpl参照)、
+    /// 値は各プラグインが自由な形式(JSON文字列等)で読み書きする。dos.txtへは出力されない。
+    /// エディタ本体はこの中身を一切解釈しない。</summary>
+    public Dictionary<string, string> PluginData { get; set; } = [];
+
     /// <summary>難易度タブ(並び順=出力順=サフィックス採番順)</summary>
     public List<DifficultyTab> Tabs { get; set; } = [];
 
@@ -142,6 +148,51 @@ public sealed class DifficultyTab
         };
         for (int i = 0; i < template.KeyCount; i++) tab.Lanes.Add(new LaneNotes());
         return tab;
+    }
+
+    /// <summary>このタブの完全な複製を作る(2026-07-26、タブ複製機能)。ネストしたList/Dictionaryを
+    /// 参照共有すると複製後どちらかを編集した際に相方も壊れるため、値の入れ物は全て新規に作り直す
+    /// (中身のレコード型(ValueEvent/FreezeNote/NColorEntry等)自体はイミュータブルなため使い回してよい)。
+    /// DifficultyNameは呼び出し側で設定する(複製直後は既定で変更するため、ここでは元の値のまま返す)。</summary>
+    public DifficultyTab Clone()
+    {
+        var clone = new DifficultyTab
+        {
+            DifficultyName = DifficultyName,
+            KeyTypeId = KeyTypeId,
+            InitialSpeed = InitialSpeed,
+            DifDataExtra = DifDataExtra,
+            SpeedEvents = new List<ValueEvent>(SpeedEvents),
+            BoostEvents = new List<ValueEvent>(BoostEvents),
+            SetColorOverride = SetColorOverride is null ? null : new List<string>(SetColorOverride),
+            FrzColorOverride = FrzColorOverride is null ? null : new List<string>(FrzColorOverride),
+            Gauge = Gauge is null ? null : new GaugeConfig
+            {
+                InheritKeyword = Gauge.InheritKeyword,
+                Entries = new List<GaugeListEntry>(Gauge.Entries),
+            },
+            GaugeParams = GaugeParams is null ? null : new Dictionary<string, string>(GaugeParams),
+        };
+        foreach (var lane in Lanes)
+        {
+            clone.Lanes.Add(new LaneNotes
+            {
+                Notes = new List<long>(lane.Notes),
+                Freezes = new List<FreezeNote>(lane.Freezes),
+                ColorOverrides = new List<NColorEntry>(lane.ColorOverrides),
+                Annotations = new List<NoteAnnotation>(lane.Annotations),
+            });
+        }
+        foreach (var wordLane in WordLanes)
+        {
+            clone.WordLanes.Add(new WordLane
+            {
+                Name = wordLane.Name,
+                IsReverse = wordLane.IsReverse,
+                Entries = new List<WordEntry>(wordLane.Entries),
+            });
+        }
+        return clone;
     }
 }
 

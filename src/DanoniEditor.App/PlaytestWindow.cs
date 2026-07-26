@@ -5,7 +5,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Threading;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Playtest;
 using DanoniEditor.Core.Settings;
@@ -77,8 +76,16 @@ internal sealed class PlaytestWindow : Window
     private readonly EditorDocument _doc;
     private readonly KeyTemplate _template;
     private readonly PlaytestEngine _engine;
+    private readonly AppSettings? _appSettings; // 2026-07-26要望対応: 表示位置の保存・復元に使う
     private readonly NAudioBgmPlayer _player = new(); // 2026-07-26f: WPF MediaPlayerから移行(ハンドクラップのサンプル精度スケジューリング対応)
-    private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    /// <summary>2026-07-26要望対応: 「クラップは合っているのにノートだけ数F遅れる」報告への対策として、
+    /// 固定間隔のDispatcherTimer(16ms、UIスレッドのNormal優先度)から、WPFが実際に次のフレームを
+    /// 合成する直前に同期して発火するCompositionTarget.Renderingへ切り替えた。DispatcherTimerだと
+    /// 「位置を読む瞬間」と「それが画面に出る瞬間」の間に別のディスパッチャ処理が挟まりズレうるが、
+    /// Renderingイベントはその2つがほぼ一致するため、UIスレッドが混み合う状況でもズレが生じにくい。
+    /// 静的イベントのため、購読しっぱなしにするとウィンドウを閉じた後もハンドラが生き続けて
+    /// リークするので、Closed時に必ず解除する(_renderingSubscribedで二重解除を防ぐ)。</summary>
+    private bool _renderingSubscribed;
     private readonly bool _reverse;
     private readonly double _hiSpeed;
     private readonly double _startFrame;
@@ -139,6 +146,10 @@ internal sealed class PlaytestWindow : Window
     private const double StepHitSizeAdd = 30;
     private readonly PlayJudge?[] _stepHitJudge;
     private readonly int[] _stepHitFramesRemaining;
+    /// <summary>2026-07-26要望対応: ヒットフラッシュを常にステップゾーン上ではなく、実際に消去された
+    /// (判定された)座標に表示する(プレイヤーがその上下のズレでタイミング誤差を知覚できるように)。
+    /// 判定確定時のノート位置(YOf相当)を保存し、フラッシュ表示中はその座標に固定する。</summary>
+    private readonly double[] _stepHitY;
 
     private readonly PlaySurface _surface;
 
@@ -147,6 +158,7 @@ internal sealed class PlaytestWindow : Window
         AppSettings? appSettings = null)
     {
         _doc = doc;
+        _appSettings = appSettings;
         // 2026-07-26e: キー種ごとの採用キーパターン(環境設定「プレイテスト」)を反映する。
         // エディタ本体の譜面ビューはdoc.CurrentTemplate(パターン0)をそのまま使い続けており、
         // プレイテストのみここでKeyTemplate.WithPatternにより見た目・キー入力を差し替える。
@@ -222,13 +234,28 @@ internal sealed class PlaytestWindow : Window
         _autoPlayFreezeCursor = new int[_template.Lanes.Count];
         _stepHitJudge = new PlayJudge?[_template.Lanes.Count];
         _stepHitFramesRemaining = new int[_template.Lanes.Count];
+        _stepHitY = new double[_template.Lanes.Count];
         BuildKeyMap();
 
         Title = $"プレイテスト - {doc.Project.ProjectName} [{doc.CurrentTab.DifficultyName}]";
         Background = Brushes.Black;
         SizeToContent = SizeToContent.WidthAndHeight;
         ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        // 2026-07-26要望対応(第三者提案): 前回閉じた時点の表示位置を引き継ぐ。保存が無い場合(初回起動等)
+        // は従来通り親ウィンドウ中央に表示する。仮想スクリーン範囲外(モニタ構成変更等)の場合も
+        // フォールバックする(MainWindowのウィンドウ位置復元と同じ考え方)。
+        if (_appSettings is { PlaytestWindowLeft: { } left, PlaytestWindowTop: { } top }
+            && left >= SystemParameters.VirtualScreenLeft && left < SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth
+            && top >= SystemParameters.VirtualScreenTop && top < SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = left;
+            Top = top;
+        }
+        else
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        }
 
         var root = new DockPanel();
         var quitKeyNames = new List<string>();
@@ -266,9 +293,22 @@ internal sealed class PlaytestWindow : Window
 
         PreviewKeyDown += OnKeyDownInput;
         PreviewKeyUp += OnKeyUpInput;
-        _timer.Tick += Timer_Tick;
         ContentRendered += (_, _) => StartPlayback();
-        Closed += (_, _) => { _closed = true; _timer.Stop(); _player.Stop(); _player.Dispose(); };
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            if (_renderingSubscribed) { CompositionTarget.Rendering -= Timer_Tick; _renderingSubscribed = false; }
+            _player.Stop();
+            _player.Dispose();
+            // 2026-07-26要望対応(第三者提案): 閉じるボタン・中断キーどちらで終了した場合でも
+            // Closedは共通で発火するため、ここで一括して表示位置を保存する(次回起動時に引き継ぐ)。
+            if (_appSettings is not null)
+            {
+                _appSettings.PlaytestWindowLeft = Left;
+                _appSettings.PlaytestWindowTop = Top;
+                _appSettings.Save(AppPaths.SettingsFilePath);
+            }
+        };
     }
 
     private double HeaderDouble(string key, double fallback) =>
@@ -323,13 +363,34 @@ internal sealed class PlaytestWindow : Window
             Close();
             return;
         }
-        _player.Open(path);
+        // 2026-07-26: 従来はOpen()(非同期・投げっぱなし)の直後にPositionを設定していたため、
+        // デコード完了前は「読み込めたかどうか」を判定できなかった。ここではOpenAsyncを直接awaitし、
+        // 完了を待ってから開始フレームの妥当性を検証する(目視テスト側で見つかった「再生開始ラインが
+        // 音楽ファイルの長さを超えている場合、無音のまま再生位置・スクロールが固定される」不具合の
+        // プレイテスト側対策)。
+        await _player.OpenAsync(path);
+        if (_closed) return;
+        if (_player.Duration is not { } duration)
+        {
+            MessageBox.Show(this, "音楽ファイルの読み込みに失敗しましたわ。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Close();
+            return;
+        }
+        if (_startFrame / 60.0 >= duration.TotalSeconds)
+        {
+            MessageBox.Show(this,
+                "再生開始ラインが音楽ファイルの長さを超えていますの。ラインをもっと手前へ置き直してくださいませ。",
+                "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Information);
+            Close();
+            return;
+        }
+
         _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
         _player.SpeedRatio = _playbackSpeed; // 2026-07-23: 再生速度スライダー(ピッチ補正は行わない)
         _player.Volume = _volume; // 2026-07-21: UIの音量設定をプレイテストにも反映
 
         // 2026-07-26d: プレイテスト起動時ウェイト(環境設定>プレイテスト、ms単位)。
-        // ウィンドウ表示直後の初回起動時のみ適用し、BackSpaceによるやり直し時は待たない。
+        // ウィンドウ表示直後の初回起動時に適用(BackSpaceによるやり直し時はRestartFromStartFrame側で同様に適用)。
         if (_startupWaitMs > 0)
         {
             try { await Task.Delay(_startupWaitMs); }
@@ -338,33 +399,55 @@ internal sealed class PlaytestWindow : Window
         }
 
         _player.Play();
-        _timer.Start();
+        if (!_renderingSubscribed) { CompositionTarget.Rendering += Timer_Tick; _renderingSubscribed = true; }
     }
+
+    /// <summary>やり直し中の多重実行防止(BackSpace連打・ウェイト待機中の再入対策、2026-07-26)。</summary>
+    private bool _restarting;
 
     /// <summary>再生開始フレームからのやり直し(2026-07-26d要望対応、プレイテスト中のBackSpace)。
     /// 判定エンジン・オートプレイカーソル・ステップヒット演出・判定表示・押下中キー・ハンドクラップの
-    /// カーソルを全てリセットし、音楽位置だけ_startFrameへ戻す(起動時ウェイトは再適用しない)。</summary>
-    private void RestartFromStartFrame()
+    /// カーソルを全てリセットし、音楽位置を_startFrameへ戻す。起動時ウェイト(環境設定>プレイテスト、
+    /// ms単位)が設定されている場合は、初回起動時と同様にこのやり直しにも適用する(2026-07-26要望対応、
+    /// 従来は初回起動時のみ適用していた)。</summary>
+    private async void RestartFromStartFrame()
     {
-        _engine.Reset();
-        Array.Clear(_autoPlayArrowCursor);
-        Array.Clear(_autoPlayFreezeCursor);
-        Array.Clear(_stepHitJudge);
-        Array.Clear(_stepHitFramesRemaining);
-        foreach (var s in _pressedKeys) s.Clear();
-        _judgeText = "";
-        _comboText = "";
-        _freezeJudgeText = "";
-        _freezeComboText = "";
-        NotesClearedByKeypress = 0;
+        if (_restarting) return;
+        _restarting = true;
+        try
+        {
+            _engine.Reset();
+            Array.Clear(_autoPlayArrowCursor);
+            Array.Clear(_autoPlayFreezeCursor);
+            Array.Clear(_stepHitJudge);
+            Array.Clear(_stepHitFramesRemaining);
+            foreach (var s in _pressedKeys) s.Clear();
+            _judgeText = "";
+            _comboText = "";
+            _freezeJudgeText = "";
+            _freezeComboText = "";
+            NotesClearedByKeypress = 0;
 
-        _currentFrame = _startFrame;
-        // 2026-07-26f: Position設定時に_player内部でクラップの発音カーソルも自動的に巻き戻される
-        // (NAudioBgmPlayer.RecomputeClapCursorLocked)ため、ここで別途リセットする必要は無い。
-        _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
-        _player.Play(); // 既に再生中でも安全(再入可能)
+            _currentFrame = _startFrame;
+            // 2026-07-26f: Position設定時に_player内部でクラップの発音カーソルも自動的に巻き戻される
+            // (NAudioBgmPlayer.RecomputeClapCursorLocked)ため、ここで別途リセットする必要は無い。
+            _player.Position = TimeSpan.FromSeconds(_startFrame / 60.0);
+            _player.Stop(); // ウェイト中は再生させない(待機無しの場合は直後にPlay()するだけなので実質即時)
+            _surface.InvalidateVisual();
 
-        _surface.InvalidateVisual();
+            if (_startupWaitMs > 0)
+            {
+                try { await Task.Delay(_startupWaitMs); }
+                catch { /* ウィンドウが閉じられた場合等は再生開始をスキップ */ }
+                if (_closed) return;
+            }
+
+            _player.Play(); // 既に再生中でも安全(再入可能)
+        }
+        finally
+        {
+            _restarting = false;
+        }
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
@@ -485,11 +568,25 @@ internal sealed class PlaytestWindow : Window
             _ => ("ｲｸﾅｲ(・A・)", Brushes.Gray),
         };
 
-        // 2026-07-26: ステップゾーンヒットフラッシュは本家準拠で通常ノート判定(イイ〜ウワァン)のみが対象
-        // (フリーズのキター/イクナイはこの演出を使わず、帯の消去/変色で判定を表す)。
-        if (r.Judge is not (PlayJudge.Kita or PlayJudge.Iknai))
+        // 2026-07-26要望対応: ヒットフラッシュは「打鍵によって消去された」通常ノート判定(イイ〜ショボーン)
+        // のみが対象。ウワァン(押さずに判定枠を通過したミス)は打鍵を伴わないため表示しない。
+        // フリーズのキター/イクナイはこの演出を使わず、帯の消去/変色で判定を表す(従来通り)。
+        if (r.Judge is not (PlayJudge.Kita or PlayJudge.Iknai or PlayJudge.Uwan))
         {
+            // 2026-07-26要望対応: 常にステップゾーン上ではなく、実際に消去された座標(判定時点での
+            // ノートの表示位置)へ表示する。プレイヤーがその上下のズレでタイミング誤差を知覚できるように
+            // するための対応。ノートのフレームは「入力フレーム(=判定処理時点の_currentFrame) + DiffFrames」
+            // (DiffFrames = ノート基準フレーム − 入力フレーム)で求まる。YOfと同じ計算式をここでも使う。
+            var laneDef = _template.Lanes[r.Lane];
+            bool flipped = (laneDef.ScrollDirection == "down") ^ _reverse;
+            double dir = flipped ? -1 : 1;
+            double stepY = flipped ? _stepYBottom : _stepYTop;
+            double noteFrame = _currentFrame + r.DiffFrames;
+            double boost = GetBoostFactor(noteFrame);
+            double y = stepY + boost * (CumulativeSpeedDistance(noteFrame) - CumulativeSpeedDistance(_currentFrame)) * _baseScrollSpeed * dir;
+
             _stepHitJudge[r.Lane] = r.Judge;
+            _stepHitY[r.Lane] = y;
             _stepHitFramesRemaining[r.Lane] = StepHitFrames;
         }
 
@@ -554,11 +651,12 @@ internal sealed class PlaytestWindow : Window
                 // ステップゾーン(2026-07-20: レーンの画像・回転角を使用。色は従来通りDimGrayのtint)
                 DrawNote(dc, image, laneDef, cx, stepY, Colors.DimGray);
 
-                // 2026-07-26: ステップゾーンヒットフラッシュ(本家stepHitTargetArrow移植)。
+                // 2026-07-26: ステップゾーンヒットフラッシュ(本家stepHitTargetArrow移植、2026-07-26要望対応で
+                // 表示座標を「実際に消去された座標」(OnJudged側で算出したo._stepHitY)へ変更)。
                 if (o._stepHitFramesRemaining[i] > 0 && o._stepHitJudge[i] is { } hitJudge)
                 {
                     dc.PushOpacity(StepHitOpacity);
-                    DrawNote(dc, image, laneDef, cx, stepY, JudgeColor(hitJudge), ArrowSize + StepHitSizeAdd);
+                    DrawNote(dc, image, laneDef, cx, o._stepHitY[i], JudgeColor(hitJudge), ArrowSize + StepHitSizeAdd);
                     dc.Pop();
                 }
 

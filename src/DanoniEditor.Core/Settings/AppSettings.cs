@@ -1,6 +1,8 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace DanoniEditor.Core.Settings;
+
 
 /// <summary>
 /// アプリケーション本体の環境設定(仕様書14章)。プロジェクト(ChartProject)とは別に、
@@ -390,12 +392,31 @@ public sealed class AppSettings
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
 
+    /// <summary>プレイテストウィンドウの表示位置(2026-07-26要望対応、第三者提案)。閉じるボタン・
+    /// 中断キーでの終了時の位置を保存し、次回プレイテスト表示時に引き継ぐ。SizeToContentのため
+    /// 幅・高さは保存しない(内容によって毎回変わるため)。null=未設定(既定通り親ウィンドウ中央に表示)。</summary>
+    public double? PlaytestWindowLeft { get; set; }
+    public double? PlaytestWindowTop { get; set; }
+
+    // =====================================================================
+    // キーマクロ(2026-07-26要望対応、第三者要望): Ctrl+Shift+1〜9に割り当てる、複数の機能を
+    // 順番に実行するマクロ。既存の「レーン入替マクロ」(仕様書11章)とは別機能(KeyMacro.cs参照)。
+    // =====================================================================
+
+    /// <summary>設定済みのキーマクロ一覧(スロット1〜9、未設定のスロットはリストに存在しない)。</summary>
+    public List<KeyMacroDefinition> KeyMacros { get; set; } = [];
+
     /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistory/RecentFilesは参照型のため個別に複製する</summary>
     public AppSettings Clone()
     {
         var c = (AppSettings)MemberwiseClone();
         c.ColorHistory = [.. ColorHistory];
         c.RecentFiles = [.. RecentFiles];
+        c.KeyMacros = [.. KeyMacros.Select(m => new KeyMacroDefinition
+        {
+            Slot = m.Slot,
+            Steps = [.. m.Steps.Select(s => new KeyMacroStep { Kind = s.Kind, Value = s.Value })],
+        })];
         return c;
     }
 

@@ -20,6 +20,10 @@ namespace DanoniEditor.App;
 public partial class MainWindow : Window
 {
     private readonly TemplateRepository _templates;
+    /// <summary>プラグイン対応の土台(2026-07-26)。読み込み・初期化・アクティブなドキュメントへの
+    /// 追従をまとめて担う。コンストラクタで一度だけ生成し、_document切替のたびにNotifyDocumentChangedを
+    /// 呼んで最新状態を追従させる。</summary>
+    private readonly Plugins.PluginManager _pluginManager;
     private EditorDocument? _document;
     private SmartToolController? _controller;
     /// <summary>SKB操作モード(キーボード操作、2026-07-21)のコントローラ。ドキュメント切替のたびに
@@ -144,6 +148,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
         _macros = LaneSwapMacroFile.Load(AppPaths.LaneSwapMacroFilePath); // 2026-07-26: settings.jsonとは独立したファイル
+        _pluginManager = new Plugins.PluginManager(() => _document); // 2026-07-26: プラグイン対応の土台
         SnapDivisionCombo.ItemsSource = SnapService.Divisions;
         SnapDivisionCombo.SelectedItem = 16;
 
@@ -223,6 +228,27 @@ public partial class MainWindow : Window
         NColorNormalShadowColorBox.Text = "#000000";
 
         RefreshMacroList(); // 2026-07-26: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
+
+        // 2026-07-26: プラグイン対応の土台。./pluginsフォルダを読み込み、パネル系プラグインは
+        // 右パネルへタブとして追加、オーバーレイ系プラグインは譜面ビューへ登録する。
+        // 読み込み時に問題があった場合は起動を止めず、まとめて一度だけ通知する。
+        foreach (var panelPlugin in _pluginManager.PanelPlugins)
+        {
+            try
+            {
+                PropertyTabControl.Items.Add(new TabItem { Header = panelPlugin.PanelTitle, Content = panelPlugin.CreatePanel() });
+            }
+            catch (Exception ex)
+            {
+                Plugins.PluginLog.Write($"{panelPlugin.Id}: CreatePanelで例外が発生しましたわ({ex.Message})");
+            }
+        }
+        Canvas.OverlayPlugins = _pluginManager.OverlayPlugins;
+        if (_pluginManager.LoadErrors.Count > 0)
+        {
+            MessageBox.Show(this, string.Join("\n", _pluginManager.LoadErrors), "プラグインの読み込みで問題がありましたわ",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
 
         // 2026-07-26: 終了時のウィンドウ状態(モニタ/最大化/位置サイズ)を復元し、終了時に保存する。
         RestoreWindowPlacement();
@@ -572,7 +598,13 @@ public partial class MainWindow : Window
         OpenProjectFile(path);
     }
 
-    private void SaveProject_Click(object sender, RoutedEventArgs e)
+    private void SaveProject_Click(object sender, RoutedEventArgs e) => SaveProjectInternal(forcePrompt: false);
+
+    /// <summary>「ファイル > 名前を付けて保存」(2026-07-26要望対応)。上書き保存と処理は同じで、
+    /// 既存の保存先パスの有無に関わらず必ず保存先ダイアログを出す点だけが異なる。</summary>
+    private void SaveProjectAs_Click(object sender, RoutedEventArgs e) => SaveProjectInternal(forcePrompt: true);
+
+    private void SaveProjectInternal(bool forcePrompt)
     {
         if (_document is null)
         {
@@ -580,7 +612,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var path = _currentFilePath;
+        var path = forcePrompt ? null : _currentFilePath;
         if (path is null)
         {
             var dlg = new SaveFileDialog
@@ -625,6 +657,66 @@ public partial class MainWindow : Window
     // =====================================================================
     // dos.txtエクスポート
     // =====================================================================
+
+    /// <summary>「設定 > 環境報告作成...」(2026-07-26要望対応)。バグ報告時のデバッグ情報源として、
+    /// OS・.NET・エディタの設定値・プラグイン読み込み状況をまとめたテキストファイルを書き出す。</summary>
+    private void CreateDiagnosticsReport_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Filter = "テキストファイル (*.txt)|*.txt",
+            FileName = $"danoni_editor_report_{DateTime.Now:yyyyMMdd_HHmmss}.txt",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            var text = DiagnosticsReport.Build(_appSettings, _pluginManager);
+            File.WriteAllText(dlg.FileName, text);
+            StatusText.Text = $"環境報告を書き出しました: {Path.GetFileName(dlg.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"環境報告の書き出しに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>キーマクロ(Ctrl+Shift+1〜9、2026-07-26要望対応)の実行。指定スロットに登録された
+    /// 手順を先頭から順に実行する。未登録スロットは何もしない。</summary>
+    private void RunKeyMacro(int slot)
+    {
+        var def = _appSettings.KeyMacros.FirstOrDefault(m => m.Slot == slot);
+        if (def is null || def.Steps.Count == 0) return;
+
+        foreach (var step in def.Steps)
+        {
+            switch (step.Kind)
+            {
+                case KeyMacroStepKind.SetPlaybackSpeed:
+                    _appSettings.PlaybackSpeed = step.Value;
+                    _appSettings.Save(AppPaths.SettingsFilePath);
+                    _audioPlayer.SpeedRatio = step.Value;
+                    _suppressPlaybackSpeedComboEvent = true;
+                    PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(step.Value);
+                    _suppressPlaybackSpeedComboEvent = false;
+                    break;
+                case KeyMacroStepKind.SetPlaybackStartSeconds:
+                    if (_document is not null)
+                    {
+                        _document.Project.PlaybackStartFrame = step.Value * 60.0;
+                        _document.NotifyChanged();
+                        Canvas.InvalidateVisual();
+                    }
+                    break;
+                case KeyMacroStepKind.StartVisualTest:
+                    if (_document is not null && !_visualTestActive) StartVisualTest();
+                    break;
+                case KeyMacroStepKind.StartPlaytest:
+                    StartPlaytest();
+                    break;
+            }
+        }
+    }
 
     private void ExportDos_Click(object sender, RoutedEventArgs e)
     {
@@ -927,6 +1019,7 @@ public partial class MainWindow : Window
     {
         _document = doc;
         _controller = controller ?? new SmartToolController(doc);
+        _pluginManager.NotifyDocumentChanged(); // 2026-07-26: プラグインへドキュメント切替を通知
 
         Canvas.Document = doc;
         Canvas.Controller = _controller;
@@ -1093,6 +1186,7 @@ public partial class MainWindow : Window
         _controller = null;
         _keyboardMode = null;
         _currentFilePath = null;
+        _pluginManager.NotifyDocumentChanged(); // 2026-07-26: プラグインへ「プロジェクト無し」を通知
 
         Canvas.Document = null;
         Canvas.Controller = null;
@@ -1482,6 +1576,16 @@ public partial class MainWindow : Window
     {
         if (_document is null || _audioPlayer.Duration is null) return;
         var pos = _audioPlayer.Position;
+
+        // 2026-07-26: 曲の末尾に到達した場合、音が止まった後も再生位置ラインとスクロールが同じ位置に
+        // 固定されたまま(無音で)残り続けてしまう(前段のstartFrame超過チェックとは別経路で同じ症状に
+        // なりうるため、こちらでも保険として自動終了させる)。
+        if (_visualTestActive && pos.TotalSeconds >= _audioPlayer.Duration.Value.TotalSeconds - 0.05)
+        {
+            StopVisualTest(returnToStart: true);
+            return;
+        }
+
         AudioTimeText.Text = pos.ToString(@"mm\:ss\.ff");
 
         double frame = pos.TotalSeconds * 60.0;
@@ -1532,13 +1636,32 @@ public partial class MainWindow : Window
     private void AddDifficultyTab_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null) return;
-        var choice = NewProjectDialog.Ask(this, _templates, _appSettings.DefaultBpm);
+        // 2026-07-26要望対応: カレントプロジェクトは既にBPMを持っており、ここで入力してもタブ追加処理では
+        // 使用しない(プロジェクト共通のBPMがそのまま使われる)ため、ダイアログのBPM欄は非表示にする。
+        var choice = NewProjectDialog.Ask(this, _templates, _appSettings.DefaultBpm, showBpm: false);
         if (choice is not { } c) return;
 
         var template = _templates.Get(c.KeyTypeId);
         var newTab = DifficultyTab.CreateFor(template, c.DifficultyName);
         _document.Project.Tabs.Add(newTab);
         _document.NotifyTabsChanged(_document.Project.Tabs.Count - 1);
+        OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+    }
+
+    /// <summary>「タブを複製」ボタン(2026-07-26要望対応)。選択中のタブをノート・ゲージ設定等ごと
+    /// 丸ごとディープコピーし、複製元の直後へ挿入する。タブ追加/削除/並び替えと同じ既存の方式に
+    /// 揃え、Undoスタックには積まない(ユーザー確定仕様)。</summary>
+    private void DuplicateDifficultyTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        int idx = _document.CurrentTabIndex;
+        var tabs = _document.Project.Tabs;
+        if (idx < 0 || idx >= tabs.Count) return;
+
+        var clone = tabs[idx].Clone();
+        clone.DifficultyName = $"{clone.DifficultyName} のコピー";
+        tabs.Insert(idx + 1, clone);
+        _document.NotifyTabsChanged(idx + 1);
         OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
     }
 
@@ -2218,6 +2341,7 @@ public partial class MainWindow : Window
     private void RefreshSelectedObjectPanel()
     {
         UpdateStartFrameText(); // Changedイベントごとに再生開始フレーム表示も更新する(2026-07-17f、専用購読を増やさないための相乗り)
+        RefreshMarkerList(); // 2026-07-26要望対応: マーカー一覧もここへ相乗りで最新化する
         if (_document is null) return;
         var sel = _document.Selection;
 
@@ -2758,6 +2882,22 @@ public partial class MainWindow : Window
 
     // --- 2026-07-26: Ctrl+1〜9,0,-,^ グリッド分解能ショートカット ---
 
+    /// <summary>数字キー列の物理キー(Ctrl+Shift+1〜9)をキーマクロのスロット番号(1〜9)へ変換する
+    /// (2026-07-26要望対応)。テンキーは対象外(グリッド分解能ショートカットと同じ慣習)。</summary>
+    private static int? KeyMacroSlot(Key key) => key switch
+    {
+        Key.D1 => 1,
+        Key.D2 => 2,
+        Key.D3 => 3,
+        Key.D4 => 4,
+        Key.D5 => 5,
+        Key.D6 => 6,
+        Key.D7 => 7,
+        Key.D8 => 8,
+        Key.D9 => 9,
+        _ => null,
+    };
+
     /// <summary>数字キー列の物理キー(Ctrl+1,2,...,9,0,-,^)を0〜11の位置インデックスへ変換する。
     /// テンキーは対象外(SKBエディタの慣習に合わせ、メイン列のみ)。対応外のキーはnull。</summary>
     private static int? GridShortcutKeyIndex(Key key) => key switch
@@ -2868,7 +3008,11 @@ public partial class MainWindow : Window
                 e.Handled = true;
             }
             else if (e.Key == Key.End) { ScrollToLastNote(); e.Handled = true; } // 末尾ノートを画面中央へ
-            else if (e.Key == Key.Space && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; } // 現在位置で終了
+            // 2026-07-26: 目視テストを「現在位置で終了」するショートカット。マウスモード(Spaceで開始)では
+            // 従来通りCtrl+Space。キーボードモード(Enterで開始)ではSpaceがカーソル前進に割り当て済みで
+            // 紛らわしいため、開始キーに揃えてCtrl+Enterへ変更(要望対応)。
+            else if (!_keyboardModeActive && e.Key == Key.Space && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; }
+            else if (_keyboardModeActive && e.Key == Key.Enter && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; }
             else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
             else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
             // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
@@ -2912,6 +3056,14 @@ public partial class MainWindow : Window
             else if (!textInputFocused && e.Key == Key.A)
             {
                 if (_controller is not null && _controller.SelectAllNotes()) Canvas.InvalidateVisual();
+                e.Handled = true;
+            }
+            // --- 2026-07-26要望対応(第三者要望): Ctrl+Shift+1〜9によるキーマクロ実行。
+            // Ctrl+1〜9(グリッド分解能切替、Shiftなし)と衝突しないよう、Shift併用時のみここで処理し、
+            // 下のグリッド分解能切替(Shiftの有無を見ない)より先に判定する。
+            else if (!textInputFocused && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && KeyMacroSlot(e.Key) is int macroSlot)
+            {
+                RunKeyMacro(macroSlot);
                 e.Handled = true;
             }
             // --- 2026-07-26: Ctrl+1〜9,0,-,^(数字キー列12個)によるグリッド分解能切替。
@@ -3770,6 +3922,43 @@ public partial class MainWindow : Window
         ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, y - ChartScrollViewer.ViewportHeight / 2));
     }
 
+    // =====================================================================
+    // 右パネル: マーカー一覧・ジャンプ(2026-07-26要望対応、第三者提案)
+    // =====================================================================
+
+    /// <summary>マーカー一覧の表示用ラッパー。「小節N / frame: コメント」形式で表示する。</summary>
+    private sealed record MarkerListEntry(long Tick, string Display)
+    {
+        public override string ToString() => Display;
+    }
+
+    /// <summary>マーカー一覧を最新化する(Document.Changed購読=RefreshSelectedObjectPanelから相乗りで呼ぶ)。
+    /// tick昇順で並べ、小節番号(1始まり)・frame・コメントを表示する。ドキュメント未オープン時は空表示。</summary>
+    private void RefreshMarkerList()
+    {
+        if (_document is null) { MarkerListBox.ItemsSource = null; return; }
+        var engine = _document.Project.CreateTimingEngine();
+        MarkerListBox.ItemsSource = _document.Project.Markers
+            .OrderBy(m => m.Tick)
+            .Select(m =>
+            {
+                var (measureIndex, _) = engine.TickToMeasurePosition(m.Tick);
+                double frame = engine.TickToFrame(m.Tick);
+                var comment = string.IsNullOrEmpty(m.Comment) ? "(コメント無し)" : m.Comment;
+                return new MarkerListEntry(m.Tick, $"小節{measureIndex + 1} / {frame:0.0}f: {comment}");
+            })
+            .ToList();
+    }
+
+    /// <summary>マーカー一覧のダブルクリックで、そのマーカーのtick位置を画面中央へスクロールする
+    /// (ScrollToLastNoteと同じ考え方)。</summary>
+    private void MarkerListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_document is null || MarkerListBox.SelectedItem is not MarkerListEntry entry) return;
+        double y = _document.CurrentLayout.TickToY(entry.Tick);
+        ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, y - ChartScrollViewer.ViewportHeight / 2));
+    }
+
     private void ToggleVisualTest()
     {
         if (_visualTestActive) StopVisualTest(returnToStart: true);
@@ -3786,6 +3975,17 @@ public partial class MainWindow : Window
             return;
         }
         double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+
+        // 2026-07-26: 再生開始ラインが音楽ファイルの実際の長さを超えて置かれていた場合、_audioPlayer.Position
+        // がクランプされて曲の末尾に固定され、無音のまま再生位置ライン・スクロールが一切動かなくなる不具合
+        // (音が流れない・スクロールが固定される・というバグ報告の原因)。ここで検知して警告し、開始しない。
+        if (_audioPlayer.Duration is { } duration && startFrame / 60.0 >= duration.TotalSeconds)
+        {
+            MessageBox.Show(this,
+                "再生開始ラインが音楽ファイルの長さを超えていますの。ラインをもっと手前へ置き直してくださいませ。",
+                "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
 
         // 2026-07-26f: ハンドクラップ用にノート出現frame一覧を作り直し、_audioPlayer(NAudioBgmPlayer)へ
         // 登録する(発音判定・PCM重ね合わせはBGMのレンダースレッド内で直接行われる)。
@@ -3905,13 +4105,38 @@ public partial class MainWindow : Window
     /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)</summary>
     private static double PlaybackSpeedValues_Nearest(double v) => Math.Clamp(Math.Round(v * 10) / 10, 0.1, 2.0);
 
+    /// <summary>PlaybackSpeedCombo.SelectedItemの変更をAppSettingsへ反映させたくない場合に立てるガード
+    /// (2026-07-26: ピッチ指定ダイアログ確定後、コンボ表示だけを近似値へ合わせる際に使用)。</summary>
+    private bool _suppressPlaybackSpeedComboEvent;
+
     private void PlaybackSpeedCombo_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (!_initialized) return;
+        if (!_initialized || _suppressPlaybackSpeedComboEvent) return;
         if (PlaybackSpeedCombo.SelectedItem is not double v) return;
         _appSettings.PlaybackSpeed = v;
         _appSettings.Save(AppPaths.SettingsFilePath);
         _audioPlayer.SpeedRatio = v; // 目視テスト側。プレイテスト側はStartPlaytest時に都度渡す
+    }
+
+    /// <summary>「ピッチで指定...」ボタン(2026-07-26要望対応)。半音移動量からspeedRatio = 2^(移動量/12)を
+    /// 計算し、PlaybackSpeedCombo(0.1刻みのプリセット)と同じ`AppSettings.PlaybackSpeed`へ反映する。
+    /// 計算結果はプリセットの0.1刻みに一致しないことが多いため、コンボ表示は近似値に合わせるだけに留め、
+    /// 実際に適用される値(_appSettings.PlaybackSpeed/_audioPlayer.SpeedRatio)は計算値そのものを使う。</summary>
+    private void PlaybackSpeedByPitch_Click(object sender, RoutedEventArgs e)
+    {
+        int currentSemitones = (int)Math.Round(12.0 * Math.Log2(Math.Max(0.0001, _appSettings.PlaybackSpeed)));
+        currentSemitones = Math.Clamp(currentSemitones, PitchShiftDialog.MinSemitones, PitchShiftDialog.MaxSemitones);
+        var semitones = PitchShiftDialog.Ask(this, currentSemitones);
+        if (semitones is not { } s) return;
+
+        double ratio = Math.Round(PitchShiftDialog.RatioFromSemitones(s), 4);
+        _appSettings.PlaybackSpeed = ratio;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+        _audioPlayer.SpeedRatio = ratio; // 目視テスト側。プレイテスト側はStartPlaytest時に都度渡す
+
+        _suppressPlaybackSpeedComboEvent = true;
+        PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(ratio); // コンボの表示だけ近似値に合わせる
+        _suppressPlaybackSpeedComboEvent = false;
     }
 
     /// <summary>音量(0〜100%)を確定させる共通処理(2026-07-26)。スライダー・数値入力欄どちらの

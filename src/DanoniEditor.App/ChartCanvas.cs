@@ -9,6 +9,8 @@ using DanoniEditor.Core.Audio;
 using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Timing;
 using DanoniEditor.Editing;
+using DanoniEditor.App.Plugins;
+using DanoniEditor.PluginContracts;
 
 namespace DanoniEditor.App;
 
@@ -203,6 +205,11 @@ public sealed class ChartCanvas : FrameworkElement
 
     /// <summary>現在スクロールで見えている範囲(canvasローカル座標、px)。MainWindowがScrollChangedで更新する。</summary>
     public Rect ViewportRect { get; set; } = Rect.Empty;
+
+    /// <summary>右パネル/プレイテストと同様、プラグインが独自のオーバーレイ描画を差し込むための
+    /// 登録先(2026-07-26、プラグイン対応の土台)。MainWindowが起動時に読み込んだプラグイン一覧を
+    /// ここへセットする。空リストなら通常通り何も描かれない。</summary>
+    public IReadOnlyList<IChartOverlayPlugin> OverlayPlugins { get; set; } = [];
 
     /// <summary>音楽再生中のカレントフレーム位置(tick、MainWindowが再生タイマーで更新)。nullなら非表示</summary>
     public double? PlaybackTick { get; set; }
@@ -681,6 +688,31 @@ public sealed class ChartCanvas : FrameworkElement
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
         DrawLaneLabels(dc, layout, viewport); // 2026-07-22: レーンラベル(常に最前面)
+        DrawPluginOverlays(dc, layout, viewport); // 2026-07-26: プラグインのオーバーレイ描画(最前面)
+    }
+
+    /// <summary>登録済みの<see cref="IChartOverlayPlugin"/>を、本体の描画が全て終わった後に
+    /// 最前面へ呼び出す(2026-07-26、プラグイン対応の土台)。1つのプラグインの描画中に例外が
+    /// 発生しても他のプラグイン・本体描画自体は継続させる(不良プラグインで譜面ビュー全体が
+    /// 真っ黒になる事故を防ぐ)。</summary>
+    private void DrawPluginOverlays(DrawingContext dc, ChartLayout layout, Rect viewport)
+    {
+        if (OverlayPlugins.Count == 0) return;
+        var transform = new PluginChartViewTransform
+        {
+            TickToScreenY = tick => layout.TickToY(tick),
+            LaneToScreenX = laneIndex => layout.NoteColumn(laneIndex).CenterX,
+            NoteLaneWidth = layout.NoteLaneWidth,
+            ViewportWidth = viewport.Width,
+            ViewportHeight = viewport.Height,
+            IsReverse = layout.Reverse,
+        };
+        var chart = PluginChartContextBuilder.Build(Document);
+        foreach (var plugin in OverlayPlugins)
+        {
+            try { plugin.RenderOverlay(dc, transform, chart); }
+            catch (Exception ex) { PluginLog.Write($"{plugin.Id}: RenderOverlayで例外が発生しましたわ({ex.Message})"); }
+        }
     }
 
     /// <summary>譜面ビューReverse表示(2026-07-22、環境設定のみで切替。プレイテストには非適用)。</summary>
@@ -1360,7 +1392,7 @@ public sealed class ChartCanvas : FrameworkElement
         {
             long tick = engine.MeasureStartTick(s.MeasureIndex);
             if (tick < tickMin || tick > tickMax) continue;
-            DrawEventTag(dc, col, layout.TickToY(tick), TimeSigBrush, $"{s.Numerator}/{s.Denominator}", pointLeft: true, layout.ZoomScale);
+            DrawEventTag(dc, col, layout.TickToY(tick), TimeSigBrush, $"{s.Numerator}/{s.Denominator}", pointLeft: true, layout.ZoomScale, mirrorShape: true);
         }
     }
 
@@ -1444,14 +1476,17 @@ public sealed class ChartCanvas : FrameworkElement
     /// </summary>
     /// <summary>fontSizeBase=ZoomScale=1.0時の基準フォントサイズ(pt)。マーカータグは環境設定の
     /// MarkerFontSizeを渡す(2026-07-26)。それ以外(speed/boost/BPM/歌詞)は従来通り既定値9を使う。</summary>
-    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9)
+    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9, bool mirrorShape = false)
     {
         const double w = 20, h = 9;
         double cx = col.CenterX;
+        // mirrorShape: 三角形の向きだけをpointLeftと逆にする(ラベルの表示側はpointLeft側の従来通りを維持、
+        // 2026-07-26要望対応: 拍子マーカーの向きを左右反転)。
+        bool triangleLeft = mirrorShape ? !pointLeft : pointLeft;
         var geo = new StreamGeometry();
         using (var ctx = geo.Open())
         {
-            if (pointLeft)
+            if (triangleLeft)
             {
                 ctx.BeginFigure(new Point(cx - w / 2, y), true, true);
                 ctx.LineTo(new Point(cx + w / 2, y - h), true, false);
