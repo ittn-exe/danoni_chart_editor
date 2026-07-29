@@ -175,11 +175,48 @@ public sealed class AppSettings
     /// プレイテストウィンドウ表示後、この時間だけ待ってから音楽再生・判定を開始する。</summary>
     public int PlaytestStartupWaitMs { get; set; } = 0;
 
+    /// <summary>プレイテスト中に小節線・小節番号を表示するか(2026-07-27要望対応、既定OFF)。
+    /// 譜面ビューの小節線描画とは独立した設定。</summary>
+    public bool PlaytestShowMeasureLines { get; set; } = false;
+
+    /// <summary>プレイ画面プレビュー(右パネル「プレビュー」タブ)の「ノートの表示期限」設定
+    /// (2026-07-29要望対応)。"passThrough"(既定)=ステップゾーンを通過するまで(frame &lt; 再生開始ライン
+    /// で非表示)、"overlap"=ステップゾーンに重なるまで(frame &lt;= 再生開始ラインで非表示、
+    /// frame=再生開始ラインでも消す)。</summary>
+    public string PreviewNoteExpiryMode { get; set; } = "passThrough";
+
+    /// <summary>プレイ画面プレビュー(右パネル「プレビュー」タブ)の表示サイズ倍率(2026-07-29要望対応)。
+    /// 0.25〜2.0(25%〜200%)。論理座標(ノート配置等)には影響せず、表示のみ拡縮する
+    /// (PlaytestWindowのウィンドウサイズ倍率と同じ考え方)。</summary>
+    public double PreviewDisplayScale { get; set; } = 1.0;
+
     /// <summary>譜面ビュー(編集画面)のReverse表示(2026-07-22)。ONの場合、tick0を画面下端・末尾を
     /// 上端にして進行方向を逆にする(画像等は上下反転しない、座標変換のみを反転する仕様)。
     /// プレイテスト(PlaytestReverse)とは完全に独立した設定。環境設定からのみ切替可能
     /// (ボタン・チェックボックス・ショートカットキーは用意しない、2026-07-22ユーザー確定仕様)。</summary>
     public bool ChartViewReverse { get; set; } = false;
+
+    // =====================================================================
+    // 目視テスト: 自動でスタート位置(再生開始ライン)へ戻る機能(2026-07-29要望対応、既定OFF)。
+    // 再生開始ラインから指定した小節数/秒数が経過すると、自動的に再生開始ラインの位置へ戻る
+    // (DAWループ再生(時間情報レーンの範囲選択)とは別の、より単純な「練習用ループ」機能)。
+    // =====================================================================
+
+    /// <summary>自動でスタート位置へ戻る機能を有効にするか(既定OFF)。</summary>
+    public bool VisualTestAutoReturnEnabled { get; set; } = false;
+
+    /// <summary>経過判定の単位。"measures"(既定)=小節数、"seconds"=秒数。</summary>
+    public string VisualTestAutoReturnUnit { get; set; } = "measures";
+
+    /// <summary>自動で戻るまでの小節数(VisualTestAutoReturnUnit="measures"時のみ使用、既定4)。</summary>
+    public int VisualTestAutoReturnMeasures { get; set; } = 4;
+
+    /// <summary>自動で戻るまでの秒数(VisualTestAutoReturnUnit="seconds"時のみ使用、既定10.0)。</summary>
+    public double VisualTestAutoReturnSeconds { get; set; } = 10.0;
+
+    /// <summary>戻った後、再生を継続するか(true=既定、そのまま先頭からループ再生を続ける)、
+    /// それとも目視テストを終了するか(false)。</summary>
+    public bool VisualTestAutoReturnContinuePlayback { get; set; } = true;
 
     /// <summary>キーボードモード中のSpace/Bキーの移動方向の解釈方式(2026-07-26要望対応)。
     /// - "visual"(既定、現在の実装通り): 画面上の見た目方向に固定(Space=常に画面下へ、B=常に画面上へ。
@@ -432,6 +469,15 @@ public sealed class AppSettings
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
 
+    /// <summary>右パネル(譜面ビューとの境界のGridSplitterでドラッグ調整する側)の幅(px、2026-07-29要望対応)。
+    /// null=未保存(初回起動等)、XAML既定値(280px)のまま。</summary>
+    public double? RightPanelWidth { get; set; }
+
+    /// <summary>環境設定ウィンドウのサイズ(px、2026-07-29要望対応)。OK/キャンセルどちらで閉じても
+    /// 保存する(MainWindow本体の位置保存と同じ考え方)。null=未保存(初回起動等)、既定値(560x470)のまま。</summary>
+    public double? PreferencesWindowWidth { get; set; }
+    public double? PreferencesWindowHeight { get; set; }
+
     /// <summary>プレイテストウィンドウの表示位置(2026-07-26要望対応、第三者提案)。閉じるボタン・
     /// 中断キーでの終了時の位置を保存し、次回プレイテスト表示時に引き継ぐ。SizeToContentのため
     /// 幅・高さは保存しない(内容によって毎回変わるため)。null=未設定(既定通り親ウィンドウ中央に表示)。</summary>
@@ -446,6 +492,49 @@ public sealed class AppSettings
     /// <summary>設定済みのキーマクロ一覧(スロット1〜9、未設定のスロットはリストに存在しない)。</summary>
     public List<KeyMacroDefinition> KeyMacros { get; set; } = [];
 
+    // =====================================================================
+    // ショートカットキーカスタマイズ(2026-07-27要望対応)。マウスモード側のグローバルショートカット
+    // (ShortcutSettings.ShortcutId参照)のユーザー定義割り当て。キーはShortcutIdのenum名文字列。
+    // 未設定のShortcutIdはShortcutDefaults.Allの既定値へフォールバックする(GetShortcut参照)。
+    // =====================================================================
+
+    /// <summary>ショートカットキーのユーザー定義割り当て。</summary>
+    public Dictionary<string, ShortcutBinding> Shortcuts { get; set; } = [];
+
+    /// <summary>指定ShortcutIdの現在の割り当てを取得する(ユーザー定義優先、無ければ既定値)。</summary>
+    public ShortcutBinding GetShortcut(ShortcutId id) =>
+        Shortcuts.TryGetValue(id.ToString(), out var b) ? b : ShortcutDefaults.All[id].Default;
+
+    /// <summary>指定ShortcutIdへユーザー定義の割り当てを設定する。</summary>
+    public void SetShortcut(ShortcutId id, ShortcutBinding binding) => Shortcuts[id.ToString()] = binding;
+
+    /// <summary>指定ShortcutIdのユーザー定義割り当てを取り除き、既定値へ戻す。</summary>
+    public void ResetShortcutToDefault(ShortcutId id) => Shortcuts.Remove(id.ToString());
+
+    /// <summary>全ShortcutIdのユーザー定義割り当てを取り除き、既定値へ戻す(環境設定「デフォルト値へのリセット」ボタン用)。</summary>
+    public void ResetAllShortcutsToDefault() => Shortcuts.Clear();
+
+    // =====================================================================
+    // キーボードモード専用ショートカットキーカスタマイズ(2026-07-29要望対応)。マウスモードのShortcuts
+    // とは完全に別の辞書で管理し、同じ物理キーが重複して割り当てられることを許容する(KeyboardModeShortcutId
+    // 参照)。値はKey名文字列のみ(修飾キーは扱わない)。
+    // =====================================================================
+
+    /// <summary>キーボードモード専用ショートカットキーのユーザー定義割り当て(キー=KeyboardModeShortcutIdの
+    /// enum名文字列、値=System.Windows.Input.KeyのKey名文字列)。</summary>
+    public Dictionary<string, string> KeyboardModeShortcuts { get; set; } = [];
+
+    /// <summary>指定KeyboardModeShortcutIdの現在の割り当て(Key名文字列)を取得する
+    /// (ユーザー定義優先、無ければ既定値)。</summary>
+    public string GetKeyboardModeShortcutKey(KeyboardModeShortcutId id) =>
+        KeyboardModeShortcuts.TryGetValue(id.ToString(), out var k) ? k : KeyboardModeShortcutDefaults.All[id].DefaultKey;
+
+    public void SetKeyboardModeShortcutKey(KeyboardModeShortcutId id, string key) => KeyboardModeShortcuts[id.ToString()] = key;
+
+    public void ResetKeyboardModeShortcutToDefault(KeyboardModeShortcutId id) => KeyboardModeShortcuts.Remove(id.ToString());
+
+    public void ResetAllKeyboardModeShortcutsToDefault() => KeyboardModeShortcuts.Clear();
+
     /// <summary>環境設定ウィンドウの作業コピー用(2026-07-19)。ColorHistory/RecentFilesは参照型のため個別に複製する</summary>
     public AppSettings Clone()
     {
@@ -457,6 +546,8 @@ public sealed class AppSettings
             Slot = m.Slot,
             Steps = [.. m.Steps.Select(s => new KeyMacroStep { Kind = s.Kind, Value = s.Value })],
         })];
+        c.Shortcuts = Shortcuts.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
+        c.KeyboardModeShortcuts = new Dictionary<string, string>(KeyboardModeShortcuts);
         return c;
     }
 

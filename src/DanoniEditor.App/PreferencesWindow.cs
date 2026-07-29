@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Settings;
@@ -57,6 +58,14 @@ internal sealed class PreferencesWindow : Window
     // --- 目視テスト ---
     private readonly ComboBox _followMode = new() { Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly CheckBox _visualTestAcceptNotes = new() { Content = "ノート配置受付(ONの間、キー配置をプレイテスト用に切り替えて配置できます)" };
+    // --- 目視テスト自動復帰(2026-07-29要望対応) ---
+    private readonly CheckBox _vtAutoReturnEnabled = new() { Content = "再生開始ラインへ自動で戻る" };
+    private readonly RadioButton _vtAutoReturnByMeasures = new() { Content = "小節数で指定", GroupName = "vtAutoReturnUnit" };
+    private readonly RadioButton _vtAutoReturnBySeconds = new() { Content = "秒数で指定", GroupName = "vtAutoReturnUnit" };
+    private readonly TextBox _vtAutoReturnMeasures = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _vtAutoReturnSeconds = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly RadioButton _vtAutoReturnContinue = new() { Content = "再生を継続する(先頭からループ)", GroupName = "vtAutoReturnAction" };
+    private readonly RadioButton _vtAutoReturnStop = new() { Content = "目視テストを終了する", GroupName = "vtAutoReturnAction" };
 
     // --- プレイテスト ---
     private readonly CheckBox _ptReverse = new() { Content = "Reverse(スクロール反転)" };
@@ -67,6 +76,8 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _ptQuitEscape = new() { Content = "Escape" };
     // --- プレイテスト起動時ウェイト(2026-07-26d要望対応、ms単位) ---
     private readonly TextBox _ptStartupWaitMs = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
+    // --- プレイテスト中の小節線表示(2026-07-27要望対応、既定OFF) ---
+    private readonly CheckBox _ptShowMeasureLines = new() { Content = "小節線を表示(小節番号付き)" };
     // --- プレイテスト: キー種ごとのReverse既定値(2026-07-26要望対応) ---
     private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
 
@@ -143,6 +154,16 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _selAllTimeSig = new() { Content = "拍子変化" };
     private readonly CheckBox _selAllMarker = new() { Content = "マーカー" };
 
+    // --- ショートカットキーカスタマイズ(2026-07-27要望対応) ---
+    private readonly ListBox _shortcutsList = new() { Height = 220, Margin = new Thickness(0, 0, 0, 8) };
+    private readonly TextBlock _shortcutCaptureStatus = new() { Margin = new Thickness(0, 0, 0, 8), FontWeight = FontWeights.Bold };
+    private ShortcutId? _capturingShortcutId;
+
+    // --- キーボードモード専用ショートカットキーカスタマイズ(2026-07-29要望対応) ---
+    private readonly ListBox _keyboardShortcutsList = new() { Height = 220, Margin = new Thickness(0, 0, 0, 8) };
+    private readonly TextBlock _keyboardShortcutCaptureStatus = new() { Margin = new Thickness(0, 0, 0, 8), FontWeight = FontWeights.Bold };
+    private KeyboardModeShortcutId? _capturingKeyboardShortcutId;
+
     // --- テンプレート(temp_*.json、2026-07-26) ---
     private readonly ListBox _templateList = new() { Margin = new Thickness(0, 0, 0, 8), Height = 260 };
     private readonly Button _templateEditButton = new() { Content = "編集", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsEnabled = false };
@@ -165,6 +186,19 @@ internal sealed class PreferencesWindow : Window
         ResizeMode = ResizeMode.CanResize; // 2026-07-26要望対応: サイズ変更できるように
         WindowStyle = WindowStyle.ToolWindow;
 
+        // 2026-07-29要望対応: 前回終了時のウィンドウサイズを復元する。
+        if (current.PreferencesWindowWidth is { } prefW && double.IsFinite(prefW) && prefW > 0) Width = prefW;
+        if (current.PreferencesWindowHeight is { } prefH && double.IsFinite(prefH) && prefH > 0) Height = prefH;
+
+        // OK/キャンセルどちらで閉じてもサイズは保存する(MainWindow本体の位置保存と同じ考え方。
+        // _workは「キャンセル時は破棄される作業コピー」のため、渡された現行のcurrentへ直接書き込む)。
+        Closed += (_, _) =>
+        {
+            current.PreferencesWindowWidth = ActualWidth;
+            current.PreferencesWindowHeight = ActualHeight;
+            current.Save(AppPaths.SettingsFilePath);
+        };
+
         // --- カテゴリ一覧+パネル切替 ---
         var categories = new ListBox { Margin = new Thickness(8), Width = 120 };
         categories.Items.Add("表示");
@@ -175,9 +209,10 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("musicURL取得");
         categories.Items.Add("テンプレート");
         categories.Items.Add("キーマクロ");
+        categories.Items.Add("ショートカットキー");
         categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildStatsPanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildShortcutsPanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -209,8 +244,225 @@ internal sealed class PreferencesWindow : Window
         root.Children.Add(content);
         Content = root;
 
+        // 2026-07-27要望対応: ショートカットキーのキーキャプチャ。PreviewKeyDownで先取りすることで、
+        // OK/キャンセルボタンのアクセスキーやIsCancel(Escape)の既定動作より先に処理する。
+        PreviewKeyDown += PreferencesWindow_PreviewKeyDown;
+
         LoadFrom(_work);
     }
+
+    // =====================================================================
+    // ショートカットキーカスタマイズ(2026-07-27要望対応)。一覧表示+選択項目のダブルクリックで
+    // キーキャプチャモードに入り、次に押されたキーをそのショートカットへ割り当てる。
+    // 衝突時は警告(確認ダイアログ)した上で、入れ替え(既存の割り当て先には元のキーを譲る)を許可する。
+    // =====================================================================
+
+    private sealed record ShortcutRow(ShortcutId Id, string Display);
+
+    private void RefreshShortcutsList()
+    {
+        int selected = _shortcutsList.SelectedIndex;
+        _shortcutsList.ItemsSource = Enum.GetValues<ShortcutId>().Select(id =>
+        {
+            var meta = ShortcutDefaults.All[id];
+            var binding = _work.GetShortcut(id);
+            return new ShortcutRow(id, $"{meta.DisplayName}　　[{binding.DisplayText()}]");
+        }).ToList();
+        if (selected >= 0 && selected < _shortcutsList.Items.Count) _shortcutsList.SelectedIndex = selected;
+    }
+
+    private UIElement BuildShortcutsPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("ショートカットキー", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "一覧から変更したい操作をダブルクリックすると、次に押したキーがそのまま新しい割り当てになりますわ。既に他の操作へ割り当て済みのキーを選んだ場合は、警告した上で入れ替えいたします。",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+
+        _shortcutCaptureStatus.Text = "";
+        p.Children.Add(_shortcutCaptureStatus);
+
+        _shortcutsList.DisplayMemberPath = "Display";
+        _shortcutsList.MouseDoubleClick += (_, _) =>
+        {
+            if (_shortcutsList.SelectedItem is ShortcutRow row) BeginShortcutCapture(row.Id);
+        };
+        p.Children.Add(_shortcutsList);
+
+        var resetAll = new Button { Content = "デフォルト値へのリセット", Width = 160, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 16) };
+        resetAll.Click += (_, _) =>
+        {
+            CancelShortcutCapture();
+            _work.ResetAllShortcutsToDefault();
+            RefreshShortcutsList();
+        };
+        p.Children.Add(resetAll);
+
+        // --- キーボードモード専用ショートカット(2026-07-29要望対応) ---
+        p.Children.Add(Label("キーボードモード中のショートカット", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "キーボードモードON中だけ有効なショートカットです。上のマウスモード側と同じ物理キーを割り当てても衝突扱いにはなりません(キーボードモードのON/OFFで挙動が変わる仕様のため)。ノート入力キー(各キーテンプレートで宣言)はここには含まれません。",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
+
+        _keyboardShortcutCaptureStatus.Text = "";
+        p.Children.Add(_keyboardShortcutCaptureStatus);
+
+        _keyboardShortcutsList.DisplayMemberPath = "Display";
+        _keyboardShortcutsList.MouseDoubleClick += (_, _) =>
+        {
+            if (_keyboardShortcutsList.SelectedItem is KeyboardShortcutRow row) BeginKeyboardShortcutCapture(row.Id);
+        };
+        p.Children.Add(_keyboardShortcutsList);
+
+        var resetAllKb = new Button { Content = "デフォルト値へのリセット", Width = 160, HorizontalAlignment = HorizontalAlignment.Left };
+        resetAllKb.Click += (_, _) =>
+        {
+            CancelKeyboardShortcutCapture();
+            _work.ResetAllKeyboardModeShortcutsToDefault();
+            RefreshKeyboardShortcutsList();
+        };
+        p.Children.Add(resetAllKb);
+
+        RefreshShortcutsList();
+        RefreshKeyboardShortcutsList();
+        return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private sealed record KeyboardShortcutRow(KeyboardModeShortcutId Id, string Display);
+
+    private void RefreshKeyboardShortcutsList()
+    {
+        int selected = _keyboardShortcutsList.SelectedIndex;
+        _keyboardShortcutsList.ItemsSource = Enum.GetValues<KeyboardModeShortcutId>().Select(id =>
+        {
+            var meta = KeyboardModeShortcutDefaults.All[id];
+            var key = _work.GetKeyboardModeShortcutKey(id);
+            return new KeyboardShortcutRow(id, $"{meta.DisplayName}　　[{key}]");
+        }).ToList();
+        if (selected >= 0 && selected < _keyboardShortcutsList.Items.Count) _keyboardShortcutsList.SelectedIndex = selected;
+    }
+
+    private void BeginKeyboardShortcutCapture(KeyboardModeShortcutId id)
+    {
+        _capturingKeyboardShortcutId = id;
+        _keyboardShortcutCaptureStatus.Text = $"「{KeyboardModeShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してくださいまし(Escapeで取消、修飾キーは無視されます)";
+    }
+
+    private void CancelKeyboardShortcutCapture()
+    {
+        _capturingKeyboardShortcutId = null;
+        _keyboardShortcutCaptureStatus.Text = "";
+    }
+
+    private void BeginShortcutCapture(ShortcutId id)
+    {
+        _capturingShortcutId = id;
+        _shortcutCaptureStatus.Text = $"「{ShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してくださいまし(Escapeで取消)";
+    }
+
+    private void CancelShortcutCapture()
+    {
+        _capturingShortcutId = null;
+        _shortcutCaptureStatus.Text = "";
+    }
+
+    private void PreferencesWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_capturingKeyboardShortcutId is { } kbId) { HandleKeyboardShortcutCaptureKey(e, kbId); return; }
+        if (_capturingShortcutId is not { } id) return;
+        e.Handled = true; // キャプチャ中はOK/キャンセルの既定キー動作(Escape等)より優先する
+
+        if (e.Key == Key.Escape) { CancelShortcutCapture(); RefreshShortcutsList(); return; }
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (IsPureModifierKey(key)) return; // 修飾キー単独では確定しない、次のキー入力を待つ
+
+        var newBinding = new ShortcutBinding(
+            key.ToString(),
+            ctrl: Keyboard.Modifiers.HasFlag(ModifierKeys.Control),
+            shift: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift),
+            alt: Keyboard.Modifiers.HasFlag(ModifierKeys.Alt));
+
+        ShortcutId? conflictId = null;
+        foreach (var other in Enum.GetValues<ShortcutId>())
+        {
+            if (other == id) continue;
+            if (_work.GetShortcut(other).ConflictsWith(newBinding)) { conflictId = other; break; }
+        }
+
+        if (conflictId is { } cid)
+        {
+            var conflictName = ShortcutDefaults.All[cid].DisplayName;
+            var result = MessageBox.Show(
+                this,
+                $"「{newBinding.DisplayText()}」は既に「{conflictName}」に割り当てられていますわ。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{ShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
+                "ショートカットキーの衝突",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (result != MessageBoxResult.Yes) { CancelShortcutCapture(); RefreshShortcutsList(); return; }
+
+            var oldBinding = _work.GetShortcut(id);
+            _work.SetShortcut(cid, oldBinding.Clone());
+        }
+
+        _work.SetShortcut(id, newBinding);
+        CancelShortcutCapture();
+        RefreshShortcutsList();
+    }
+
+    /// <summary>キーボードモード専用ショートカットのキーキャプチャ(2026-07-29要望対応)。修飾キーの
+    /// 有無は無視し、物理キーのみを記録する(マウスモード側と違い、Shiftは各操作内部で「範囲選択」の
+    /// 補助フラグとして使うため、キー割り当てそのものには含めない)。マウスモード側の一覧とは
+    /// 衝突チェックしない(同じ物理キーの重複割り当てを意図的に許容する仕様のため)。</summary>
+    private void HandleKeyboardShortcutCaptureKey(KeyEventArgs e, KeyboardModeShortcutId id)
+    {
+        e.Handled = true;
+
+        if (e.Key == Key.Escape) { CancelKeyboardShortcutCapture(); RefreshKeyboardShortcutsList(); return; }
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (IsPureModifierKey(key)) return; // 修飾キー単独では確定しない、次のキー入力を待つ
+
+        KeyboardModeShortcutId? conflictId = null;
+        foreach (var other in Enum.GetValues<KeyboardModeShortcutId>())
+        {
+            if (other == id) continue;
+            if (string.Equals(_work.GetKeyboardModeShortcutKey(other), key.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                conflictId = other;
+                break;
+            }
+        }
+
+        if (conflictId is { } cid)
+        {
+            var conflictName = KeyboardModeShortcutDefaults.All[cid].DisplayName;
+            var result = MessageBox.Show(
+                this,
+                $"「{key}」は既に(キーボードモード中の)「{conflictName}」に割り当てられていますわ。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{KeyboardModeShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
+                "ショートカットキーの衝突",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (result != MessageBoxResult.Yes) { CancelKeyboardShortcutCapture(); RefreshKeyboardShortcutsList(); return; }
+
+            var oldKey = _work.GetKeyboardModeShortcutKey(id);
+            _work.SetKeyboardModeShortcutKey(cid, oldKey);
+        }
+
+        _work.SetKeyboardModeShortcutKey(id, key.ToString());
+        CancelKeyboardShortcutCapture();
+        RefreshKeyboardShortcutsList();
+    }
+
+    private static bool IsPureModifierKey(Key key) => key is
+        Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or
+        Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin or Key.System;
 
     private static Border MakePreview() => new()
     {
@@ -374,6 +626,24 @@ internal sealed class PreferencesWindow : Window
         _visualTestAcceptNotes.Margin = new Thickness(0, 8, 0, 0);
         p.Children.Add(_visualTestAcceptNotes);
 
+        _vtAutoReturnEnabled.Margin = new Thickness(0, 12, 0, 4);
+        p.Children.Add(_vtAutoReturnEnabled);
+        var vtAutoReturnUnitPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(16, 0, 0, 2) };
+        vtAutoReturnUnitPanel.Children.Add(_vtAutoReturnByMeasures);
+        _vtAutoReturnMeasures.Margin = new Thickness(4, 0, 4, 0);
+        vtAutoReturnUnitPanel.Children.Add(_vtAutoReturnMeasures);
+        vtAutoReturnUnitPanel.Children.Add(new TextBlock { Text = "小節", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) });
+        vtAutoReturnUnitPanel.Children.Add(_vtAutoReturnBySeconds);
+        _vtAutoReturnSeconds.Margin = new Thickness(4, 0, 4, 0);
+        vtAutoReturnUnitPanel.Children.Add(_vtAutoReturnSeconds);
+        vtAutoReturnUnitPanel.Children.Add(new TextBlock { Text = "秒", VerticalAlignment = VerticalAlignment.Center });
+        p.Children.Add(vtAutoReturnUnitPanel);
+        p.Children.Add(new TextBlock { Text = "戻った時の動作:", Margin = new Thickness(16, 4, 0, 2) });
+        _vtAutoReturnContinue.Margin = new Thickness(16, 0, 0, 2);
+        p.Children.Add(_vtAutoReturnContinue);
+        _vtAutoReturnStop.Margin = new Thickness(16, 0, 0, 0);
+        p.Children.Add(_vtAutoReturnStop);
+
         p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
 
         // --- プレイテスト ---
@@ -437,6 +707,10 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("再生開始ラインより指定時間だけ手前から再生を始める、いわゆるリードイン(0=無し)。" +
             "この区間にあるノート/フリーズは判定対象外(再生開始ラインから始まる譜面として扱う):"));
         p.Children.Add(_ptStartupWaitMs);
+
+        p.Children.Add(Label("小節線表示", section: true));
+        _ptShowMeasureLines.Margin = new Thickness(0, 0, 0, 4);
+        p.Children.Add(_ptShowMeasureLines);
 
         p.Children.Add(Label("キー種ごとのReverse既定値", section: true));
         _ptReverseByKeyType.Clear();
@@ -861,6 +1135,13 @@ internal sealed class PreferencesWindow : Window
         else if (_noteSoundFile.Items.Count > 0) _noteSoundFile.SelectedIndex = 0;
         _followMode.SelectedIndex = s.VisualTestFollowMode == "smooth" ? 1 : 0;
         _visualTestAcceptNotes.IsChecked = s.VisualTestAcceptNoteInput;
+        _vtAutoReturnEnabled.IsChecked = s.VisualTestAutoReturnEnabled;
+        _vtAutoReturnByMeasures.IsChecked = s.VisualTestAutoReturnUnit != "seconds";
+        _vtAutoReturnBySeconds.IsChecked = s.VisualTestAutoReturnUnit == "seconds";
+        _vtAutoReturnMeasures.Text = s.VisualTestAutoReturnMeasures.ToString(CultureInfo.InvariantCulture);
+        _vtAutoReturnSeconds.Text = s.VisualTestAutoReturnSeconds.ToString(CultureInfo.InvariantCulture);
+        _vtAutoReturnContinue.IsChecked = s.VisualTestAutoReturnContinuePlayback;
+        _vtAutoReturnStop.IsChecked = !s.VisualTestAutoReturnContinuePlayback;
         _ptReverse.IsChecked = s.PlaytestReverse;
         _ptHiSpeed.SelectedItem = _ptHiSpeed.Items.Cast<double>().OrderBy(v => Math.Abs(v - s.PlaytestHiSpeed)).First();
         _ptOffset.Text = s.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
@@ -878,6 +1159,7 @@ internal sealed class PreferencesWindow : Window
         _ptQuitDelete.IsChecked = s.PlaytestQuitKeyDelete;
         _ptQuitEscape.IsChecked = s.PlaytestQuitKeyEscape;
         _ptStartupWaitMs.Text = s.PlaytestStartupWaitMs.ToString(CultureInfo.InvariantCulture);
+        _ptShowMeasureLines.IsChecked = s.PlaytestShowMeasureLines;
         foreach (var (keyTypeId, combo) in _ptPatternByKeyType)
         {
             int idx = s.PlaytestPatternByKeyType.TryGetValue(keyTypeId, out var pi) ? pi : 0;
@@ -989,6 +1271,10 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "同時押し判定の閾値は正の数値で入力してくださいまし"; return false; }
         if (_musicUrlEnabled.IsChecked == true && string.IsNullOrWhiteSpace(_musicUrlFolder.Text))
         { _error.Text = "musicURLからの楽曲取得をONにする場合、楽曲フォルダを指定してくださいまし"; return false; }
+        if (!int.TryParse(_vtAutoReturnMeasures.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vtAutoReturnMeasures) || vtAutoReturnMeasures < 1)
+        { _error.Text = "目視テスト自動復帰の小節数は1以上の整数で入力してくださいまし"; return false; }
+        if (!TryPositive(_vtAutoReturnSeconds.Text, out var vtAutoReturnSeconds))
+        { _error.Text = "目視テスト自動復帰の秒数は正の数値で入力してくださいまし"; return false; }
 
         _work.ShowNoteImages = _showImages.IsChecked == true;
         _work.ShowHighlightGrid = _showGrid.IsChecked == true;
@@ -1024,6 +1310,7 @@ internal sealed class PreferencesWindow : Window
         _work.PlaytestQuitKeyDelete = _ptQuitDelete.IsChecked == true;
         _work.PlaytestQuitKeyEscape = _ptQuitEscape.IsChecked == true;
         _work.PlaytestStartupWaitMs = ptWait;
+        _work.PlaytestShowMeasureLines = _ptShowMeasureLines.IsChecked == true;
         _work.PlaytestPatternByKeyType = _ptPatternByKeyType.ToDictionary(kv => kv.Key, kv => Math.Max(0, kv.Value.SelectedIndex));
         _work.PlaytestReverseByKeyType = _ptReverseByKeyType.ToDictionary(kv => kv.Key, kv => kv.Value.IsChecked == true);
         _work.MarkerCommentFull = _markerFull.IsChecked == true;
@@ -1058,6 +1345,11 @@ internal sealed class PreferencesWindow : Window
             : GridShortcutPresets.Original;
         _work.MusicUrlAutoLoadEnabled = _musicUrlEnabled.IsChecked == true;
         _work.MusicUrlBaseFolder = _musicUrlFolder.Text;
+        _work.VisualTestAutoReturnEnabled = _vtAutoReturnEnabled.IsChecked == true;
+        _work.VisualTestAutoReturnUnit = _vtAutoReturnBySeconds.IsChecked == true ? "seconds" : "measures";
+        _work.VisualTestAutoReturnMeasures = vtAutoReturnMeasures;
+        _work.VisualTestAutoReturnSeconds = vtAutoReturnSeconds;
+        _work.VisualTestAutoReturnContinuePlayback = _vtAutoReturnContinue.IsChecked == true;
         Result = _work;
         return true;
     }

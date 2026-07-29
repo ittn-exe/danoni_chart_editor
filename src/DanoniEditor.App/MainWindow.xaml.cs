@@ -115,6 +115,13 @@ public partial class MainWindow : Window
     /// 追従スクロールと終了時のスクロール復帰が働く。</summary>
     private bool _visualTestActive;
 
+    // --- DAWループ再生(2026-07-29要望対応、既定OFF)。時間情報レーンの範囲選択(TimeRangeSelection
+    // StartTick/EndTick)をそのままループ区間として使う。目視テスト専用(要望原文通り、プレイテストは対象外)。 ---
+    private bool _loopPlaybackEnabled;
+
+    // --- プレイ画面プレビュー(2026-07-29要望対応、右パネル「プレビュー」タブ)。 ---
+    private readonly PlayPreviewSurface _previewSurface = new();
+
     /// <summary>音楽ファイル読込済みか(2026-07-17g: 再生ボタン撤去に伴いIsEnabledの代わりに保持)</summary>
     private bool _audioLoaded;
 
@@ -132,6 +139,15 @@ public partial class MainWindow : Window
 
     // --- アプリ環境設定(仕様書14章、2026-07-16b: ノート強調グリッドの太さ・色から実装開始) ---
     private AppSettings _appSettings = new();
+
+    // --- ショートカットキーカスタマイズ(2026-07-27要望対応)。chord(キー+修飾キー)→ShortcutIdの
+    // 解決テーブル。_appSettings.Shortcutsが変わるたび(構築時・環境設定確定時)にRebuildShortcutChordMapで再構築する。 ---
+    private readonly Dictionary<(Key Key, bool Ctrl, bool Shift, bool Alt), ShortcutId> _shortcutChordMap = [];
+
+    // --- キーボードモード専用ショートカットキーカスタマイズ(2026-07-29要望対応)。マウスモードの
+    // _shortcutChordMapとは別テーブル(Keyのみ、修飾キーは扱わない)で、同じ物理キーが重複して
+    // 割り当てられることを許容する。_appSettings.KeyboardModeShortcutsが変わるたびに再構築する。 ---
+    private readonly Dictionary<Key, KeyboardModeShortcutId> _keyboardShortcutChordMap = [];
 
     /// <summary>
     /// コンストラクタ完了フラグ。ShowNoteImagesToggleのIsChecked="True"(XAML)は
@@ -197,10 +213,22 @@ public partial class MainWindow : Window
         // StartNumberドラッグ確定時に右パネルの数値表示を同期する(2026-07-18)
         Canvas.StartNumberChangedByDrag += RefreshProjectPropertiesPanel;
 
-        // マクロ範囲マーカーの設置/移動確定時に右パネルの範囲表示を同期する(2026-07-26)
-        Canvas.MacroRangeChanged += RefreshMacroRangeStatus;
+        // 2026-07-29要望対応: プレイ画面プレビュー(仮想スナップショット)を右パネルへ設置
+        PreviewHostBorder.Child = _previewSurface;
+
+        // 時間範囲選択の設置/移動確定時に右パネルの範囲表示を同期する(2026-07-27)
+        Canvas.TimeRangeSelectionChanged += RefreshTimeRangeStatus;
 
         _appSettings = preloadedSettings ?? AppSettings.Load(AppPaths.SettingsFilePath);
+        RebuildShortcutChordMap(); // 2026-07-27要望対応: ショートカットキーカスタマイズ
+        RebuildKeyboardShortcutChordMap(); // 2026-07-29要望対応: キーボードモード専用ショートカットキーカスタマイズ
+        // 2026-07-29要望対応: プレイ画面プレビューの「ノートの表示期限」設定を復元
+        PreviewExpiryOverlapRadio.IsChecked = _appSettings.PreviewNoteExpiryMode == "overlap";
+        PreviewExpiryPassThroughRadio.IsChecked = _appSettings.PreviewNoteExpiryMode != "overlap";
+        // 2026-07-29要望対応: プレビューの表示サイズ倍率(25%〜200%)
+        PreviewScaleCombo.ItemsSource = PreviewScaleValues;
+        PreviewScaleCombo.SelectedItem = PreviewScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PreviewDisplayScale)).First();
+        ApplyPreviewDisplayScale();
         ApplyAutoSaveTimerSettings(); // 2026-07-25
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
@@ -274,7 +302,8 @@ public partial class MainWindow : Window
 
         // 2026-07-26: 終了時のウィンドウ状態(モニタ/最大化/位置サイズ)を復元し、終了時に保存する。
         RestoreWindowPlacement();
-        Closed += (_, _) => { SaveWindowPlacement(); _audioPlayer.Dispose(); }; // 2026-07-26f
+        RestoreRightPanelWidth(); // 2026-07-29要望対応
+        Closed += (_, _) => { SaveWindowPlacement(); SaveRightPanelWidth(); _audioPlayer.Dispose(); }; // 2026-07-26f/2026-07-29
 
         _initialized = true;
     }
@@ -347,6 +376,22 @@ public partial class MainWindow : Window
     /// Window.RestoreBoundsがRect.Emptyを返すケースの検出用)。</summary>
     private static bool IsFiniteRect(Rect r) =>
         double.IsFinite(r.Left) && double.IsFinite(r.Top) && double.IsFinite(r.Width) && double.IsFinite(r.Height);
+
+    /// <summary>起動時、前回終了時の右パネル幅(譜面ビューとの境界のGridSplitterでドラッグ調整した幅)を
+    /// 復元する(2026-07-29要望対応)。未保存(初回起動等)の場合はXAML既定値(280px)のまま。</summary>
+    private void RestoreRightPanelWidth()
+    {
+        if (_appSettings.RightPanelWidth is not { } width || !double.IsFinite(width) || width <= 0) return;
+        RightPanelColumn.Width = new GridLength(width);
+    }
+
+    /// <summary>終了時、右パネルの現在の幅を保存する(2026-07-29要望対応)。</summary>
+    private void SaveRightPanelWidth()
+    {
+        double width = RightPanelColumn.ActualWidth;
+        if (double.IsFinite(width) && width > 0) _appSettings.RightPanelWidth = width;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
 
     private void ApplyDisplaySettingsToCanvas()
     {
@@ -460,6 +505,9 @@ public partial class MainWindow : Window
         var win = new PreferencesWindow(_appSettings, category, _templates) { Owner = this };
         if (win.ShowDialog() != true || win.Result is null) return;
         _appSettings = win.Result;
+        RebuildShortcutChordMap(); // 2026-07-27要望対応: ショートカットキーカスタマイズ変更を反映
+        RebuildKeyboardShortcutChordMap(); // 2026-07-29要望対応: キーボードモード専用ショートカットキーカスタマイズ変更を反映
+        RefreshPreviewPanel(); // 2026-07-29要望対応: Reverse/HiSpeed/調整オフセット等の変更をプレビューへ反映
         _appSettings.Save(AppPaths.SettingsFilePath);
         _handClapPlayer = null; // ノート音の選択ファイルが変わった可能性があるため再読込させる
         ApplyAutoSaveTimerSettings(); // 2026-07-25
@@ -1088,11 +1136,16 @@ public partial class MainWindow : Window
                 _selectionSubscribedDoc.Changed -= RefreshSelectedObjectPanel;
                 _selectionSubscribedDoc.Changed -= UpdateWindowTitle;
                 _selectionSubscribedDoc.Changed -= RefreshProjectTabBarLabelOnly;
+                _selectionSubscribedDoc.Changed -= SyncPreviewStartFrame;
                 _selectionSubscribedDoc.StatRecorded -= OnStatRecorded;
             }
             doc.Changed += RefreshSelectedObjectPanel;
             doc.Changed += UpdateWindowTitle;
             doc.Changed += RefreshProjectTabBarLabelOnly;
+            // 2026-07-29要望対応: 再生開始ラインを再設置した際、目視テスト中でなくても即座にプレビューへ
+            // 反映する(レーンダブルクリック等、PlaybackStartFrameを変更するあらゆる操作がNotifyChangedを
+            // 呼ぶため、ここで一括して拾える)。
+            doc.Changed += SyncPreviewStartFrame;
             doc.StatRecorded += OnStatRecorded;
             _selectionSubscribedDoc = doc;
         }
@@ -1259,6 +1312,8 @@ public partial class MainWindow : Window
     private void ResetAudioForDocument(EditorDocument doc)
     {
         _visualTestActive = false; // ドキュメント切替時は目視テストを強制終了(2026-07-17g)
+        _loopPlaybackEnabled = false; // 2026-07-29要望対応: ドキュメント切替時はループ再生も強制OFF
+        LoopPlaybackToggle.IsChecked = false;
         _playbackTimer.Stop();
         _audioPlayer.Stop();
         Canvas.PlaybackTick = null;
@@ -1631,8 +1686,59 @@ public partial class MainWindow : Window
 
         double frame = pos.TotalSeconds * 60.0;
         var engine = _document.Project.CreateTimingEngine();
+
+        // 2026-07-29要望対応: 選択範囲(時間情報レーンの範囲選択)のループ再生(DAW風、既定OFF)。
+        // 目視テストはあくまで再生開始ラインから開始し、ループ終点に到達したらループ始点へ戻って
+        // そのまま再生を続ける(停止しない)。始点・終点マーカーは個別ドラッグ可能なため、
+        // 逆転している場合(始点>終点)に備えMath.Min/Maxで実際のループ区間を求める。
+        if (_visualTestActive && _loopPlaybackEnabled
+            && _document.CurrentTab.TimeRangeSelectionStartTick is { } loopTickA
+            && _document.CurrentTab.TimeRangeSelectionEndTick is { } loopTickB)
+        {
+            double loopEndFrame = engine.TickToFrame(Math.Max(loopTickA, loopTickB));
+            if (frame >= loopEndFrame)
+            {
+                double loopStartFrame = engine.TickToFrame(Math.Min(loopTickA, loopTickB));
+                _audioPlayer.Position = TimeSpan.FromSeconds(loopStartFrame / 60.0);
+                return; // 次のTickで巻き戻し後の位置を反映させる
+            }
+        }
+
+        // 2026-07-29要望対応: 目視テスト自動復帰(再生開始ラインから指定小節数/秒数経過したら
+        // 自動で再生開始ラインへ戻る、練習用の単純なループ機能。DAWループ(上記、時間情報レーンの
+        // 範囲選択によるもの)とは独立した機能で、既定OFF)。
+        if (_visualTestActive && _appSettings.VisualTestAutoReturnEnabled)
+        {
+            double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+            double thresholdFrame;
+            if (_appSettings.VisualTestAutoReturnUnit == "seconds")
+            {
+                thresholdFrame = startFrame + _appSettings.VisualTestAutoReturnSeconds * 60.0;
+            }
+            else
+            {
+                long startTick = (long)engine.FrameToTick(startFrame);
+                var (startMeasure, _) = engine.TickToMeasurePosition(startTick);
+                long targetTick = engine.MeasureStartTick(startMeasure + _appSettings.VisualTestAutoReturnMeasures);
+                thresholdFrame = engine.TickToFrame(targetTick);
+            }
+
+            if (frame >= thresholdFrame)
+            {
+                if (_appSettings.VisualTestAutoReturnContinuePlayback)
+                {
+                    _audioPlayer.Position = TimeSpan.FromSeconds(startFrame / 60.0);
+                    return; // 次のTickで巻き戻し後の位置を反映させる
+                }
+
+                StopVisualTest(returnToStart: true);
+                return;
+            }
+        }
+
         Canvas.PlaybackTick = engine.FrameToTick(frame);
         InvalidateChartViews();
+        _previewSurface.CurrentFrame = frame; // 2026-07-29要望対応: 目視テスト中はプレビューも連動して動く
 
         // 2026-07-26f: ハンドクラップの発音判定・PCM重ね合わせは_audioPlayer(NAudioBgmPlayer)自身の
         // レンダースレッド内で直接行われるため、ここでの処理は不要になった(StartVisualTest参照)。
@@ -1839,15 +1945,18 @@ public partial class MainWindow : Window
         InvalidateChartViews();
         RefreshProjectPropertiesPanel();
         RefreshColorPanel();
-        RefreshMacroList(); // 2026-07-26: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える
-        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に切り替える
-        RefreshAnalysisPanel(); // 2026-07-26: タブが変わればTotalRating等も変わるため結果表示をリセットする
 
         // 2026-07-26: プレイテストのReverseをキー種ごとの既定値に合わせて自動切替する(環境設定「プレイテスト」
         // カテゴリのキー種別一覧で設定した値。一覧に無いキー種はOFF扱い)。PlaytestReverseCheck.IsChecked代入は
         // PlaytestSetting_Changed経由でAppSettings.PlaytestReverseへも反映・保存される。
+        // 2026-07-29要望対応: この上書きは、下のRefreshMacroList(→プレビュー再構築)より必ず先に行う
+        // (でないと、切替後のプレビューに「切替前のタブのReverse」が一瞬反映されてしまうバグになる)。
         bool reverseDefault = _appSettings.PlaytestReverseByKeyType.TryGetValue(_document.CurrentTab.KeyTypeId, out var rev) && rev;
         PlaytestReverseCheck.IsChecked = reverseDefault;
+
+        RefreshMacroList(); // 2026-07-26: タブのKeyTypeIdが変わるため一覧の内容自体を切り替える(プレビューの再構築もここで行われる)
+        RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に切り替える
+        RefreshAnalysisPanel(); // 2026-07-26: タブが変わればTotalRating等も変わるため結果表示をリセットする
     }
 
     // =====================================================================
@@ -3113,9 +3222,10 @@ public partial class MainWindow : Window
     /// <summary>Canvas2(右ペイン)の表示設定・参照をCanvas(左ペイン)から丸ごとコピーする。
     /// ViewportRect(スクロール位置に依存する可視範囲)だけは対象外(分割ビューの目的である
     /// 「独立スクロール」を保つため、Canvas2自身のChartScrollViewer2_ScrollChangedで別途更新する)。
-    /// RangeSelectMode/StartNumberEditMode(マクロ範囲選択・StartNumber編集の専用モード)は
-    /// 現状Canvas(左ペイン)のみを対象とする仕様のため、Canvas2側は常にOFFのままにする
-    /// (2つのペインで別々の特殊モードが同時に有効になる事故を避けるための簡略化)。</summary>
+    /// StartNumberEditMode(専用モード)は現状Canvas(左ペイン)のみを対象とする仕様のため、
+    /// Canvas2側は常にOFFのままにする(2つのペインで別々の特殊モードが同時に有効になる事故を
+    /// 避けるための簡略化)。時間情報レーンの時間範囲選択(2026-07-27)はモードを持たず、
+    /// 両ペインとも同じタブのTimeRangeSelectionStartTick/EndTickを共有して素直に動作する。</summary>
     private void SyncCanvas2FromCanvas()
     {
         Canvas2.Document = Canvas.Document;
@@ -3186,37 +3296,74 @@ public partial class MainWindow : Window
             e.Handled = true;
     }
 
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    /// <summary>_appSettings.Shortcutsから chord(キー+修飾キー)→ShortcutId の解決テーブルを再構築する
+    /// (2026-07-27要望対応)。構築時・環境設定確定時に呼ぶ。</summary>
+    private void RebuildShortcutChordMap()
     {
-        if (_document is null) return;
-        bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
-
-        // テキスト入力中はエディタショートカット(Delete/BackSpace/Space等)を奪わない
-        // (2026-07-17f、未解決事項§2-3の条件「フォーカスがテキストボックスに無い」)。
-        // Ctrl系ショートカットは入力欄フォーカス中でも有効のまま(一般的なエディタの慣習)。
-        bool textInputFocused = Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase;
-
-        if (ctrl)
+        _shortcutChordMap.Clear();
+        foreach (ShortcutId id in Enum.GetValues<ShortcutId>())
         {
-            if (e.Key == Key.Z) { RecordUndoRedoStatIfChanged(_document.Undo()); InvalidateChartViews(); e.Handled = true; }
-            else if (e.Key == Key.Y) { RecordUndoRedoStatIfChanged(_document.Redo()); InvalidateChartViews(); e.Handled = true; }
-            else if (e.Key == Key.S) { SaveProject_Click(this, new RoutedEventArgs()); e.Handled = true; }
-            else if (e.Key == Key.E) { ExportDos_Click(this, new RoutedEventArgs()); e.Handled = true; }
-            // --- 2026-07-17f: マウスモードのショートカット追加(Ctrl系) ---
-            else if (e.Key == Key.Home)
+            var b = _appSettings.GetShortcut(id);
+            if (Enum.TryParse<Key>(b.Key, out var key))
             {
+                _shortcutChordMap[(key, b.Ctrl, b.Shift, b.Alt)] = id;
+            }
+        }
+    }
+
+    /// <summary>_appSettings.KeyboardModeShortcutsから Key→KeyboardModeShortcutId の解決テーブルを
+    /// 再構築する(2026-07-29要望対応)。構築時・環境設定確定時に呼ぶ。</summary>
+    private void RebuildKeyboardShortcutChordMap()
+    {
+        _keyboardShortcutChordMap.Clear();
+        foreach (KeyboardModeShortcutId id in Enum.GetValues<KeyboardModeShortcutId>())
+        {
+            var keyName = _appSettings.GetKeyboardModeShortcutKey(id);
+            if (Enum.TryParse<Key>(keyName, out var key))
+            {
+                _keyboardShortcutChordMap[key] = id;
+            }
+        }
+    }
+
+    /// <summary>ShortcutIdに対応する処理を実行する(2026-07-27要望対応)。実際に何らかの動作をした場合
+    /// (=キーイベントを消費したとみなしてよい場合)はtrueを返す。目視テスト中断系のように、実行時の
+    /// モード・状態によっては何もしない(既存の同名ハードコード条件と同じガード)ものはfalseを返す。</summary>
+    private bool ExecuteShortcut(ShortcutId id)
+    {
+        switch (id)
+        {
+            case ShortcutId.Undo:
+                RecordUndoRedoStatIfChanged(_document!.Undo());
+                InvalidateChartViews();
+                return true;
+            case ShortcutId.Redo:
+                RecordUndoRedoStatIfChanged(_document!.Redo());
+                InvalidateChartViews();
+                return true;
+            case ShortcutId.SaveProject:
+                SaveProject_Click(this, new RoutedEventArgs());
+                return true;
+            case ShortcutId.ExportDos:
+                ExportDos_Click(this, new RoutedEventArgs());
+                return true;
+            case ShortcutId.ScrollToStart:
                 // 2026-07-22: 譜面先頭(tick0)は通常=上端、Reverse時=下端
                 ChartScrollViewer.ScrollToVerticalOffset(_appSettings.ChartViewReverse ? ChartScrollViewer.ScrollableHeight : 0);
-                e.Handled = true;
-            }
-            else if (e.Key == Key.End) { ScrollToLastNote(); e.Handled = true; } // 末尾ノートを画面中央へ
-            // 2026-07-26: 目視テストを「現在位置で終了」するショートカット。マウスモード(Spaceで開始)では
-            // 従来通りCtrl+Space。キーボードモード(Enterで開始)ではSpaceがカーソル前進に割り当て済みで
-            // 紛らわしいため、開始キーに揃えてCtrl+Enterへ変更(要望対応)。
-            else if (!_keyboardModeActive && e.Key == Key.Space && _visualTestActive) { StopVisualTest(returnToStart: false); e.Handled = true; }
-            else if (_keyboardModeActive && e.Key == Key.Enter && _visualTestActive)
-            {
-                // 2026-07-26要望対応: キーボードモード中、Ctrl+Enterでその場中断した際は、中断タイミングの
+                return true;
+            case ShortcutId.ScrollToEnd:
+                ScrollToLastNote(); // 末尾ノートを画面中央へ
+                return true;
+            // 2026-07-26: 目視テストを「現在位置で終了」するショートカット。マウスモード(Spaceで開始)と
+            // キーボードモード(Enterで開始)で既定キーを分けている(Spaceはキーボードモード中カーソル
+            // 前進に割り当て済みで紛らわしいため)。
+            case ShortcutId.InterruptVisualTestMouseMode:
+                if (_keyboardModeActive || !_visualTestActive) return false;
+                StopVisualTest(returnToStart: false);
+                return true;
+            case ShortcutId.InterruptVisualTestKeyboardMode:
+                if (!_keyboardModeActive || !_visualTestActive) return false;
+                // 2026-07-26要望対応: キーボードモード中、その場中断した際は、中断タイミングの
                 // 最寄りグリッドへ再生開始ラインを設定する(次回の目視テスト・プレイテストが続きから始まるように)。
                 if (_document is not null && Canvas.PlaybackTick is { } liveTick)
                 {
@@ -3225,112 +3372,153 @@ public partial class MainWindow : Window
                     _document.Project.PlaybackStartFrame = engine.TickToFrame(snappedTick);
                 }
                 StopVisualTest(returnToStart: false);
-                e.Handled = true;
-            }
-            else if (e.Key == Key.P) { StartPlaytest(); e.Handled = true; } // 2026-07-17g: プレイテスト開始(仕様書12.2)
-            else if (e.Key == Key.OemComma) { ToggleKeyboardMode(); e.Handled = true; } // 2026-07-21: SKB操作モード切替
-            // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動) ---
-            // 2026-07-26: 既定(環境設定「表示」のKeyboardModeLeftRightMode="visual")では譜面ビューReverse時に
-            // 「画面上の見た目方向」を維持するため時間方向を反転する(←=常に画面上方向、→=常に画面下方向。
-            // 修飾なし←/→やキーボードモードの全移動キーと同一方針。HandleKeyboardModeKeyの解説コメント参照)。
-            // 2026-07-26: "time"モードでは常に←=後退・→=前進に固定し、Reverse中は画面上の方向が逆になる。
-            else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Left)
-            {
-                int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
-                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
-                _keyboardMode.MoveCursorByMeasure(timeMode ? -amount : (_appSettings.ChartViewReverse ? amount : -amount));
-                ScrollKeyboardCursorIntoView();
-                InvalidateChartViews();
-                e.Handled = true;
-            }
-            else if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
-            {
-                int amount = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 4 : 2;
-                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
-                _keyboardMode.MoveCursorByMeasure(timeMode ? amount : (_appSettings.ChartViewReverse ? -amount : amount));
-                ScrollKeyboardCursorIntoView();
-                InvalidateChartViews();
-                e.Handled = true;
-            }
-            // --- 2026-07-20: Ctrl+X/C/V(仕様書13章)。Z/Y/S/Eと異なりテキスト入力欄フォーカス中は
-            // 通常のテキストコピペを優先させ、譜面側のクリップボード処理を奪わない(専用ガード)。
-            else if (!textInputFocused && e.Key == Key.X) { if (_controller is not null && _controller.CutSelection()) InvalidateChartViews(); e.Handled = true; }
-            else if (!textInputFocused && e.Key == Key.C) { if (_controller is not null) _controller.CopySelection(); e.Handled = true; }
-            else if (!textInputFocused && e.Key == Key.V) { if (_controller is not null && _controller.Paste()) InvalidateChartViews(); e.Handled = true; }
-            // --- 2026-07-21: Ctrl+A(ノート・フリーズ全選択)/Shift+Ctrl+A(環境設定の対象を全選択、仕様書13章TBD) ---
-            else if (!textInputFocused && e.Key == Key.A && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+                return true;
+            case ShortcutId.StartPlaytest: // 2026-07-17g: プレイテスト開始(仕様書12.2)
+                StartPlaytest();
+                return true;
+            case ShortcutId.ToggleKeyboardMode: // 2026-07-21: SKB操作モード切替
+                ToggleKeyboardMode();
+                return true;
+            // --- 2026-07-20: Cut/Copy/Paste(仕様書13章) ---
+            case ShortcutId.CutSelection:
+                if (_controller is not null && _controller.CutSelection()) InvalidateChartViews();
+                return true;
+            case ShortcutId.CopySelection:
+                _controller?.CopySelection();
+                return true;
+            case ShortcutId.PasteSelection:
+                if (_controller is not null && _controller.Paste()) InvalidateChartViews();
+                return true;
+            // --- 2026-07-21: 全選択・選択解除(仕様書13章TBD) ---
+            case ShortcutId.SelectAllTargets:
             {
                 var s = _appSettings;
                 var options = new SelectAllOptions(
                     s.SelectAllTargetNote, s.SelectAllTargetFreeze, s.SelectAllTargetSpeed,
                     s.SelectAllTargetBoost, s.SelectAllTargetBpm, s.SelectAllTargetTimeSignature, s.SelectAllTargetMarker);
                 if (_controller is not null && _controller.SelectAllTargets(options)) InvalidateChartViews();
-                e.Handled = true;
+                return true;
             }
-            else if (!textInputFocused && e.Key == Key.A)
-            {
+            case ShortcutId.SelectAllNotes:
                 if (_controller is not null && _controller.SelectAllNotes()) InvalidateChartViews();
-                e.Handled = true;
-            }
-            // --- 2026-07-26要望対応(第三者要望): Ctrl+Shift+1〜9によるキーマクロ実行。
-            // Ctrl+1〜9(グリッド分解能切替、Shiftなし)と衝突しないよう、Shift併用時のみここで処理し、
-            // 下のグリッド分解能切替(Shiftの有無を見ない)より先に判定する。
-            else if (!textInputFocused && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && KeyMacroSlot(e.Key) is int macroSlot)
-            {
-                RunKeyMacro(macroSlot);
-                e.Handled = true;
-            }
-            // --- 2026-07-26: Ctrl+1〜9,0,-,^(数字キー列12個)によるグリッド分解能切替。
-            // SKBエディタのCtrl+1〜7を参考にしたショートカットだが、キー割り当ては環境設定の
-            // GridShortcutPreset(オリジナルセット/SKB拡張セット)で選択する(仕様書TBD、ユーザー指定)。
-            // マウスモード・キーボードモードどちらでも常時有効(SKB本家に合わせ、モードに依存しない)。
-            else if (!textInputFocused && GridShortcutKeyIndex(e.Key) is int gridIdx)
-            {
-                ApplyGridShortcut(gridIdx);
-                e.Handled = true;
-            }
-            return;
-        }
-
-        if (textInputFocused) return;
-
-        // --- 2026-07-21: SKB操作モード(キーボード操作)が有効な間は、カーソル移動キー(↑/↓/Space/B)・
-        // Backspace(カーソル位置削除)・ノート入力キーを、既存のマウスモード単独キーハンドラ
-        // (Space=目視テスト開始/終了、Backspace=再生開始フレームリセット等)より先に処理する
-        // (両モードのキーが同時に反応しないようにするための優先順位付け)。
-        if (_keyboardModeActive && HandleKeyboardModeKey(e)) return;
-
-        // --- 2026-07-17f: 修飾なしキー(テキスト入力中は無効) ---
-        switch (e.Key)
-        {
-            case Key.PageUp: // 1画面分上へ
+                return true;
+            case ShortcutId.DeselectAll: // 2026-07-27要望対応: オブジェクト選択解除(旧Escapeから移設)
+                if (_controller is not null && _controller.ClearSelection()) InvalidateChartViews();
+                return true;
+            case ShortcutId.ClearTimeRangeSelection: // 2026-07-27要望対応: 時間情報レーンの時間範囲選択を解除する
+                if (Canvas.ClearTimeRangeSelection()) InvalidateChartViews();
+                return true;
+            case ShortcutId.ScrollPageUp:
                 ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, ChartScrollViewer.VerticalOffset - ChartScrollViewer.ViewportHeight));
-                e.Handled = true;
-                break;
-            case Key.PageDown: // 1画面分下へ
+                return true;
+            case ShortcutId.ScrollPageDown:
                 ChartScrollViewer.ScrollToVerticalOffset(ChartScrollViewer.VerticalOffset + ChartScrollViewer.ViewportHeight);
-                e.Handled = true;
-                break;
-            case Key.Delete: // 選択中オブジェクトの削除(未解決事項§2-3)
+                return true;
+            case ShortcutId.DeleteSelection: // 選択中オブジェクトの削除(未解決事項§2-3)
                 if (_controller is not null && _controller.DeleteSelection()) InvalidateChartViews();
-                e.Handled = true;
-                break;
-            case Key.Back: // 再生開始フレームのリセット
-                if (_document.Project.PlaybackStartFrame is not null)
+                return true;
+            case ShortcutId.ClearPlaybackStartLine: // 再生開始フレームのリセット
+                if (_document!.Project.PlaybackStartFrame is not null)
                 {
                     _document.Project.PlaybackStartFrame = null;
                     _document.NotifyChanged();
                 }
-                e.Handled = true;
-                break;
-            case Key.Space: // 目視テスト開始/終了(終了後はテスト開始位置へ復帰)
+                return true;
+            case ShortcutId.ToggleVisualTest: // 目視テスト開始/終了(終了後はテスト開始位置へ復帰)
                 ToggleVisualTest();
-                e.Handled = true; // 再生ボタン等のフォーカス誤発火防止(要望メモ07-15の注意点)
-                break;
-            case Key.Escape: // 選択解除(2026-07-26要望対応: マウス操作だけでは解除手段が無かったため新設)
-                if (_controller is not null && _controller.ClearSelection()) InvalidateChartViews();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_document is null) return;
+        bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        bool alt = Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
+
+        // テキスト入力中はエディタショートカット(Delete/BackSpace/Space等)を奪わない
+        // (2026-07-17f、未解決事項§2-3の条件「フォーカスがテキストボックスに無い」)。
+        // Ctrl系ショートカットは入力欄フォーカス中でも有効のまま(一般的なエディタの慣習)。
+        bool textInputFocused = Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase;
+
+        if (ctrl)
+        {
+            // --- 2026-07-26要望対応(第三者要望): Ctrl+Shift+1〜9によるキーマクロ実行。
+            // スロット番号自体がトリガーキーを兼ねる設計のため、ショートカットカスタマイズの対象外。
+            // Ctrl+1〜9(グリッド分解能切替、Shiftなし)と衝突しないよう、Shift併用時のみここで処理し、
+            // 下のグリッド分解能切替(Shiftの有無を見ない)より先に判定する。
+            if (!textInputFocused && shift && KeyMacroSlot(e.Key) is int macroSlot)
+            {
+                RunKeyMacro(macroSlot);
                 e.Handled = true;
-                break;
+                return;
+            }
+
+            // --- 2026-07-21: キーボードモード中のCtrl+←/→(2小節移動)・Shift+Ctrl+←/→(4小節移動)。
+            // 同一キーに対しShiftで移動量が変わる特殊挙動のため、ショートカットカスタマイズの対象外
+            // (2026-07-27要望対応時の設計方針通り、ハードコードのまま維持)。
+            // 2026-07-26: 既定(環境設定「表示」のKeyboardModeLeftRightMode="visual")では譜面ビューReverse時に
+            // 「画面上の見た目方向」を維持するため時間方向を反転する(←=常に画面上方向、→=常に画面下方向。
+            // 修飾なし←/→やキーボードモードの全移動キーと同一方針。HandleKeyboardModeKeyの解説コメント参照)。
+            // 2026-07-26: "time"モードでは常に←=後退・→=前進に固定し、Reverse中は画面上の方向が逆になる。
+            if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Left)
+            {
+                int amount = shift ? 4 : 2;
+                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
+                _keyboardMode.MoveCursorByMeasure(timeMode ? -amount : (_appSettings.ChartViewReverse ? amount : -amount));
+                ScrollKeyboardCursorIntoView();
+                InvalidateChartViews();
+                e.Handled = true;
+                return;
+            }
+            if (_keyboardModeActive && _keyboardMode is not null && e.Key == Key.Right)
+            {
+                int amount = shift ? 4 : 2;
+                bool timeMode = _appSettings.KeyboardModeLeftRightMode == "time";
+                _keyboardMode.MoveCursorByMeasure(timeMode ? amount : (_appSettings.ChartViewReverse ? -amount : amount));
+                ScrollKeyboardCursorIntoView();
+                InvalidateChartViews();
+                e.Handled = true;
+                return;
+            }
+
+            // --- 2026-07-26: Ctrl+1〜9,0,-,^(数字キー列12個)によるグリッド分解能切替。
+            // キー割り当ては既存のGridShortcutPreset設定で管理しているため、ショートカットカスタマイズの
+            // 対象外(仕様書TBD、ユーザー指定)。マウスモード・キーボードモードどちらでも常時有効
+            // (SKB本家に合わせ、モードに依存しない)。
+            if (!textInputFocused && GridShortcutKeyIndex(e.Key) is int gridIdx)
+            {
+                ApplyGridShortcut(gridIdx);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        // --- 2026-07-21: SKB操作モード(キーボード操作)が有効な間は、カーソル移動キー(↑/↓/Space/B)・
+        // Backspace(カーソル位置削除)・ノート入力キーを、マウスモードのショートカットより先に処理する。
+        // 2026-07-29要望対応: マウスモードとキーボードモードで同じ物理キーが重複して割り当てられる
+        // ことを許容し、キーボードモードのON/OFFによって挙動を変える(例: BackSpaceはマウスモードでは
+        // 「再生開始ラインの指定解除」、キーボードモードでは「カーソル位置のノート/フリーズを削除」)。
+        // ※HandleKeyboardModeKeyはCtrl修飾を見ないため、Ctrl押下中はここへ進めない(旧実装通り、
+        // Ctrl系キーはショートカット/専用処理のみが処理対象で、キーボードモードのカーソル移動には
+        // 一切反応しない)。
+        if (!ctrl && _keyboardModeActive && !textInputFocused && HandleKeyboardModeKey(e)) return;
+
+        // 2026-07-27要望対応: 上記の専用処理(キーマクロ/キーボードモード小節移動/グリッド分解能)・
+        // キーボードモード専用ショートカット以外の全ショートカットは、環境設定「ショートカットキー」で
+        // 管理する割り当てテーブルから解決する(ハードコードのif/switchチェーンを廃し、_shortcutChordMap
+        // 経由のデータ駆動ディスパッチへ変更)。
+        if (_shortcutChordMap.TryGetValue((e.Key, ctrl, shift, alt), out var shortcutId))
+        {
+            var meta = ShortcutDefaults.All[shortcutId];
+            if (!(textInputFocused && !meta.IgnoresTextFocus) && ExecuteShortcut(shortcutId))
+            {
+                e.Handled = true;
+                return;
+            }
         }
     }
 
@@ -3435,83 +3623,108 @@ public partial class MainWindow : Window
             MacroListBox.SelectedItem = MacroListBox.Items.Cast<MacroListEntry>()
                 .FirstOrDefault(e => e.Macro.MacroId == selectedId);
         UpdateMacroButtonStates();
-        RefreshMacroRangeStatus();
+        RefreshTimeRangeStatus();
     }
 
-    /// <summary>範囲マーカー状態を右パネルへ反映する(2026-07-26要望対応)。
-    /// ドキュメント未オープン時は範囲選択モード自体を無効化する(タブが無ければ範囲の意味が無いため)。</summary>
-    private void RefreshMacroRangeStatus()
+    /// <summary>時間範囲選択の状態を右パネル(マクロタブ)へ反映する(2026-07-27要望対応、旧
+    /// RefreshMacroRangeStatus)。時間情報レーンのドラッグで設定される範囲は、マクロタブに限らず
+    /// 常時有効な汎用選択のため、モードのON/OFF切替は無い(状態表示のみ)。</summary>
+    private void RefreshTimeRangeStatus()
     {
         var tab = _document?.CurrentTab;
-        MacroRangeModeToggle.IsEnabled = tab is not null;
         if (tab is null)
         {
-            MacroRangeModeToggle.IsChecked = false;
-            MacroRangeStatusText.Text = "(未オープン)";
+            TimeRangeStatusText.Text = "(未オープン)";
+            UpdateMacroButtonStates();
+            RefreshLoopPlaybackStatus();
+            RefreshPreviewPanel();
             return;
         }
 
-        long? st = tab.MacroRangeStartTick, et = tab.MacroRangeEndTick;
-        MacroRangeStatusText.Text = st is null && et is null
-            ? "未設定"
+        long? st = tab.TimeRangeSelectionStartTick, et = tab.TimeRangeSelectionEndTick;
+        TimeRangeStatusText.Text = st is null && et is null
+            ? "未設定(時間情報レーンをドラッグして指定)"
             : $"始点: {(st?.ToString() ?? "未設定")}  終点: {(et?.ToString() ?? "未設定")}";
         UpdateMacroButtonStates();
+        RefreshLoopPlaybackStatus();
+        RefreshPreviewPanel();
     }
 
-    /// <summary>範囲選択モードのON/OFF切替(2026-07-27要望対応)。ON中はChartCanvasの通常編集
-    /// (オブジェクトの移動・選択)を無効化し、左ドラッグ1回で範囲(始点〜終点)を指定できる。
-    /// 指定後は始点/終点の線を個別にドラッグして調整できる。</summary>
-    private void MacroRangeModeToggle_Checked(object sender, RoutedEventArgs e)
+    /// <summary>DAWループ再生(2026-07-29要望対応)の上部パネル表示を、現在タブの時間範囲選択に
+    /// 合わせて更新する。範囲未選択の間はループトグルを無効化し、選択が解除されたらループも自動OFFにする。</summary>
+    private void RefreshLoopPlaybackStatus()
     {
-        if (!_initialized) return;
-        Canvas.RangeSelectMode = true;
-        StatusText.Text = "マクロ範囲選択モード: ドラッグで範囲を指定できます(通常編集は無効)";
-        UpdateMacroButtonStates(); // 範囲未指定の間は実行不可にする
-    }
-
-    /// <summary>範囲選択モードOFF(2026-07-27要望対応: トグル再クリックによるOFFも含め、モードが
-    /// 外れる経路は必ず範囲マーカーをクリアする。「範囲だけ残ってモードはOFF」という中途半端な
-    /// 状態を作らないための一本化)。</summary>
-    private void MacroRangeModeToggle_Unchecked(object sender, RoutedEventArgs e)
-    {
-        if (!_initialized) return;
-        Canvas.RangeSelectMode = false;
-        ClearMacroRangeMarkers();
-    }
-
-    /// <summary>範囲解除ボタン(2026-07-27要望対応: 名称を「範囲をクリア」→「範囲解除」に変更)。
-    /// 範囲マーカーをクリアし、範囲選択モードも終了する。</summary>
-    private void MacroRangeClearButton_Click(object sender, RoutedEventArgs e) => ClearMacroRangeAndExitMode();
-
-    /// <summary>現在タブの範囲マーカーを両方クリアする(2026-07-26要望対応)。Undo対象外(マーカー自体は
-    /// 譜面データではなく編集用の補助情報のため、他のマーカー系操作と同様に扱う)。</summary>
-    private void ClearMacroRangeMarkers()
-    {
-        if (_document is not null)
+        var tab = _document?.CurrentTab;
+        if (_document is not null && tab?.TimeRangeSelectionStartTick is { } stTick && tab.TimeRangeSelectionEndTick is { } etTick)
         {
-            _document.CurrentTab.MacroRangeStartTick = null;
-            _document.CurrentTab.MacroRangeEndTick = null;
-            _document.NotifyChanged();
+            var engine = _document.Project.CreateTimingEngine();
+            LoopStartFrameText.Text = $"{engine.TickToFrame(Math.Min(stTick, etTick)):0.#}F";
+            LoopEndFrameText.Text = $"{engine.TickToFrame(Math.Max(stTick, etTick)):0.#}F";
+            LoopPlaybackToggle.IsEnabled = true;
         }
-        RefreshMacroRangeStatus();
+        else
+        {
+            LoopStartFrameText.Text = "-";
+            LoopEndFrameText.Text = "-";
+            LoopPlaybackToggle.IsEnabled = false;
+            if (LoopPlaybackToggle.IsChecked == true) LoopPlaybackToggle.IsChecked = false; // 選択解除時はループも自動OFF
+        }
     }
 
-    /// <summary>マクロ範囲選択(始点/終点マーカー)をクリアし、範囲選択モードも終了する
-    /// (2026-07-26要望対応: 「範囲解除」ボタン、および右パネルのタブ切替時の両方で使う共通処理)。</summary>
-    private void ClearMacroRangeAndExitMode()
+    /// <summary>「ループ ON/OFF」トグル変更(2026-07-29要望対応)。</summary>
+    private void LoopPlaybackToggle_Changed(object sender, RoutedEventArgs e)
     {
-        ClearMacroRangeMarkers();
-        MacroRangeModeToggle.IsChecked = false; // Unchecked側のハンドラでCanvas.RangeSelectMode=falseになる(既にfalseなら二重クリアだが実害無し)
+        _loopPlaybackEnabled = LoopPlaybackToggle.IsChecked == true;
     }
 
-    /// <summary>右パネルのタブ切替時、マクロ範囲選択モード中であれば範囲をクリアして終了する
-    /// (2026-07-26要望対応: マクロタブから離れた状態で範囲選択モードだけが残り続ける事故を防ぐ)。
-    /// ListBox/ComboBox等の子要素のSelectionChangedもバブリングしてくるため、TabControl自身の
-    /// 選択変更(タブ切替)だけを対象にする(誤発火防止)。</summary>
-    private void PropertyTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>プレイ画面プレビュー(2026-07-29要望対応)を現在のドキュメント・難易度タブ・環境設定に
+    /// 合わせて再構築する(幾何・speed/boost等の重い再計算を伴う)。タブ切替・ドキュメント開閉・
+    /// 環境設定変更時にのみ呼ぶこと。再生開始ラインだけを同期したい場合はSyncPreviewStartFrameを使う。</summary>
+    private void RefreshPreviewPanel()
     {
-        if (e.OriginalSource != PropertyTabControl) return;
-        ClearMacroRangeAndExitMode();
+        _previewSurface.Rebuild(_document, _appSettings);
+        SyncPreviewStartFrame();
+    }
+
+    /// <summary>プレイ画面プレビューの「再生開始ライン」基準を現在のドキュメントに合わせて同期する軽量な
+    /// 更新(2026-07-29要望対応: レーンダブルクリック等で再生開始ラインを再設置した際、目視テスト中で
+    /// なくても即座にプレビューへ反映するため)。幾何(speed/boost等)の再計算は行わない。</summary>
+    private void SyncPreviewStartFrame()
+    {
+        double startFrame = _document?.Project.PlaybackStartFrame ?? 0;
+        _previewSurface.SetStartFrame(startFrame);
+        if (!_visualTestActive) _previewSurface.CurrentFrame = startFrame;
+        // 2026-07-29要望対応: ノート配置・色編集等、doc.Changedを伴うあらゆる編集操作の結果を
+        // プレビューへ即座に反映する(SetStartFrame/CurrentFrameの代入だけでは値が変化しない限り
+        // 再描写されないため、ここで無条件に再描写を予約する)。
+        _previewSurface.InvalidateVisual();
+    }
+
+    /// <summary>プレイ画面プレビューの「ノートの表示期限」ラジオボタン変更(2026-07-29要望対応)。</summary>
+    private void PreviewExpiryMode_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return; // XAML初期値設定によるInitializeComponent中の発火を無視(ShowNoteImagesToggle等と同様)
+        _appSettings.PreviewNoteExpiryMode = PreviewExpiryOverlapRadio.IsChecked == true ? "overlap" : "passThrough";
+        _previewSurface.SetNoteExpiryIncludesEqual(PreviewExpiryOverlapRadio.IsChecked == true);
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>プレイ画面プレビューの「表示サイズ倍率」コンボ変更(2026-07-29要望対応)。
+    /// 論理座標(ノート配置等)には影響させず、PlaytestWindowのウィンドウサイズ倍率と同じくLayoutTransform
+    /// (ScaleTransform)で表示のみ拡縮する。</summary>
+    private void PreviewScaleCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_initialized) return;
+        if (PreviewScaleCombo.SelectedItem is not double scale) return;
+        _appSettings.PreviewDisplayScale = scale;
+        ApplyPreviewDisplayScale();
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    private void ApplyPreviewDisplayScale()
+    {
+        double scale = Math.Clamp(_appSettings.PreviewDisplayScale, 0.25, 2.0);
+        _previewSurface.LayoutTransform = Math.Abs(scale - 1.0) > 0.001 ? new ScaleTransform(scale, scale) : Transform.Identity;
     }
 
     private void UpdateMacroButtonStates()
@@ -3520,12 +3733,7 @@ public partial class MainWindow : Window
         MacroEditButton.IsEnabled = hasSelection;
         MacroDeleteButton.IsEnabled = hasSelection;
 
-        // 2026-07-27要望対応: 範囲選択モードON中は範囲(始点・終点とも)が確定していないと実行不可
-        // (強制的に「範囲内のみ」を適用対象にするため、範囲が無い状態での実行を許さない)。
-        bool rangeReady = !Canvas.RangeSelectMode
-            || (_document?.CurrentTab.MacroRangeStartTick is not null && _document?.CurrentTab.MacroRangeEndTick is not null);
-
-        MacroRunButton.IsEnabled = hasSelection && _document is not null && rangeReady
+        MacroRunButton.IsEnabled = hasSelection && _document is not null
             && MacroListBox.SelectedItem is MacroListEntry sel
             && string.Equals(sel.Macro.TargetKeyTypeId, _document.CurrentTab.KeyTypeId, StringComparison.OrdinalIgnoreCase)
             && sel.Macro.LaneMapping.Count == _document.CurrentTab.Lanes.Count;
@@ -3572,17 +3780,17 @@ public partial class MainWindow : Window
     }
 
     /// <summary>マクロ実行(仕様書11.1)。現在の難易度タブへ順列を適用する。1操作としてUndo履歴に積む
-    /// (ユーザー確定仕様、2026-07-26)。範囲選択モードON中は範囲マーカー間の要素だけを対象にする
-    /// (2026-07-27要望対応: チェックボックスでの選択制ではなく、モードONで強制的に範囲内のみ適用)。
+    /// (ユーザー確定仕様、2026-07-26)。時間情報レーンで時間範囲選択が設定されていれば、その範囲内の
+    /// 要素だけを対象にする(2026-07-27要望対応: 専用モードのトグルは廃止し、範囲が設定されている
+    /// 状態そのものが「範囲内のみ適用」の条件になる。未設定ならタブ全体に適用する)。
     /// 範囲の境界をまたぐフリーズがある場合は適用前に警告し、「適用(フリーズ込み)」
     /// 「適用(フリーズ抜き)」「再設定」の3択から選ばせる(ユーザー確定仕様)。</summary>
     private void MacroRunButton_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null || MacroListBox.SelectedItem is not MacroListEntry entry) return;
 
-        if (Canvas.RangeSelectMode
-            && _document.CurrentTab.MacroRangeStartTick is { } rangeStart
-            && _document.CurrentTab.MacroRangeEndTick is { } rangeEnd)
+        if (_document.CurrentTab.TimeRangeSelectionStartTick is { } rangeStart
+            && _document.CurrentTab.TimeRangeSelectionEndTick is { } rangeEnd)
         {
             bool includeStraddling = false;
             if (LaneSwapMacroRangeHelper.HasStraddlingFreezes(_document.CurrentTab, rangeStart, rangeEnd))
@@ -4219,63 +4427,70 @@ public partial class MainWindow : Window
             ScrollKeyboardCursorIntoView();
             InvalidateChartViews();
         }
-        switch (e.Key)
+        // 2026-07-29要望対応: キーボードモード専用のショートカットキー割り当てテーブルから解決する
+        // (環境設定「ショートカットキー」→キーボードモード中のショートカットでカスタマイズ可能)。
+        // マウスモードの_shortcutChordMapとは別テーブルのため、同じ物理キーが重複して割り当てられる
+        // ことを許容する(MainWindow_PreviewKeyDown側で、キーボードモードON中はこちらを先に試す設計)。
+        if (_keyboardShortcutChordMap.TryGetValue(e.Key, out var kbId))
         {
-            case Key.Up: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
-                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: rev));
-                e.Handled = true;
-                return true;
-            case Key.Space: // 既定(見た目固定): 画面下へ1グリッド(通常=進む、Reverse=戻る)。
-                            // "time"モード時は常に前進(Reverse中は画面上へ)。
-                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: spaceBTimeMode || !rev));
-                e.Handled = true;
-                return true;
-            case Key.Down: // 画面下へ1グリッド(通常=進む、Reverse=戻る、Space/Bのモード設定の対象外)
-                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !rev));
-                e.Handled = true;
-                return true;
-            case Key.B: // 既定(見た目固定): 画面上へ1グリッド(通常=戻る、Reverse=進む)。
-                        // "time"モード時は常に後退(Reverse中は画面下へ)。
-                MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !spaceBTimeMode && rev));
-                e.Handled = true;
-                return true;
-            case Key.Left: // 既定(見た目固定): 画面上へ1小節移動(通常=戻る[2段階]、Reverse=進む)。
-                            // "time"モード時は常に後退(2段階、Reverse中は画面下方向へ)。
-                MoveCursorTracked(() =>
-                {
-                    bool timeBackward = leftRightTimeMode || !rev;
-                    if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
-                    else _keyboardMode.MoveCursorByMeasure(1);
-                });
-                e.Handled = true;
-                return true;
-            case Key.Right: // 既定(見た目固定): 画面下へ1小節移動(通常=進む、Reverse=戻る[2段階])。
-                            // "time"モード時は常に前進(Reverse中は画面上方向へ)。
-                MoveCursorTracked(() =>
-                {
-                    bool timeBackward = !leftRightTimeMode && rev;
-                    if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
-                    else _keyboardMode.MoveCursorByMeasure(1);
-                });
-                e.Handled = true;
-                return true;
-            case Key.Back:
-                if (_keyboardMode.DeleteAtCursor()) InvalidateChartViews();
-                e.Handled = true;
-                return true;
-            case Key.Enter: // 2026-07-26: キーボードモード中の目視テスト開始/終了ボタン
-                // (マウスモードのSpaceに相当。キーボードモード中はSpaceがカーソル前進に
-                // 割り当て済みのため、代わりにEnterへ割り当てる)。
-                ToggleVisualTest();
-                e.Handled = true;
-                return true;
-            case Key.Tab when _splitViewEnabled:
-                // 2026-07-26要望対応: 譜面ビュー分割中、Tabキーでアクティブペイン(カーソル追従
-                // スクロールの対象)を切り替える。分割OFF中は素通し(既定のフォーカス移動やレーンの
-                // ノート入力キー割当があればそちらへフォールバックする、下のlaneMap判定を参照)。
-                TogglePaneActive();
-                e.Handled = true;
-                return true;
+            switch (kbId)
+            {
+                case KeyboardModeShortcutId.CursorUp: // 画面上へ1グリッド(通常=戻る、Reverse=進む)
+                    MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: rev));
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.StepForward: // 既定(見た目固定): 画面下へ1グリッド(通常=進む、Reverse=戻る)。
+                                                          // "time"モード時は常に前進(Reverse中は画面上へ)。
+                    MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: spaceBTimeMode || !rev));
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.CursorDown: // 画面下へ1グリッド(通常=進む、Reverse=戻る、Space/Bのモード設定の対象外)
+                    MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !rev));
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.StepBackward: // 既定(見た目固定): 画面上へ1グリッド(通常=戻る、Reverse=進む)。
+                                                           // "time"モード時は常に後退(Reverse中は画面下へ)。
+                    MoveCursorTracked(() => _keyboardMode.MoveCursor(forward: !spaceBTimeMode && rev));
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.MeasureBack: // 既定(見た目固定): 画面上へ1小節移動(通常=戻る[2段階]、Reverse=進む)。
+                                                          // "time"モード時は常に後退(2段階、Reverse中は画面下方向へ)。
+                    MoveCursorTracked(() =>
+                    {
+                        bool timeBackward = leftRightTimeMode || !rev;
+                        if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                        else _keyboardMode.MoveCursorByMeasure(1);
+                    });
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.MeasureForward: // 既定(見た目固定): 画面下へ1小節移動(通常=進む、Reverse=戻る[2段階])。
+                                                             // "time"モード時は常に前進(Reverse中は画面上方向へ)。
+                    MoveCursorTracked(() =>
+                    {
+                        bool timeBackward = !leftRightTimeMode && rev;
+                        if (timeBackward) _keyboardMode.MoveCursorToPreviousMeasureOrCurrentStart();
+                        else _keyboardMode.MoveCursorByMeasure(1);
+                    });
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.DeleteAtCursor: // 2026-07-29要望対応: 従来の「カーソル位置のノート/フリーズを削除」動作
+                    if (_keyboardMode.DeleteAtCursor()) InvalidateChartViews();
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.ToggleVisualTest: // 2026-07-26: キーボードモード中の目視テスト開始/終了ボタン
+                    // (マウスモードのSpaceに相当。キーボードモード中はSpaceがカーソル前進に
+                    // 割り当て済みのため、既定では代わりにEnterへ割り当てる)。
+                    ToggleVisualTest();
+                    e.Handled = true;
+                    return true;
+                case KeyboardModeShortcutId.TogglePane when _splitViewEnabled:
+                    // 2026-07-26要望対応: 譜面ビュー分割中、割り当てキーでアクティブペイン(カーソル追従
+                    // スクロールの対象)を切り替える。分割OFF中は素通し(既定のフォーカス移動やレーンの
+                    // ノート入力キー割当があればそちらへフォールバックする、下のlaneMap判定を参照)。
+                    TogglePaneActive();
+                    e.Handled = true;
+                    return true;
+            }
         }
 
         // 2026-07-26要望対応: 目視テスト中の「ノート配置受付」(環境設定「テスト再生」、既定OFF)。
@@ -4466,6 +4681,8 @@ public partial class MainWindow : Window
         InvalidateChartViews();
         AudioTimeText.Text = "-";
         _audioPlayer.SetClapSchedule(null, null, _appSettings.HandClapVolume); // 2026-07-26f
+        // 2026-07-29要望対応: 目視テスト終了後、プレビューは再生開始ライン時点の静止スナップショットへ戻す
+        SyncPreviewStartFrame();
 
         if (!returnToStart || _document is null) return;
         ReturnScrollToStartFrame();
@@ -4498,6 +4715,9 @@ public partial class MainWindow : Window
     /// <summary>ウィンドウサイズ倍率の選択肢(x0.5〜3、2026-07-17h)</summary>
     private static readonly List<double> PlaytestScaleValues = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
+    /// <summary>プレイ画面プレビューの表示サイズ倍率選択肢(2026-07-29要望対応、25%〜200%)。</summary>
+    private static readonly List<double> PreviewScaleValues = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
     /// <summary>上部パネルのプレイテスト設定変更をAppSettingsへ保存する</summary>
     private void PlaytestSetting_Changed(object sender, RoutedEventArgs e)
     {
@@ -4507,6 +4727,9 @@ public partial class MainWindow : Window
         if (PlaytestHiSpeedCombo.SelectedItem is double hs) _appSettings.PlaytestHiSpeed = hs;
         if (PlaytestScaleCombo.SelectedItem is double sc) _appSettings.PlaytestWindowScale = sc;
         _appSettings.Save(AppPaths.SettingsFilePath);
+        // 2026-07-29要望対応: Reverse/HiSpeed等、プレイテスト・プレビューに関わる設定が変わった
+        // タイミングで即座にプレビューへ反映する。
+        RefreshPreviewPanel();
     }
 
     // =====================================================================

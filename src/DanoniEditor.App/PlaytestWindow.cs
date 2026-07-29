@@ -504,6 +504,20 @@ internal sealed class PlaytestWindow : Window
 
     private void OnKeyDownInput(object sender, KeyEventArgs e)
     {
+        // 2026-07-27要望対応: Ctrl+Pでその場中断。キーボードモード目視テスト中のCtrl+Enterと同様、
+        // 中断したタイミングの最寄りグリッドへ再生開始ラインを設定してから終了する
+        // (次回の目視テスト・プレイテストが続きから始まるように)。
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.P)
+        {
+            var engine = _doc.Project.CreateTimingEngine();
+            long liveTick = (long)Math.Round(engine.FrameToTick(_currentFrame));
+            long snappedTick = _doc.Snap.Snap(liveTick);
+            _doc.Project.PlaybackStartFrame = engine.TickToFrame(snappedTick);
+            Close();
+            e.Handled = true;
+            return;
+        }
+
         // 2026-07-20: 中断キーは環境設定で選択したもの(Delete/Escape)のみ有効
         bool isQuitKey = (e.Key == Key.Delete && _quitKeyDelete)
             || (e.Key == Key.Escape && _quitKeyEscape);
@@ -618,6 +632,11 @@ internal sealed class PlaytestWindow : Window
             double w = o._playingWidth, h = o._playingHeight;
             dc.DrawRectangle(Brushes.Black, null, new Rect(0, 0, w, h));
 
+            // 2026-07-27要望対応: プレイテスト中の小節線表示(環境設定「プレイテスト」で切替、既定OFF)。
+            // 最背面(ノート・判定文字より下)に薄く表示する。
+            if (o._appSettings?.PlaytestShowMeasureLines == true)
+                DrawMeasureLines(dc, o, w, h);
+
             // 2026-07-26: 判定文字(+コンボ)は最背面レイヤーへ変更(ユーザー要望)。矢印・フリーズより
             // 先に描く=それらの下に隠れる形になる。あわせて不透明度75%・文字サイズも縮小する。
             dc.PushOpacity(0.75);
@@ -645,6 +664,10 @@ internal sealed class PlaytestWindow : Window
                 var brush = ChartCanvas.LaneBrush(tab, project, laneDef.ColorGroup);
                 var color = ((SolidColorBrush)brush).Color;
                 var (frzNoteColor, frzBandColor) = ChartCanvas.FrzColors(tab, project, laneDef.ColorGroup, brush);
+                // 2026-07-27要望対応(第三者報告): 色編集モード(ncolor_data)で個別指定された色が
+                // プレイテストへ一切反映されていなかった不具合の修正。ChartCanvas.DrawNotesAndFreezes
+                // と同じ「tickの厳密一致検索」方式で解決する(編集画面の見た目と一致させる)。
+                var colorOverrides = tab.Lanes[i].ColorOverrides.ToDictionary(c => c.Tick);
 
                 // ステップゾーン(2026-07-20: レーンの画像・回転角を使用。色は従来通りDimGrayのtint)
                 DrawNote(dc, image, laneDef, cx, stepY, Colors.DimGray);
@@ -674,12 +697,16 @@ internal sealed class PlaytestWindow : Window
                     if (f.Started && f.Result is null) y1 = stepY;
                     if (!Visible(y1) && !Visible(y2) && Math.Sign(y1 - h / 2) == Math.Sign(y2 - h / 2)) continue;
 
-                    var bandBrush = new SolidColorBrush(frzBandColor) { Opacity = 0.5 };
+                    colorOverrides.TryGetValue(f.StartTick, out var fOver);
+                    var edgeColor = fOver?.Color is { } ec ? ChartCanvas.ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
+                    var bandColor = fOver?.BandColor is { } bc ? ChartCanvas.ParseDisplayColor(bc, frzBandColor) : frzBandColor;
+
+                    var bandBrush = new SolidColorBrush(bandColor) { Opacity = 0.5 };
                     bandBrush.Freeze();
                     dc.DrawRectangle(bandBrush, null,
                         new Rect(cx - ArrowSize / 4, Math.Min(y1, y2), ArrowSize / 2, Math.Abs(y2 - y1)));
-                    DrawNote(dc, image, laneDef, cx, y1, frzNoteColor);
-                    DrawNote(dc, image, laneDef, cx, y2, frzNoteColor);
+                    DrawNote(dc, image, laneDef, cx, y1, edgeColor);
+                    DrawNote(dc, image, laneDef, cx, y2, edgeColor);
                 }
 
                 // 矢印(判定済みは消去。ただし見逃しウワァン分はそのまま流れていく)
@@ -688,7 +715,9 @@ internal sealed class PlaytestWindow : Window
                     if (a.Result is { } r && r != PlayJudge.Uwan) continue;
                     double y = YOf(a.Frame, o.GetBoostFactor(a.Frame));
                     if (!Visible(y)) continue;
-                    DrawNote(dc, image, laneDef, cx, y, color);
+                    colorOverrides.TryGetValue(a.Tick, out var nOver);
+                    var noteColor = nOver?.Color is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
+                    DrawNote(dc, image, laneDef, cx, y, noteColor);
                 }
             }
         }
@@ -725,6 +754,68 @@ internal sealed class PlaytestWindow : Window
             var ft = new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
                 new Typeface("Meiryo UI"), size, brush, 1.25);
             dc.DrawText(ft, new Point((width - ft.Width) / 2, y));
+        }
+
+        private static readonly Pen MeasureLinePen = CreateFrozenPen(Color.FromArgb(0x60, 0xCC, 0xCC, 0xCC), 1.0);
+        private static readonly Brush MeasureLineTextBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xB0, 0xCC, 0xCC, 0xCC)));
+
+        private static Pen CreateFrozenPen(Color color, double thickness)
+        {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            var pen = new Pen(brush, thickness);
+            pen.Freeze();
+            return pen;
+        }
+
+        private static Brush Freeze(Brush brush)
+        {
+            brush.Freeze();
+            return brush;
+        }
+
+        /// <summary>プレイテスト中の小節線・小節番号表示(2026-07-27要望対応)。譜面ビューの
+        /// DrawTimeInfoLane/DrawGridAndMeasureLinesと同じ「拍子イベント列に沿って小節先頭tickを
+        /// 順に辿る」ロジックを、frameベースの画面座標(YOf相当)へ適用したもの。テンプレート内で
+        /// レーンごとにスクロール方向が混在する特殊なキー種では、先頭レーンの向きを代表として使う
+        /// (近似表示)。現在フレームの1小節前から走査を始め、画面外(dirが向かう側)へ完全に
+        /// 出た時点で打ち切る(安全弁としてmaxScan回で強制終了)。</summary>
+        private static void DrawMeasureLines(DrawingContext dc, PlaytestWindow o, double w, double h)
+        {
+            if (o._template.Lanes.Count == 0) return;
+            var laneDef0 = o._template.Lanes[0];
+            bool flipped = (laneDef0.ScrollDirection == "down") ^ o._reverse;
+            double stepY = flipped ? o._stepYBottom : o._stepYTop;
+            double dir = flipped ? -1 : 1;
+
+            double YOf(double frame) =>
+                stepY + (o.CumulativeSpeedDistance(frame) - o.CumulativeSpeedDistance(o._currentFrame)) * o._baseScrollSpeed * dir;
+
+            var engine = o._doc.Project.CreateTimingEngine();
+            long currentTick = (long)Math.Round(engine.FrameToTick(o._currentFrame));
+            var (currentMeasure, _) = engine.TickToMeasurePosition(currentTick);
+
+            const double margin = 40;
+            const int maxScan = 500;
+            int startMeasure = Math.Max(0, currentMeasure - 1);
+            for (int i = 0; i < maxScan; i++)
+            {
+                int measure = startMeasure + i;
+                long tick = engine.MeasureStartTick(measure);
+                double frame = engine.TickToFrame(tick);
+                double y = YOf(frame);
+
+                if (y >= -margin && y <= h + margin)
+                {
+                    dc.DrawLine(MeasureLinePen, new Point(0, y), new Point(w, y));
+                    var ft = new FormattedText($"#{measure}", CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                        new Typeface("Meiryo UI"), 11, MeasureLineTextBrush, 1.25);
+                    dc.DrawText(ft, new Point(4, y - ft.Height - 1));
+                }
+
+                if (dir > 0 && y > h + margin) break;
+                if (dir < 0 && y < -margin) break;
+            }
         }
     }
 }

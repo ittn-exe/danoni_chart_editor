@@ -44,7 +44,7 @@
                 <MenuItem Header="環境報告作成(_R)..." Click="CreateDiagnosticsReport_Click"/>
             </MenuItem>
         </Menu>
-        <Border DockPanel.Dock="Top" Height="80" Background="#F0F0F0">
+        <Border DockPanel.Dock="Top" Height="108" Background="#F0F0F0">
             <StackPanel VerticalAlignment="Center" Margin="8">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock x:Name="ProjectTitleText" Text="(プロジェクト未作成)" VerticalAlignment="Center" Margin="0,0,16,0" FontWeight="Bold"/>
@@ -135,6 +135,19 @@
                                   Checked="SplitViewToggle_Changed" Unchecked="SplitViewToggle_Changed"
                                   ToolTip="譜面ビューを左右に分割し、同じ難易度タブを両方に表示します(独立スクロール、どちらでも編集可。キーボードモード中はTabキーでアクティブ側を切替)"/>
                 </StackPanel>
+                <!-- 2026-07-29要望対応: 選択範囲(時間情報レーンの範囲選択)のループ再生(DAW風、既定OFF)。
+                     目視テストは常に再生開始ラインから始まり、ループ終点に到達するとループ始点へ戻って
+                     再生を続ける(停止しない)。 -->
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBlock Text="ループ再生(目視テスト):" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBlock Text="選択始点:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                    <TextBlock x:Name="LoopStartFrameText" Text="-" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock Text="選択終点:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                    <TextBlock x:Name="LoopEndFrameText" Text="-" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <ToggleButton x:Name="LoopPlaybackToggle" Content="ループ ON/OFF" Width="110"
+                                  Checked="LoopPlaybackToggle_Changed" Unchecked="LoopPlaybackToggle_Changed"
+                                  ToolTip="時間情報レーンで範囲選択中のみ有効。ONの間、目視テストが選択終点に到達すると選択始点へ戻って再生を続けます(再生開始ラインからのスタート自体は変わりません)"/>
+                </StackPanel>
             </StackPanel>
         </Border>
         <StatusBar DockPanel.Dock="Bottom">
@@ -160,7 +173,7 @@
                 <ColumnDefinition x:Name="RightPanelColumn" Width="280"/>
             </Grid.ColumnDefinitions>
         <Border Grid.Column="2" Background="#E8E8E8">
-            <TabControl x:Name="PropertyTabControl" SelectionChanged="PropertyTabControl_SelectionChanged">
+            <TabControl x:Name="PropertyTabControl">
                 <TabItem Header="プロジェクト">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
@@ -380,14 +393,12 @@
                             </StackPanel>
                             <Button x:Name="MacroRunButton" Content="実行(現在の難易度タブに適用)" Margin="0,8,0,0" IsEnabled="False" Click="MacroRunButton_Click"/>
 
-                            <!-- 2026-07-27要望対応: 範囲選択モードON中はドラッグ1回で範囲指定、実行対象は強制的に範囲内のみ -->
+                            <!-- 2026-07-27要望対応: 範囲選択モードを撤去し、時間情報レーンのドラッグによる
+                                 時間範囲選択へ統合。範囲が設定されていれば実行時に自動で範囲内のみへ適用される -->
                             <Separator Margin="0,12,0,8"/>
-                            <TextBlock Text="適用範囲" FontWeight="Bold" Margin="0,0,0,4"/>
-                            <ToggleButton x:Name="MacroRangeModeToggle" Content="範囲選択モード" IsEnabled="False"
-                                          Checked="MacroRangeModeToggle_Checked" Unchecked="MacroRangeModeToggle_Unchecked"/>
-                            <TextBlock x:Name="MacroRangeStatusText" Text="(未オープン)" Margin="0,4,0,0" TextWrapping="Wrap"/>
-                            <Button x:Name="MacroRangeClearButton" Content="範囲解除" Width="100" HorizontalAlignment="Left" Margin="0,4,0,0" Click="MacroRangeClearButton_Click"/>
-                            <TextBlock Text="※範囲選択モードON中は、実行時に範囲内のみへ強制適用されます" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="11" Foreground="Gray"/>
+                            <TextBlock Text="適用範囲(時間情報レーンをドラッグして指定)" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="TimeRangeStatusText" Text="(未オープン)" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            <TextBlock Text="※範囲が設定されている場合、実行時に範囲内のみへ自動適用されます(解除はEscapeキー)" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="11" Foreground="Gray"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -427,6 +438,26 @@
                             <Button x:Name="OniStarRecalcButton" Content="算出・再算出" HorizontalAlignment="Left"
                                     Click="OniStarRecalcButton_Click" Margin="0,0,0,8"/>
                             <TextBlock x:Name="OniStarResultText" Text="？？？" FontWeight="Bold" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <!-- 2026-07-29要望対応: プレイ画面プレビュー(仮想スナップショット)。目視テスト中はプレビューも連動して動く -->
+                <TabItem x:Name="PreviewTabItem" Header="プレビュー">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="プレイ画面プレビュー(仮想スナップショット)" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <TextBlock Text="判定は行わず、見た目の再現のみです。目視テスト中は再生位置に連動して動きます。" TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,8"/>
+                            <TextBlock Text="ノートの表示期限(再生開始ラインより手前のノートを消すタイミング):" TextWrapping="Wrap" Margin="0,0,0,2"/>
+                            <RadioButton x:Name="PreviewExpiryPassThroughRadio" Content="ステップゾーンを通過するまで(frame &lt; 再生開始ライン、既定)"
+                                         GroupName="PreviewExpiry" IsChecked="True" Checked="PreviewExpiryMode_Changed" Margin="0,0,0,2"/>
+                            <RadioButton x:Name="PreviewExpiryOverlapRadio" Content="ステップゾーンに重なるまで(frame &lt;= 再生開始ライン)"
+                                         GroupName="PreviewExpiry" Checked="PreviewExpiryMode_Changed" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="表示サイズ倍率:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <ComboBox x:Name="PreviewScaleCombo" Width="80" VerticalAlignment="Center"
+                                          SelectionChanged="PreviewScaleCombo_SelectionChanged"/>
+                            </StackPanel>
+                            <Border x:Name="PreviewHostBorder" BorderBrush="Black" BorderThickness="1" HorizontalAlignment="Left" VerticalAlignment="Top"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

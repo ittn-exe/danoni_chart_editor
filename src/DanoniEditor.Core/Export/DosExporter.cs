@@ -266,18 +266,21 @@ public sealed class DosExporter
         return targetSuffix.Length == 0 ? numPart : $"{numPart}:{targetSuffix}";
     }
 
-    /// <summary>ncolor_data出力(仕様: 1エントリ=Frame,ColorNo(:TargetPattern),ColorCode(,allFlg)の
-    /// 3〜4項目CSV。AllFlag=trueの場合のみ4項目目に"all"を付与する、2026-07-24)。Frame昇順に整列する。</summary>
+    /// <summary>ncolor_data出力(仕様dos-e0002-ncolorData: 1エントリ=Frame,ColorNo(:TargetPattern),
+    /// ColorCode(,allFlg)の3〜4項目CSVを、1行=1エントリで改行区切り出力する(2026-07-27修正:
+    /// 従来は全エントリを1行にカンマ連結してしまっており本家仕様と異なっていた不具合を修正。
+    /// word_data/wordRev_data(AppendWordData)と同じ「1行=1エントリ」方式に揃えた)。
+    /// AllFlag=trueの場合のみ4項目目に"all"を付与する。Frame昇順に整列する。</summary>
     private static void AppendNColorData(StringBuilder sb, string name,
         List<(long Frame, string ColorNo, string ColorCode, bool AllFlag)> entries)
     {
         if (entries.Count == 0) return;
-        var parts = entries
+        var rows = entries
             .OrderBy(e => e.Frame)
-            .SelectMany(e => e.AllFlag
-                ? new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode, "all" }
-                : new[] { e.Frame.ToString(), e.ColorNo, e.ColorCode });
-        AppendParam(sb, name, string.Join(",", parts));
+            .Select(e => e.AllFlag
+                ? $"{e.Frame},{e.ColorNo},{e.ColorCode},all"
+                : $"{e.Frame},{e.ColorNo},{e.ColorCode}");
+        AppendParam(sb, name, string.Join("\n", rows));
     }
 
     /// <summary>word_data/wordRev_dataの出力(仕様dos-e0003-wordData、2026-07-23、TBD 4)。

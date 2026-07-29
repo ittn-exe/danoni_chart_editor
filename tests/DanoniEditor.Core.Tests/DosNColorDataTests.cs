@@ -142,12 +142,21 @@ public class DosNColorDataTests
     // 1オーバーライド=1行の単純な出力では「着色ノートの後ろに置いた無着色ノートまで意図せず
     // 着色される」問題が起きる。DosExporter/DosImporterを状態差分/状態復元方式へ書き換えた)。
 
+    /// <summary>ncolor_dataブロックの本文(先頭の"|ncolor_data="から、対応する終端"|"の直前まで)を
+    /// 取り出す(2026-07-27修正: 1行=1エントリの改行区切り出力になったため、複数行にまたがる
+    /// ブロック全体をまとめて扱えるようにしたヘルパー)。</summary>
+    private static string ExtractNColorDataBody(string text)
+    {
+        const string marker = "|ncolor_data=";
+        int start = text.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
+        int end = text.IndexOf('|', start);
+        return text[start..end];
+    }
+
     private static int CountNColorEntries(string text)
     {
-        var line = text.Split('\n').Single(l => l.Contains("|ncolor_data="));
-        var body = line.Trim().TrimStart('|').Substring("ncolor_data=".Length).TrimEnd('|');
-        var tokens = body.Split(',', StringSplitOptions.TrimEntries);
-        return tokens.Length / 3;
+        var body = ExtractNColorDataBody(text);
+        return body.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
     [Fact]
@@ -291,10 +300,10 @@ public class DosNColorDataTests
 
         var repo = TestFixtures.Repository();
         var text = new DosExporter(repo.Get).Export(project);
-        var line = text.Split('\n').Single(l => l.Contains("|ncolor_data="));
+        var body = ExtractNColorDataBody(text);
 
         // "all"トークンの出現は1回だけ(先頭の着色行のみ)のはず
-        Assert.Equal(1, line.Split(',').Count(t => t.TrimEnd('|') == "all"));
+        Assert.Equal(1, body.Split([',', '\n']).Count(t => t.Trim() == "all"));
     }
 
     [Fact]

@@ -29,6 +29,9 @@ public sealed class PlaytestEngine
     public sealed class ArrowState
     {
         public double Frame { get; init; }
+        /// <summary>元のtick(2026-07-27要望対応: プレイテストでncolor_data色編集の反映に使う。
+        /// 描画側がColorOverridesを検索する際のキーとなる)。</summary>
+        public long Tick { get; init; }
         public PlayJudge? Result { get; internal set; }
     }
 
@@ -37,6 +40,9 @@ public sealed class PlaytestEngine
     {
         public double StartFrame { get; init; }
         public double EndFrame { get; init; }
+        /// <summary>始点の元tick(2026-07-27要望対応: プレイテストでncolor_data色編集の反映に使う。
+        /// フリーズのColorOverridesは開始tickをキーに格納されているため)。</summary>
+        public long StartTick { get; init; }
         public bool Started { get; internal set; }
         public bool Holding { get; internal set; }
         public double ReleasedAt { get; internal set; } = double.NaN;
@@ -68,14 +74,14 @@ public sealed class PlaytestEngine
         for (int i = 0; i < n; i++)
         {
             _arrows[i] = tab.Lanes[i].Notes.OrderBy(t => t)
-                .Select(t => timing.TickToFrame(t))
-                .Where(f => f >= minFrame)
-                .Select(f => new ArrowState { Frame = f + offsetFrames })
+                .Select(t => (Tick: t, Frame: timing.TickToFrame(t)))
+                .Where(x => x.Frame >= minFrame)
+                .Select(x => new ArrowState { Frame = x.Frame + offsetFrames, Tick = x.Tick })
                 .ToList();
             _freezes[i] = tab.Lanes[i].Freezes.OrderBy(f => f.StartTick)
-                .Select(f => (Start: timing.TickToFrame(f.StartTick), End: timing.TickToFrame(f.EndTick)))
+                .Select(f => (f.StartTick, Start: timing.TickToFrame(f.StartTick), End: timing.TickToFrame(f.EndTick)))
                 .Where(f => f.Start >= minFrame)
-                .Select(f => new FreezeState { StartFrame = f.Start + offsetFrames, EndFrame = f.End + offsetFrames })
+                .Select(f => new FreezeState { StartFrame = f.Start + offsetFrames, EndFrame = f.End + offsetFrames, StartTick = f.StartTick })
                 .ToList();
         }
     }

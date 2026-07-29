@@ -51,6 +51,25 @@ public class PlaytestEngineTests
         Assert.Equal(0, engine.Combo);
     }
 
+    // --- Tick保持(2026-07-27要望対応: プレイテストでncolor_data色編集を反映するための下準備。
+    // ArrowState/FreezeStateがTick/StartTickを保持しているかを確認する) ---
+
+    [Fact]
+    public void ArrowState_KeepsOriginalTick()
+    {
+        var (engine, _) = NewEngine(p => p.Tabs[0].Lanes[0].Notes.Add(48 * T));
+        var arrow = Assert.Single(engine.ArrowsOf(0));
+        Assert.Equal(48 * T, arrow.Tick);
+    }
+
+    [Fact]
+    public void FreezeState_KeepsOriginalStartTick()
+    {
+        var (engine, _) = NewEngine(p => p.Tabs[0].Lanes[0].Freezes.Add(new FreezeNote(48 * T, 192 * T)));
+        var freeze = Assert.Single(engine.FreezesOf(0));
+        Assert.Equal(48 * T, freeze.StartTick);
+    }
+
     // --- コンボ規則(本家準拠: イイ/シャキン加算、マターリ維持、ショボーン/ウワァンリセット) ---
 
     [Fact]

@@ -427,28 +427,42 @@ public sealed class ChartCanvas : FrameworkElement
     }
 
     // =====================================================================
-    // レーン入替マクロ「選択範囲内のみ適用」の範囲選択モード(2026-07-26要望対応)
+    // 時間情報レーンのドラッグによる「時間範囲選択」(2026-07-27要望対応)
+    // 元はレーン入替マクロ専用の「範囲選択モード」だったが、時間情報レーン上のドラッグ操作へ
+    // 置き換えた。専用モードのON/OFF切替は廃止し、時間情報レーン上での左ドラッグそのものが
+    // 常時この操作として機能する(通常のノート編集とは列が完全に分離されるため、モードの排他制御は
+    // 不要になった)。オブジェクトは選択対象ではなく、あくまで開始tick・終了tickを指定する操作。
     // =====================================================================
 
-    /// <summary>範囲選択モード。ON中は通常編集を無効化する(StartNumber編集モードと同様の排他制御)。
-    /// マーカーの無い状態からのドラッグは「始点〜終点を1回のドラッグで指定」する新規範囲作成となり
-    /// (2026-07-27要望対応、以前の「クリックで始点→もう一度クリックで終点」の2ステップ方式は廃止)、
-    /// 既存マーカー付近を掴んでのドラッグは、その端点(始点/終点)だけを個別に移動する。</summary>
-    public bool RangeSelectMode { get; set; }
-
-    /// <summary>範囲マーカーの設置/ドラッグ移動があった後に発火。MainWindowが右パネルの
+    /// <summary>時間範囲選択の設置/ドラッグ移動があった後に発火。MainWindowが右パネルの
     /// 範囲表示の更新に使う。</summary>
-    public event Action? MacroRangeChanged;
+    public event Action? TimeRangeSelectionChanged;
 
     // --- 範囲マーカードラッグ状態 ---
     private int _rsDraggingWhich; // 0=なし、1=始点、2=終点
     private const double RangeMarkerHitToleranceY = 10.0;
 
-    /// <summary>新規範囲をドラッグ中か(2026-07-27要望対応)。ドラッグ開始位置を_rsCreateAnchorTickに
-    /// 固定し、ドラッグ中のY座標との間で常にMin/Maxを取って始点/終点を更新する(上下どちらへ
-    /// ドラッグしても正しい範囲になる)。</summary>
+    /// <summary>新規範囲をドラッグ中か。ドラッグ開始位置を_rsCreateAnchorTickに固定し、ドラッグ中の
+    /// Y座標との間で常にMin/Maxを取って始点/終点を更新する(上下どちらへドラッグしても正しい範囲になる)。</summary>
     private bool _rsCreatingNewRange;
     private long _rsCreateAnchorTick;
+
+    /// <summary>新規範囲作成ドラッグ中、実際にアンカーとは異なるtickへ動いたか(2026-07-29要望対応)。
+    /// falseのまま(=シングルクリックのみで実質的なドラッグが無かった)場合、RsUpで範囲の書き込み・
+    /// 変更通知を一切行わない(「始点=終点」の意味を為さない範囲がクリックだけで確定してしまう
+    /// 不具合への対処)。</summary>
+    private bool _rsRangeDidMove;
+
+    /// <summary>指定X座標が時間情報レーン(ColumnKind.TimeInfo)の列内かどうか(2026-07-27要望対応)。
+    /// 時間範囲選択ドラッグの開始判定に使う(開始後はX座標を問わずY座標だけで追跡する)。</summary>
+    private bool IsInTimeInfoLane(double x)
+    {
+        if (Document is null) return false;
+        return Document.CurrentLayout.Column(ColumnKind.TimeInfo).Contains(x);
+    }
+
+    /// <summary>現在、時間範囲選択のドラッグ操作が進行中か(新規範囲作成・既存端点の個別移動のいずれか)。</summary>
+    private bool IsTimeRangeDragActive => _rsCreatingNewRange || _rsDraggingWhich != 0;
 
     private void RsDown(MouseButtonEventArgs e)
     {
@@ -461,12 +475,12 @@ public sealed class ChartCanvas : FrameworkElement
         // 既存マーカーへのヒット判定(端点個別ドラッグ)を優先する
         int hitWhich = 0;
         double bestDist = RangeMarkerHitToleranceY;
-        if (tab.MacroRangeStartTick is { } st)
+        if (tab.TimeRangeSelectionStartTick is { } st)
         {
             double d = Math.Abs(layout.TickToY(st) - y);
             if (d <= bestDist) { bestDist = d; hitWhich = 1; }
         }
-        if (tab.MacroRangeEndTick is { } et)
+        if (tab.TimeRangeSelectionEndTick is { } et)
         {
             double d = Math.Abs(layout.TickToY(et) - y);
             if (d <= bestDist) { bestDist = d; hitWhich = 2; }
@@ -480,17 +494,16 @@ public sealed class ChartCanvas : FrameworkElement
             return;
         }
 
-        // 2026-07-27要望対応: マーカー以外の場所からのドラッグは新規範囲作成
+        // 時間情報レーン上、マーカー以外の場所からのドラッグは新規範囲作成
         // (ドラッグ1回で始点〜終点を一気に指定する)。
+        // 2026-07-29要望対応: ここではまだ範囲を書き込まない(アンカーだけを保持する)。シングルクリック
+        // (ドラッグ無し)のまま終わった場合に「始点=終点」の意味を為さない範囲が確定してしまうのを防ぐため、
+        // 実際にアンカーとは異なるtickへ動いた時点(RsMove参照)で初めて範囲の書き込みを開始する。
         long anchorTick = Math.Max(0, Document.Snap.Snap(layout.YToTick(y)));
         CaptureMouse();
         _rsCreatingNewRange = true;
         _rsCreateAnchorTick = anchorTick;
-        tab.MacroRangeStartTick = anchorTick;
-        tab.MacroRangeEndTick = anchorTick;
-        Document.NotifyChanged();
-        MacroRangeChanged?.Invoke();
-        InvalidateVisual();
+        _rsRangeDidMove = false;
         e.Handled = true;
     }
 
@@ -503,16 +516,22 @@ public sealed class ChartCanvas : FrameworkElement
 
         if (_rsCreatingNewRange)
         {
-            tab.MacroRangeStartTick = Math.Min(_rsCreateAnchorTick, tick);
-            tab.MacroRangeEndTick = Math.Max(_rsCreateAnchorTick, tick);
-            InvalidateVisual();
+            // 2026-07-29要望対応: アンカーと同じtickのままの間は「まだドラッグが成立していない」とみなし、
+            // 範囲を書き込まない(ハイライトも表示しない)。異なるtickへ動いた時点で初めて範囲を確定させる。
+            if (tick != _rsCreateAnchorTick) _rsRangeDidMove = true;
+            if (_rsRangeDidMove)
+            {
+                tab.TimeRangeSelectionStartTick = Math.Min(_rsCreateAnchorTick, tick);
+                tab.TimeRangeSelectionEndTick = Math.Max(_rsCreateAnchorTick, tick);
+                InvalidateVisual();
+            }
             e.Handled = true;
             return;
         }
 
         if (_rsDraggingWhich == 0) return;
-        if (_rsDraggingWhich == 1) tab.MacroRangeStartTick = tick;
-        else tab.MacroRangeEndTick = tick;
+        if (_rsDraggingWhich == 1) tab.TimeRangeSelectionStartTick = tick;
+        else tab.TimeRangeSelectionEndTick = tick;
         InvalidateVisual();
         e.Handled = true;
     }
@@ -523,8 +542,13 @@ public sealed class ChartCanvas : FrameworkElement
         {
             _rsCreatingNewRange = false;
             ReleaseMouseCapture();
-            Document?.NotifyChanged();
-            MacroRangeChanged?.Invoke();
+            // 2026-07-29要望対応: 実際にドラッグが成立した場合のみ変更を確定させる(シングルクリックのみの
+            // 場合は範囲・既存の選択状態に一切触れず、変更通知も出さない)。
+            if (_rsRangeDidMove)
+            {
+                Document?.NotifyChanged();
+                TimeRangeSelectionChanged?.Invoke();
+            }
             e.Handled = true;
             return;
         }
@@ -533,8 +557,22 @@ public sealed class ChartCanvas : FrameworkElement
         _rsDraggingWhich = 0;
         ReleaseMouseCapture();
         Document?.NotifyChanged();
-        MacroRangeChanged?.Invoke();
+        TimeRangeSelectionChanged?.Invoke();
         e.Handled = true;
+    }
+
+    /// <summary>時間範囲選択のクリア(2026-07-27要望対応: Escapeキーで呼ばれる)。</summary>
+    public bool ClearTimeRangeSelection()
+    {
+        if (Document is null) return false;
+        var tab = Document.CurrentTab;
+        if (tab.TimeRangeSelectionStartTick is null && tab.TimeRangeSelectionEndTick is null) return false;
+        tab.TimeRangeSelectionStartTick = null;
+        tab.TimeRangeSelectionEndTick = null;
+        Document.NotifyChanged();
+        TimeRangeSelectionChanged?.Invoke();
+        InvalidateVisual();
+        return true;
     }
 
     public void UpdateViewport(Rect rect)
@@ -575,7 +613,6 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
-        if (RangeSelectMode) { RsDown(e); return; } // 2026-07-26: マクロ範囲選択モード(通常編集無効)
         if (StartNumberEditMode) { SnDown(e); return; } // 2026-07-18: 専用モード(通常編集無効)
         if (Controller is null) return;
         Focus();
@@ -590,6 +627,10 @@ public sealed class ChartCanvas : FrameworkElement
             return;
         }
 
+        // 2026-07-27要望対応: 時間情報レーン上の単発ドラッグは「時間範囲選択」専用
+        // (ダブルクリックの再生開始位置指定より後、通常のBeginLeftより前に判定する)。
+        if (IsInTimeInfoLane(e.GetPosition(this).X)) { RsDown(e); return; }
+
         CaptureMouse();
         Controller.BeginLeft(PosOf(e.GetPosition(this)), ModifiersOf(e));
         InvalidateVisual();
@@ -598,7 +639,6 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseRightButtonDown(e);
-        if (RangeSelectMode) { e.Handled = true; return; } // 2026-07-26: マクロ範囲選択モード中は右クリック編集も無効
         if (StartNumberEditMode) { e.Handled = true; return; } // モード中は右クリック編集も無効(2026-07-18)
         if (Controller is null) return;
         Focus();
@@ -612,7 +652,6 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
-        if (RangeSelectMode) return; // 2026-07-26: マクロ範囲選択モード中は中ボタン配置も無効
         if (StartNumberEditMode) return; // モード中は中ボタン配置も無効(2026-07-18)
         if (e.ChangedButton != MouseButton.Middle || Controller is null) return;
         Focus();
@@ -627,7 +666,7 @@ public sealed class ChartCanvas : FrameworkElement
         // 2026-07-25: カーソルライン(最寄りスナップ位置の可視化)のため、ボタン押下の有無に関わらず
         // 常にホバー座標を更新して再描画する(以前はドラッグ中=IsMouseCaptured時のみ再描画していた)。
         _hoverPos = e.GetPosition(this);
-        if (RangeSelectMode) { RsMove(e); return; }
+        if (IsTimeRangeDragActive) { RsMove(e); return; } // 2026-07-27: 時間範囲選択ドラッグ中
         if (StartNumberEditMode) { SnMove(e); return; }
         if (Controller is null) { InvalidateVisual(); return; }
         if (IsMouseCaptured) Controller.Move(PosOf(e.GetPosition(this)));
@@ -645,7 +684,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e);
-        if (RangeSelectMode) { RsUp(e); return; }
+        if (IsTimeRangeDragActive) { RsUp(e); return; } // 2026-07-27: 時間範囲選択ドラッグ中
         if (StartNumberEditMode) { SnUp(e); return; }
         if (Controller is null) return;
         // 2026-07-26: Ctrl+ドラッグ=複製の判定はボタンを離した瞬間のCtrl状態で行うため、
@@ -838,7 +877,7 @@ public sealed class ChartCanvas : FrameworkElement
         DrawDragPreview(dc, layout, tab, project);
         DrawPlaybackLine(dc, layout, tickMin, tickMax);
         DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
-        DrawMacroRangeHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-26: レーン入替マクロの範囲選択
+        DrawTimeRangeSelectionHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-27: 時間情報レーンの時間範囲選択
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
         DrawLaneLabels(dc, layout, viewport); // 2026-07-22: レーンラベル(常に最前面)
@@ -1637,7 +1676,7 @@ public sealed class ChartCanvas : FrameworkElement
             {
                 var lane = tab.Lanes[col.NoteLaneIndex];
                 int count = lane.Notes.Count + lane.Freezes.Count;
-                noteCountText = $"×{count}";
+                noteCountText = $"{count}"; // 2026-07-27要望対応: 「×」を付けず数字のみ表示
             }
 
             string? line1 = col.Kind switch
@@ -1970,17 +2009,17 @@ public sealed class ChartCanvas : FrameworkElement
         dc.DrawLine(pen, new Point(left, y), new Point(right, y));
     }
 
-    /// <summary>レーン入替マクロ「選択範囲内のみ適用」の範囲マーカー・ハイライト帯(2026-07-26要望対応)。
-    /// 始点/終点それぞれのマーカー線は設置済みなら単独でも表示し(範囲選択モード中に片方だけ
-    /// 置いた状態が視認できるように)、両方設置済みの場合はその間を半透明の帯で塗る
+    /// <summary>時間情報レーンの「時間範囲選択」ハイライト帯(2026-07-27要望対応、旧レーン入替マクロ
+    /// 専用の範囲選択モードから置き換え)。始点/終点それぞれのマーカー線は設置済みなら単独でも表示し
+    /// (片方だけ置いた状態が視認できるように)、両方設置済みの場合はその間を半透明の帯で塗る
     /// (DrawPlaybackStartLine/CursorHighlight帯の描画パターンを踏襲)。</summary>
-    private void DrawMacroRangeHighlight(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
+    private void DrawTimeRangeSelectionHighlight(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
     {
-        if (tab.MacroRangeStartTick is null && tab.MacroRangeEndTick is null) return;
+        if (tab.TimeRangeSelectionStartTick is null && tab.TimeRangeSelectionEndTick is null) return;
         double left = layout.Columns[0].X;
         double right = layout.Columns[^1].X + layout.Columns[^1].Width;
 
-        if (tab.MacroRangeStartTick is { } st && tab.MacroRangeEndTick is { } et)
+        if (tab.TimeRangeSelectionStartTick is { } st && tab.TimeRangeSelectionEndTick is { } et)
         {
             double loTick = Math.Min(st, et), hiTick = Math.Max(st, et);
             if (!(hiTick < tickMin || loTick > tickMax))
@@ -1994,7 +2033,7 @@ public sealed class ChartCanvas : FrameworkElement
 
         var markerPen = new Pen(Freeze(new SolidColorBrush(MacroRangeHighlightColor)), MacroRangeMarkerWidth);
         markerPen.Freeze();
-        foreach (var tick in new[] { tab.MacroRangeStartTick, tab.MacroRangeEndTick })
+        foreach (var tick in new[] { tab.TimeRangeSelectionStartTick, tab.TimeRangeSelectionEndTick })
         {
             if (tick is not { } t || t < tickMin || t > tickMax) continue;
             double y = layout.TickToY(t);

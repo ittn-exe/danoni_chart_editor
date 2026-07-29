@@ -147,14 +147,16 @@ public sealed class DifficultyTab
     /// (DosExporter参照)。</summary>
     public List<WordLane> WordLanes { get; set; } = [];
 
-    /// <summary>レーン入替マクロの「選択範囲内のみ適用」機能(2026-07-26要望対応)で使う範囲マーカー
-    /// (tick単位)。右パネル「マクロ」タブの範囲選択モードでユーザーが設置・ドラッグ移動する。
-    /// 片方だけ設置された状態(null混在)もあり得る(その間はハイライト非表示、適用も不可)。
+    /// <summary>時間情報レーンのドラッグによる「時間範囲選択」(tick単位、2026-07-27要望対応)。
+    /// 元々はレーン入替マクロ専用の「選択範囲内のみ適用」機能だったが、時間情報レーンの汎用ドラッグ
+    /// 操作へ置き換え、マクロの範囲スコープ指定・(将来の)ループ再生区間指定など複数機能で共有する
+    /// 汎用の時間範囲選択として再定義した(旧名: MacroRangeStartTick)。
+    /// 片方だけ設置された状態(null混在)もあり得る(その間はハイライト非表示、マクロの範囲適用も不可)。
     /// タブごとに独立して保持し、プロジェクトファイルへ永続化する。</summary>
-    public long? MacroRangeStartTick { get; set; }
+    public long? TimeRangeSelectionStartTick { get; set; }
 
-    /// <summary>MacroRangeStartTick参照。範囲の終点マーカー(tick単位)。</summary>
-    public long? MacroRangeEndTick { get; set; }
+    /// <summary>TimeRangeSelectionStartTick参照。範囲の終点(tick単位、旧名: MacroRangeEndTick)。</summary>
+    public long? TimeRangeSelectionEndTick { get; set; }
 
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
@@ -194,8 +196,8 @@ public sealed class DifficultyTab
                 Entries = new List<GaugeListEntry>(Gauge.Entries),
             },
             GaugeParams = GaugeParams is null ? null : new Dictionary<string, string>(GaugeParams),
-            MacroRangeStartTick = MacroRangeStartTick,
-            MacroRangeEndTick = MacroRangeEndTick,
+            TimeRangeSelectionStartTick = TimeRangeSelectionStartTick,
+            TimeRangeSelectionEndTick = TimeRangeSelectionEndTick,
         };
         foreach (var lane in Lanes)
         {
