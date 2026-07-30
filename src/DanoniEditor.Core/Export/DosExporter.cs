@@ -220,11 +220,15 @@ public sealed class DosExporter
         return sb.ToString();
     }
 
+    /// <summary>2026-07-30要望対応: 「始点終点オートスムージング出力」。ValueEvent.LinkGridDivisionで
+    /// リンクされた区間があれば、Timing.ValueEventSmoothing.ExpandLinkedEventsで自動生成した中間点
+    /// (絶対グリッド・線形補間)を含めて出力する。</summary>
     private static void AppendValueEvents(StringBuilder sb, string name,
         List<ValueEvent> events, Timing.TimingEngine engine, double blankShift)
     {
         if (events.Count == 0) return;
-        var parts = events
+        var expanded = Timing.ValueEventSmoothing.ExpandLinkedEvents(events);
+        var parts = expanded
             .OrderBy(e => e.Tick)
             .SelectMany(e => new[] { RoundFrame(engine.TickToFrame(e.Tick) + blankShift).ToString(), Num(e.Value) });
         AppendParam(sb, name, string.Join(",", parts));
@@ -354,16 +358,22 @@ public sealed class DosExporter
                 var value = string.Join(",", gauge.Entries.Select(e =>
                 {
                     var varFlag = e.IsVariable ? "V" : "F";
-                    return string.IsNullOrEmpty(e.DisplayName)
+                    // 2026-07-30再設計: タブ側の個別DisplayNameが空の場合、GaugeNamesで宣言された
+                    // 既定表示名があればフォールバックとして使う。
+                    string? displayName = !string.IsNullOrEmpty(e.DisplayName)
+                        ? e.DisplayName
+                        : project.GaugeNames.FirstOrDefault(n => n.Name == e.Name)?.DisplayName;
+                    return string.IsNullOrEmpty(displayName)
                         ? $"{e.Name}::{varFlag}"
-                        : $"{e.Name}::{varFlag}::{e.DisplayName}";
+                        : $"{e.Name}::{varFlag}::{displayName}";
                 }));
                 AppendParam(sb, $"customGauge{suffix}", value);
             }
         }
 
-        foreach (var name in project.GaugeNames)
+        foreach (var nameDef in project.GaugeNames)
         {
+            var name = nameDef.Name;
             var perTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "");
             var values = perTabCsv.ToList();
             if (values.All(string.IsNullOrEmpty)) continue;

@@ -329,13 +329,20 @@ public sealed class DosImporter
         ["", "Normal", "NormalBar", "NormalShadow", "ArrowShadow", "Hit", "HitBar", "HitShadow"];
 
     /// <summary>word_data/wordRev_dataの読み込み(仕様dos-e0003-wordData、2026-07-23、TBD 4)。
-    /// 1行=Frame,Position,Text(,FadeFrame)の3〜4項目。改行区切り(手書き・本エディタ出力とも同じ形式、
-    /// ncolor_data等と異なりトークン数の可変長ヒューリスティックが不要)。
-    /// Position="-"の行はコメント行として扱う(Comment、Position値自体は無視)。
-    /// Textが"["で始まり"]"で終わる行は制御行(Control。[fadein]/[fadeout]/[left]/[center]/[right]/
-    /// [fontSize=XX])とみなし、4項目目があればFadeFrameとして保持する。それ以外は通常の歌詞行(Lyrics)。
+    /// 1行=Frame,Position,Text(,FadeFrame)の3〜4項目が基本形だが、danoni_main.js
+    /// (makeSpriteWordData)を確認したところ、1行に複数の(Frame,Position,Text)組をカンマ区切りで
+    /// 詰め込む書式も許容されている(2026-07-30確認・対応)。この場合FadeFrameは付与されない
+    /// (本家準拠: 1行のトークン総数が4または5個=単独の1組+FadeFrameの場合のみ4番目をFadeFrameと
+    /// みなし、3個ちょうど、または6個以上=複数組の詰め込みの場合はFadeFrame無しとして3個ずつの
+    /// グループに分解する)。
+    /// Position="-"のグループが現れた時点で、本家準拠でその行の残りの処理を打ち切り、その位置を
+    /// コメント行として扱う(Comment、Position値自体は無視)。
+    /// Textが"["で始まり"]"で終わる場合は制御行(Control。[fadein]/[fadeout]/[left]/[center]/[right]/
+    /// [fontSize=XX])とみなし、該当すればFadeFrameを保持する。それ以外は通常の歌詞行(Lyrics)。
     /// 本エディタは多言語(Ja/En)・Cross/Split/Flat・別キーモード(wordA*)・他データ参照委譲は未対応
-    /// (該当データ名は他の未知ヘッダーと同様、ExtraHeadersへ素通しされるのみで無視される)。
+    /// (該当データ名は他の未知ヘッダーと同様、ExtraHeadersへ素通しされるのみで無視される)。歌詞本文に
+    /// 埋め込まれたカンマの復元(本家の数値トークンが現れるまで結合し直すヒューリスティック)は未対応
+    /// (既知の制約、本エディタ自身の出力にはカンマを含む歌詞は想定していない)。
     /// データが1件でもあれば新規WordLaneを1本作成してtab.WordLanesへ追加する(0件ならレーンを作らない)。</summary>
     private static void ImportWordData(string paramName, Dictionary<string, string> p,
         DifficultyTab tab, Func<double, long> snap, bool isReverse)
@@ -348,28 +355,38 @@ public sealed class DosImporter
         var lane = new WordLane { Name = isReverse ? "歌詞(Reverse)" : "歌詞", IsReverse = isReverse };
         foreach (var line in lines)
         {
-            var fields = line.Split(',', StringSplitOptions.TrimEntries);
-            if (fields.Length < 3) continue;
-            if (!double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var frameVal)) continue;
-            long tick = snap(frameVal);
+            var fields = line.Split(',').Select(f => f.Trim()).ToArray();
+            // 本家準拠: 行全体のトークン数が4または5個の場合のみ「単独の1組+FadeFrame」とみなす。
+            bool hasSingleTrailingFadeFrame = fields.Length is 4 or 5;
 
-            if (fields[1] == "-")
+            for (int k = 0; k + 2 < fields.Length; k += 3)
             {
-                lane.Entries.Add(new WordEntry(tick, 0, WordEntryKind.Comment, fields[2]));
-                continue;
-            }
-            if (!int.TryParse(fields[1], out var position)) continue;
+                if (fields[k].Length == 0) continue;
 
-            string text = fields[2];
-            bool isControl = text.Length >= 2 && text[0] == '[' && text[^1] == ']';
-            if (isControl)
-            {
-                int? fadeFrame = fields.Length > 3 && int.TryParse(fields[3], out var ff) ? ff : null;
-                lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Control, text, fadeFrame));
-            }
-            else
-            {
-                lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Lyrics, text));
+                if (fields[k + 1] == "-")
+                {
+                    // コメント行(本家準拠: "-"が現れた時点でその行の以降の処理を打ち切る)
+                    if (double.TryParse(fields[k], NumberStyles.Float, CultureInfo.InvariantCulture, out var cFrameVal))
+                        lane.Entries.Add(new WordEntry(snap(cFrameVal), 0, WordEntryKind.Comment, fields[k + 2]));
+                    break;
+                }
+
+                if (!double.TryParse(fields[k], NumberStyles.Float, CultureInfo.InvariantCulture, out var frameVal)) continue;
+                if (!int.TryParse(fields[k + 1], out var position)) continue;
+                long tick = snap(frameVal);
+
+                string text = fields[k + 2];
+                bool isControl = text.Length >= 2 && text[0] == '[' && text[^1] == ']';
+                if (isControl)
+                {
+                    int? fadeFrame = hasSingleTrailingFadeFrame && k + 3 < fields.Length && int.TryParse(fields[k + 3], out var ff)
+                        ? ff : null;
+                    lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Control, text, fadeFrame));
+                }
+                else
+                {
+                    lane.Entries.Add(new WordEntry(tick, position, WordEntryKind.Lyrics, text));
+                }
             }
         }
 

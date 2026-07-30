@@ -39,10 +39,53 @@ internal static class ExtraHeaderDefs
         new("stockForceDel", HeaderParamType.Raw, "プレイ時間制御・譜面位置調整"),
 
         // --- 設定時の初期設定 ---
-        new("settingUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("displayUse", HeaderParamType.Bool, "設定時の初期設定"),
+        // 2026-07-30確認: danoni_main.jsを確認したところ、単一の"settingUse"/"displayUse"という
+        // パラメータ名は本体側に存在せず(参照されないため出力しても無視される「死んだUI」だった)、
+        // 実際はg_canDisabledSettings/g_displays(danoni_constants.js)の各要素ごとに動的生成される
+        // "{要素名}Use"という個別パラメータ群だと判明。全項目をここへ列挙して差し替える。
+        // g_canDisabledSettings系(設定変更の許可/禁止、単純なtrue/false):
+        new("speedUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("motionUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("scrollUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("reverseUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("shuffleUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("autoPlayUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("gaugeUse", HeaderParamType.Bool, "設定時の初期設定"),
+        // excessiveUse: g_canDisabledSettingsとしては単純なtrue/falseだが、本体側は同じヘッダー名を
+        // 難易度ごとの"有効可否,初期ON/OFF"の複合値($区切り複数)としても読み取る、より複雑な二重の
+        // 意味を持つ(danoni_main.js確認済み)。ここでは前者(単純なtrue/false)のみサポートし、
+        // 難易度ごとの複合指定は将来課題とする(TBD参照)。
+        new("excessiveUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("appearanceUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("playWindowUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("stepAreaUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("frzReturnUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("shakingUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("effectUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("camoufrageUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("camoufrageTypeUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("swappingUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("judgRangeUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("autoRetryUse", HeaderParamType.Bool, "設定時の初期設定"),
+        // g_displays系: "有効可否,初期ON/OFF"(例"true,ON"、省略時は"true"のみ)の複合値のため、
+        // 単純なBool型では表現できずRaw型(生文字列)で暫定対応する。
+        new("stepZoneUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("judgmentUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("lifeGaugeUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("scoreUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("musicInfoUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("filterLineUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("velocityUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("colorUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("backgroundUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("arrowEffectUse", HeaderParamType.Raw, "設定時の初期設定"),
+        new("specialUse", HeaderParamType.Raw, "設定時の初期設定"),
         new("difSelectorUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("scoreDetailUse", HeaderParamType.Bool, "設定時の初期設定"),
+        // scoreDetailUse: 2026-07-30確認、Bool型ではなく「表示したい項目名をカンマ区切りで列挙する」
+        // 形式(有効な項目名: Density/Speed/ToolDif/HighScore/MiniMap、レガシー別名Velocity→Speed・
+        // DifLevel→ToolDifも本体側で変換される)。Bool出力("true"等)では該当項目名が無く全滅するため
+        // Raw型(生文字列)へ変更。
+        new("scoreDetailUse", HeaderParamType.Raw, "設定時の初期設定"),
         new("transKeyUse", HeaderParamType.Bool, "設定時の初期設定"),
         new("colorCdPaddingUse", HeaderParamType.Bool, "設定時の初期設定"),
         new("customFont", HeaderParamType.Text, "設定時の初期設定"),
@@ -60,7 +103,11 @@ internal static class ExtraHeaderDefs
         new("frzScopeFromAC", HeaderParamType.Bool, "プレイ時の初期設定"),
         new("jdgPosReset", HeaderParamType.Bool, "プレイ時の初期設定"),
         new("bottomWordSet", HeaderParamType.Bool, "プレイ時の初期設定"),
-        new("wordAutoReverse", HeaderParamType.Bool, "プレイ時の初期設定"),
+        // 2026-07-30確認: danoni_main.jsを確認したところ、wordAutoReverseは2値の真偽ではなく
+        // "auto"(既定、未指定時)/"ON"/"OFF"の3値である(C_DIS_AUTO/C_FLG_ON/C_FLG_OFF)。
+        // 「使用する」チェックOFF=ヘッダー未出力=auto相当、チェックON時はON/OFFを明示的に選べる
+        // Dropdown型へ変更し、「明示的にOFFにする」指定ができなかった問題を解消する。
+        new("wordAutoReverse", HeaderParamType.Dropdown, "プレイ時の初期設定", "ON", ["ON", "OFF"]),
         new("frzStartjdgUse", HeaderParamType.Bool, "プレイ時の初期設定"),
         new("excessiveJdgUse", HeaderParamType.Bool, "プレイ時の初期設定"),
         new("finishView", HeaderParamType.Bool, "プレイ時の初期設定"),

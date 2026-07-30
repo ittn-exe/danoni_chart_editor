@@ -6,8 +6,9 @@ public readonly record struct ClipboardColor(
     string? Color, string? BandColor, bool AllFlag,
     string? ShadowColor, string? HitColor, string? HitBarColor, string? HitShadowColor);
 
-/// <summary>コメント・警告フラグ(NoteAnnotation)のスナップショット(2026-07-26)。</summary>
-public readonly record struct ClipboardAnnotation(string Comment, bool Warning);
+/// <summary>コメント・警告フラグ(NoteAnnotation)のスナップショット(2026-07-26、ShowIconは
+/// 2026-07-30要望対応で追加)。</summary>
+public readonly record struct ClipboardAnnotation(string Comment, bool Warning, bool ShowIcon = false);
 
 /// <summary>
 /// クリップボードへ保存する1オブジェクト分のスナップショット(仕様書13章: Ctrl+X/C/V、6.3上段「クリップボード系」)。

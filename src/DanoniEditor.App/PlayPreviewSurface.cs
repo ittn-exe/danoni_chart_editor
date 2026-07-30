@@ -120,10 +120,11 @@ internal sealed class PlayPreviewSurface : FrameworkElement
         _stepYBottom = _playingHeight + stepYRHeader - stepYHeader - ArrowSize / 2;
 
         var timing = doc.Project.CreateTimingEngine();
-        _speedBreaks = doc.CurrentTab.SpeedEvents
+        // 2026-07-30追記: リンク(自動スムージング)区間の中間点もExpandLinkedEventsで展開してから変換する。
+        _speedBreaks = DanoniEditor.Core.Timing.ValueEventSmoothing.ExpandLinkedEvents(doc.CurrentTab.SpeedEvents)
             .Select(e => (Frame: timing.TickToFrame(e.Tick) + _offsetFrames, e.Value))
             .OrderBy(b => b.Frame).ToList();
-        _boostBreaks = doc.CurrentTab.BoostEvents
+        _boostBreaks = DanoniEditor.Core.Timing.ValueEventSmoothing.ExpandLinkedEvents(doc.CurrentTab.BoostEvents)
             .Select(e => (Frame: timing.TickToFrame(e.Tick) + _offsetFrames, e.Value))
             .OrderBy(b => b.Frame).ToList();
 
@@ -220,8 +221,14 @@ internal sealed class PlayPreviewSurface : FrameworkElement
                 if (!Visible(y1) && !Visible(y2) && Math.Sign(y1 - _playingHeight / 2) == Math.Sign(y2 - _playingHeight / 2)) continue;
 
                 colorOverrides.TryGetValue(f.StartTick, out var fOver);
-                var edgeColor = fOver?.Color is { } ec ? ChartCanvas.ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
-                var bandColor = fOver?.BandColor is { } bc ? ChartCanvas.ParseDisplayColor(bc, frzBandColor) : frzBandColor;
+                // 2026-07-30要望対応: 即時適用(AllFlag)の簡易ライブシミュレーション。自分より前の
+                // tickで既に発火済みの即時適用があれば、その色を優先する(近似ルール、詳細はヘルパー参照)。
+                string? edgeColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                    tab.Lanes[i].ColorOverrides, f.StartTick, _currentFrame, e => e.Color, timing.TickToFrame, fOver?.Color);
+                string? bandColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                    tab.Lanes[i].ColorOverrides, f.StartTick, _currentFrame, e => e.BandColor, timing.TickToFrame, fOver?.BandColor);
+                var edgeColor = edgeColorCode is { } ec ? ChartCanvas.ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
+                var bandColor = bandColorCode is { } bc ? ChartCanvas.ParseDisplayColor(bc, frzBandColor) : frzBandColor;
 
                 var bandBrush = new SolidColorBrush(bandColor) { Opacity = 0.5 };
                 bandBrush.Freeze();
@@ -241,7 +248,9 @@ internal sealed class PlayPreviewSurface : FrameworkElement
                 double y = YOf(frame, GetBoostFactor(frame));
                 if (!Visible(y)) continue;
                 colorOverrides.TryGetValue(tick, out var nOver);
-                var noteColor = nOver?.Color is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
+                string? noteColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                    tab.Lanes[i].ColorOverrides, tick, _currentFrame, e => e.Color, timing.TickToFrame, nOver?.Color);
+                var noteColor = noteColorCode is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
                 DrawNote(dc, image, laneDef, cx, y, noteColor, ArrowSize);
             }
         }

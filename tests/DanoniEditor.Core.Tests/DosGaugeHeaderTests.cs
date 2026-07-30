@@ -74,7 +74,7 @@ public class DosGaugeHeaderTests
     public void GaugeParams_JoinsPerTabCsvWithDollarSign_EmptySegmentsAllowedForFallback()
     {
         var project = NewProject(tabCount: 3);
-        project.GaugeNames.Add("Heavy");
+        project.GaugeNames.Add(new GaugeNameDef("Heavy"));
         project.Tabs[0].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "2,50,50,100" };
         // Tabs[1]はGaugeParams未設定(=空欄、先頭タブへの本体側フォールバックに委ねる)
         project.Tabs[2].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "1,40,40,90" };
@@ -89,7 +89,7 @@ public class DosGaugeHeaderTests
     public void GaugeParams_AllEmptyForAName_WritesNoHeaderAtAll()
     {
         var project = NewProject(tabCount: 2);
-        project.GaugeNames.Add("Unused"); // どのタブにも値を設定しない
+        project.GaugeNames.Add(new GaugeNameDef("Unused")); // どのタブにも値を設定しない
 
         var repo = TestFixtures.Repository();
         var text = new DosExporter(repo.Get).Export(project);
@@ -98,11 +98,46 @@ public class DosGaugeHeaderTests
     }
 
     [Fact]
+    public void ExplicitEntry_WithoutOwnDisplayName_FallsBackToDeclaredDefault()
+    {
+        // 2026-07-30再設計: タブ側のGaugeListEntry.DisplayNameが空の場合、GaugeNames(①宣言リスト)の
+        // 既定表示名があればフォールバックとして使われる。
+        var project = NewProject(tabCount: 1);
+        project.GaugeNames.Add(new GaugeNameDef("Heavy", "重ゲージ"));
+        project.Tabs[0].Gauge = new GaugeConfig
+        {
+            Entries = [new GaugeListEntry("Heavy", false)],
+        };
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project);
+
+        Assert.Contains("|customGauge=Heavy::F::重ゲージ|", text);
+    }
+
+    [Fact]
+    public void ExplicitEntry_WithOwnDisplayName_OverridesDeclaredDefault()
+    {
+        var project = NewProject(tabCount: 1);
+        project.GaugeNames.Add(new GaugeNameDef("Heavy", "重ゲージ"));
+        project.Tabs[0].Gauge = new GaugeConfig
+        {
+            Entries = [new GaugeListEntry("Heavy", false, "タブ側の上書き")],
+        };
+
+        var repo = TestFixtures.Repository();
+        var text = new DosExporter(repo.Get).Export(project);
+
+        Assert.Contains("|customGauge=Heavy::F::タブ側の上書き|", text);
+        Assert.DoesNotContain("重ゲージ", text);
+    }
+
+    [Fact]
     public void RawOverrideText_TakesPriorityOverStructuredGaugeConfig()
     {
         var project = NewProject(tabCount: 1);
         project.Tabs[0].Gauge = new GaugeConfig { InheritKeyword = "survival" };
-        project.GaugeNames.Add("Heavy");
+        project.GaugeNames.Add(new GaugeNameDef("Heavy"));
         project.Tabs[0].GaugeParams = new Dictionary<string, string> { ["Heavy"] = "2,50,50,100" };
         project.GaugeRawOverrideText = "|customGauge=_Original::F::Original,Escape::V|\n|gaugeEscape=x,0,50,25|";
 

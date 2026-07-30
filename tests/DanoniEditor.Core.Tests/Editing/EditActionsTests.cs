@@ -96,6 +96,58 @@ public class EditActionsTests
         Assert.Contains(doc.Project.BpmEvents, e => e.Tick == 96 && e.Bpm == 150);
     }
 
+    // =====================================================================
+    // speed/boost 始点終点オートスムージング出力(2026-07-30要望対応)
+    // =====================================================================
+
+    [Fact]
+    public void SetValueEventLink_SetsAndUndoes()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 0, 1.0));
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 480, 2.0));
+
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Speed, 0, 8));
+        Assert.Equal(8, doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0).LinkGridDivision);
+
+        doc.Undo();
+        Assert.Null(doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0).LinkGridDivision);
+    }
+
+    [Fact]
+    public void MoveValueEvent_PreservesLinkGridDivision()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 0, 1.0));
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 480, 2.0));
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Speed, 0, 16));
+
+        doc.Execute(new MoveValueEventAction(ValueEventKind.Speed, 0, 24));
+
+        var moved = doc.CurrentTab.SpeedEvents.First(e => e.Tick == 24);
+        Assert.Equal(16, moved.LinkGridDivision);
+
+        doc.Undo();
+        var restored = doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0);
+        Assert.Equal(16, restored.LinkGridDivision);
+    }
+
+    [Fact]
+    public void DeleteValueEvent_ClearsPredecessorLinkPointingAtIt()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 0, 1.0));
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 480, 2.0));
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Speed, 0, 8));
+
+        doc.Execute(new DeleteValueEventAction(ValueEventKind.Speed, 480));
+        Assert.Null(doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0).LinkGridDivision);
+
+        doc.Undo(); // 削除取り消し→リンクも復元されるはず
+        Assert.Contains(doc.CurrentTab.SpeedEvents, e => e.Tick == 480);
+        Assert.Equal(8, doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0).LinkGridDivision);
+    }
+
     [Fact]
     public void MoveObjects_GroupMove_UpdatesModelAndSelection()
     {

@@ -194,6 +194,46 @@ public class DosWordDataTests
     }
 
     [Fact]
+    public void Import_PackedMultiEntryLine_ParsesAllEntriesWithoutFadeFrame()
+    {
+        // 2026-07-30確認: danoni_main.js(makeSpriteWordData)は1行に複数の(Frame,Position,Text)組を
+        // カンマ区切りで詰め込む書式も許容する(この場合FadeFrameは付与されない)。
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData +
+            "\n|word_data=\n0,0,一番目,30,1,二番目,60,0,三番目\n|\n" +
+            "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+
+        var lane = Assert.Single(back.Project.Tabs[0].WordLanes);
+        Assert.Equal(3, lane.Entries.Count);
+        Assert.Contains(lane.Entries, e => e.Text == "一番目" && e.Position == 0);
+        Assert.Contains(lane.Entries, e => e.Text == "二番目" && e.Position == 1);
+        Assert.Contains(lane.Entries, e => e.Text == "三番目" && e.Position == 0);
+        Assert.All(lane.Entries, e => Assert.Null(e.FadeFrame));
+    }
+
+    [Fact]
+    public void Import_PackedMultiEntryLine_CommentGroupStopsRestOfLine()
+    {
+        // 本家準拠: Position="-"のグループが現れた時点で、その行の残りの処理を打ち切る。
+        var repo = TestFixtures.Repository();
+        var difData = "|difData=5,Normal,3.5|";
+        var text = difData +
+            "\n|word_data=\n0,0,前半,30,-,コメント,60,0,無視される\n|\n" +
+            "|de_schemaVersion=1|\n|de_startNumber=0|\n|de_bpm=0,120|\n";
+
+        var back = new DosImporter(repo.Get).Import(text, new DosImportOptions());
+
+        var lane = Assert.Single(back.Project.Tabs[0].WordLanes);
+        Assert.Equal(2, lane.Entries.Count);
+        Assert.Contains(lane.Entries, e => e.Kind == WordEntryKind.Lyrics && e.Text == "前半");
+        Assert.Contains(lane.Entries, e => e.Kind == WordEntryKind.Comment && e.Text == "コメント");
+        Assert.DoesNotContain(lane.Entries, e => e.Text == "無視される");
+    }
+
+    [Fact]
     public void Import_NoWordDataParam_LeavesWordLanesEmpty()
     {
         var repo = TestFixtures.Repository();

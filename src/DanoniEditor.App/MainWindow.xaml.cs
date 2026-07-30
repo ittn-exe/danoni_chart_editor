@@ -468,7 +468,8 @@ public partial class MainWindow : Window
     /// <summary>上部パネルの「表示設定...」ボタン(従来動作互換: 表示カテゴリを開く)</summary>
     private void DisplaySettings_Click(object sender, RoutedEventArgs e) => OpenPreferences(0);
 
-    /// <summary>右パネル「プロジェクト」タブの「ゲージ設定...」ボタン(customGauge/gaugeXXX専用ウィンドウ)</summary>
+    /// <summary>右パネル「プロジェクト」タブ・「オブジェクト」タブ双方の「ゲージ設定...」ボタン共通
+    /// (customGauge/gaugeXXX/difData専用ウィンドウ、2026-07-30よりオブジェクトタブにも導線追加)</summary>
     private void OpenGaugeEditor_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null)
@@ -859,6 +860,20 @@ public partial class MainWindow : Window
     // FUJI / SKB インポート
     // =====================================================================
 
+    /// <summary>インポートウィンドウを開く(2026-07-30要望対応)。モードレスなので開いたまま
+    /// 何度でも続けてFUJI D&D・SKB貼り付けインポートができる。</summary>
+    private ImportHubWindow? _importHubWindow;
+    private void OpenImportHubWindow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_importHubWindow is { IsLoaded: true })
+        {
+            _importHubWindow.Activate();
+            return;
+        }
+        _importHubWindow = new ImportHubWindow(this);
+        _importHubWindow.Show();
+    }
+
     private void ImportFuji_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog { Filter = "FUJIエディタファイル (*.txt)|*.txt|すべてのファイル (*.*)|*.*" };
@@ -871,7 +886,7 @@ public partial class MainWindow : Window
     /// (difDataからは自動検出せずテンプレートフォルダの一覧から選択)と難易度名(選んだキー種に一致する
     /// difData候補+「後で設定する」「今設定する」)を、1つのウィンドウ(FujiImportSetupDialog)でまとめて
     /// 選ばせる。「後で設定する」を選んだ場合も、それ自体は正常な選択のため確認ダイアログは出さない。</summary>
-    private void ImportFujiFile(string path)
+    internal void ImportFujiFile(string path)
     {
         var fileName = Path.GetFileName(path);
         string text;
@@ -918,21 +933,36 @@ public partial class MainWindow : Window
         ImportSkbFile(dlg.FileName);
     }
 
-    /// <summary>SKBエディタファイルをインポートする。ImportSkb_ClickとD&D(2026-07-20)の共通処理。</summary>
+    /// <summary>SKBエディタファイルをインポートする。ImportSkb_ClickとD&D(2026-07-20)の共通処理。
+    /// ファイルを読み込んでからImportSkbText(2026-07-30、インポートウィンドウ新設に伴い抽出)へ委譲する。</summary>
     private void ImportSkbFile(string path)
     {
-        var fileName = Path.GetFileName(path);
+        string text;
+        try { text = File.ReadAllText(path); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+        ImportSkbText(text, Path.GetFileName(path));
+    }
+
+    /// <summary>SKBエディタ形式のテキストをインポートする(2026-07-30、インポートウィンドウの
+    /// コピペ欄用に新設)。ImportSkbFileと共通のコア処理で、ファイルパスの有無だけが異なる。
+    /// displayNameはインポート先選択・難易度名入力ダイアログの案内文にのみ使う表示用の名前
+    /// (ファイルの場合はファイル名、貼り付けの場合は「クリップボードからの貼り付け」等)。</summary>
+    internal void ImportSkbText(string text, string displayName)
+    {
         try
         {
-            var text = File.ReadAllText(path);
             var importer = new SkbImporter(_templates.Get);
             var result = importer.Import(text);
 
             var name = SimplePrompt.Ask(this, "難易度名の指定",
-                $"インポート中のファイル: {fileName}\n\nSKB形式には難易度名が保存されていないため、手動で入力してくださいませ。", "Normal");
+                $"インポート中のデータ: {displayName}\n\nSKB形式には難易度名が保存されていないため、手動で入力してくださいませ。", "Normal");
             if (!string.IsNullOrWhiteSpace(name)) result.Tab.DifficultyName = name;
 
-            var project = ChooseImportTargetProject(fileName);
+            var project = ChooseImportTargetProject(displayName);
             if (project is null) return; // インポート先の選択をキャンセル
             var warnings = ProjectOperations.ApplyImport(project, result);
             FinishTabImport(project, warnings);
@@ -956,24 +986,44 @@ public partial class MainWindow : Window
     /// プロジェクト全体(タブ複数を含む)を作るため」既存プロジェクトへの追加を考慮せず常に新規
     /// プロジェクトタブとしていたが、他形式と同様プロジェクトが開いていれば追加/新規を選ばせるべき
     /// という指摘のため、ChooseImportTargetProject/ApplyImport(DosImportResult)/FinishTabImportの
-    /// 共通トリオへ揃えた(dos.txt1件で複数タブを含み得る点はApplyImport側で全タブ追加として吸収)。</summary>
+    /// 共通トリオへ揃えた(dos.txt1件で複数タブを含み得る点はApplyImport側で全タブ追加として吸収)。
+    /// 2026-07-30: インポート先の選択(新規/既存プロジェクトへタブ追加)を先に行うよう順序変更。
+    /// 既存プロジェクトへタブとして取り込む場合、BPMは(「新規譜面を追加」と同様)プロジェクト
+    /// 全体で共通の値を使うべきであり、ダイアログでの自動推定確認自体が不要(推定を行うと
+    /// プロジェクト共通のBPMと食い違う値になり得るため)。そのためタブ追加時はBPM自動推定の
+    /// 確認ダイアログを出さず、タイミング情報が無い場合のフォールバック値としてプロジェクトの
+    /// 先頭BPMイベント値をそのまま使う(新規プロジェクトの場合は従来通り、確認ダイアログの上で
+    /// 環境設定の既定BPMをフォールバックに使う)。</summary>
     private void ImportDosFile(string path)
     {
-        var autoEstimate = MessageBox.Show(this,
-            "タイミング情報(de_*/es_*)が見つからなかった場合、ノートの分布からBPMを自動推定してみますか?\n" +
-            "(推定できなければ既定BPM=120・4/4拍子を仮定します)",
-            "BPM自動推定", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+        var fileName = Path.GetFileName(path);
+        var project = ChooseImportTargetProject(fileName);
+        if (project is null) return; // インポート先の選択をキャンセル
+        bool addingToExistingTab = _document is not null && ReferenceEquals(project, _document.Project);
+
+        bool autoEstimate;
+        double defaultBpm;
+        if (addingToExistingTab)
+        {
+            autoEstimate = false;
+            defaultBpm = project.BpmEvents.Count > 0 ? project.BpmEvents[0].Bpm : _appSettings.DefaultBpm;
+        }
+        else
+        {
+            autoEstimate = MessageBox.Show(this,
+                "タイミング情報(de_*/es_*)が見つからなかった場合、ノートの分布からBPMを自動推定してみますか?\n" +
+                "(推定できなければ既定BPM=120・4/4拍子を仮定します)",
+                "BPM自動推定", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            defaultBpm = _appSettings.DefaultBpm; // 環境設定(仕様書15.2、2026-07-19b)
+        }
 
         try
         {
             var text = File.ReadAllText(path);
             var importer = new DosImporter(_templates.Get);
-            var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = _appSettings.DefaultBpm }; // 環境設定(仕様書15.2、2026-07-19b)
+            var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = defaultBpm };
             var result = importer.Import(text, options);
 
-            var fileName = Path.GetFileName(path);
-            var project = ChooseImportTargetProject(fileName);
-            if (project is null) return; // インポート先の選択をキャンセル
             int addedTabCount = result.Project.Tabs.Count;
             var warnings = ProjectOperations.ApplyImport(project, result);
             warnings.Add($"タイミング情報の出所: {result.TimingSource} / 最大スナップ誤差: {result.MaxSnapErrorFrames:F2}フレーム");
@@ -2554,6 +2604,9 @@ public partial class MainWindow : Window
         ObjectCommentBox.Visibility = Visibility.Collapsed;
         ObjectCommentLabel.Text = "Comment";
         ObjectWarningCheck.Visibility = Visibility.Collapsed;
+        ObjectShowCommentIconCheck.Visibility = Visibility.Collapsed;
+        ObjectLinkPrevPanel.Visibility = Visibility.Collapsed;
+        ObjectLinkNextPanel.Visibility = Visibility.Collapsed;
         ObjectWordPositionLabel.Visibility = Visibility.Collapsed;
         ObjectWordPositionBox.Visibility = Visibility.Collapsed;
         ObjectWordFadeFrameLabel.Visibility = Visibility.Collapsed;
@@ -2569,6 +2622,8 @@ public partial class MainWindow : Window
             ObjectCommentBox.Text = a?.Comment ?? "";
             ObjectWarningCheck.Visibility = Visibility.Visible;
             ObjectWarningCheck.IsChecked = a?.Warning ?? false;
+            ObjectShowCommentIconCheck.Visibility = Visibility.Visible;
+            ObjectShowCommentIconCheck.IsChecked = a?.ShowIcon ?? false;
         }
 
         switch (r.Kind)
@@ -2602,6 +2657,7 @@ public partial class MainWindow : Window
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
                     ObjectValueBox.Text = (ev?.Value ?? 0).ToString(CultureInfo.InvariantCulture);
+                    ShowValueEventLinkFields(ValueEventKind.Speed, r.Tick);
                     break;
                 }
 
@@ -2613,6 +2669,7 @@ public partial class MainWindow : Window
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
                     ObjectValueBox.Text = (ev?.Value ?? 0).ToString(CultureInfo.InvariantCulture);
+                    ShowValueEventLinkFields(ValueEventKind.Boost, r.Tick);
                     break;
                 }
 
@@ -2761,16 +2818,23 @@ public partial class MainWindow : Window
         switch (r.Kind)
         {
             case ObjectKind.Speed:
-                _document.Execute(new CompositeEditAction(
-                    [new DeleteValueEventAction(ValueEventKind.Speed, r.Tick), new PlaceValueEventAction(ValueEventKind.Speed, r.Tick, v)],
-                    "速度変更値編集"));
-                break;
+                {
+                    // 2026-07-30: リンク設定(LinkGridDivision)を削除→再配置後も保持する。
+                    var link = _document.CurrentTab.SpeedEvents.FirstOrDefault(x => x.Tick == r.Tick)?.LinkGridDivision;
+                    _document.Execute(new CompositeEditAction(
+                        [new DeleteValueEventAction(ValueEventKind.Speed, r.Tick), new PlaceValueEventAction(ValueEventKind.Speed, r.Tick, v, link)],
+                        "速度変更値編集"));
+                    break;
+                }
 
             case ObjectKind.Boost:
-                _document.Execute(new CompositeEditAction(
-                    [new DeleteValueEventAction(ValueEventKind.Boost, r.Tick), new PlaceValueEventAction(ValueEventKind.Boost, r.Tick, v)],
-                    "ブースト変更値編集"));
-                break;
+                {
+                    var link = _document.CurrentTab.BoostEvents.FirstOrDefault(x => x.Tick == r.Tick)?.LinkGridDivision;
+                    _document.Execute(new CompositeEditAction(
+                        [new DeleteValueEventAction(ValueEventKind.Boost, r.Tick), new PlaceValueEventAction(ValueEventKind.Boost, r.Tick, v, link)],
+                        "ブースト変更値編集"));
+                    break;
+                }
 
             case ObjectKind.Bpm when r.Tick == 0:
                 // tick0のBPMはDelete/Place系アクションの不変条件で弾かれるため直接書き換える
@@ -2802,6 +2866,121 @@ public partial class MainWindow : Window
     /// <summary>ノート/フリーズかどうか(コメント・警告Annotationsの対象種別、2026-07-26)</summary>
     private static bool IsAnnotatableKind(ObjectKind kind) =>
         kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody;
+
+    // =====================================================================
+    // speed/boost 始点終点オートスムージング出力(2026-07-30要望対応)
+    // =====================================================================
+
+    private static int GridDivisionToComboIndex(int div) => div switch { 4 => 0, 8 => 1, 16 => 2, 32 => 3, _ => 1 };
+    private static int ComboIndexToGridDivision(int idx) => idx switch { 0 => 4, 1 => 8, 2 => 16, _ => 32 };
+
+    /// <summary>③タブでspeed/boostマーカーを選択した際、「前の同種マーカーとのリンク」「次の同種マーカーとの
+    /// リンク」の2パネルを、直近手前・直近直後の同種イベントの有無に応じて表示/更新する。
+    /// リンクは常に「tick順で早い方のイベントがLinkGridDivisionを持つ」形で内部表現しているため、
+    /// 「前とのリンク」パネルは直前のイベント自身のLinkGridDivisionを、「次とのリンク」パネルは
+    /// 選択中のイベント自身のLinkGridDivisionを、それぞれ参照/更新する。</summary>
+    private void ShowValueEventLinkFields(ValueEventKind kind, long tick)
+    {
+        var list = kind == ValueEventKind.Speed ? _document!.CurrentTab.SpeedEvents : _document!.CurrentTab.BoostEvents;
+        var sorted = list.OrderBy(e => e.Tick).ToList();
+        int idx = sorted.FindIndex(e => e.Tick == tick);
+        if (idx < 0)
+        {
+            ObjectLinkPrevPanel.Visibility = Visibility.Collapsed;
+            ObjectLinkNextPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (idx > 0)
+        {
+            var prev = sorted[idx - 1];
+            ObjectLinkPrevPanel.Visibility = Visibility.Visible;
+            ObjectLinkPrevCheck.IsChecked = prev.LinkGridDivision is not null;
+            ObjectLinkPrevGridCombo.IsEnabled = prev.LinkGridDivision is not null;
+            ObjectLinkPrevGridCombo.SelectedIndex = GridDivisionToComboIndex(prev.LinkGridDivision ?? 8);
+        }
+        else
+        {
+            ObjectLinkPrevPanel.Visibility = Visibility.Collapsed;
+        }
+
+        if (idx + 1 < sorted.Count)
+        {
+            var self = sorted[idx];
+            ObjectLinkNextPanel.Visibility = Visibility.Visible;
+            ObjectLinkNextCheck.IsChecked = self.LinkGridDivision is not null;
+            ObjectLinkNextGridCombo.IsEnabled = self.LinkGridDivision is not null;
+            ObjectLinkNextGridCombo.SelectedIndex = GridDivisionToComboIndex(self.LinkGridDivision ?? 8);
+        }
+        else
+        {
+            ObjectLinkNextPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void ObjectLinkPrev_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
+        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
+        var sorted = list.OrderBy(x => x.Tick).ToList();
+        int idx = sorted.FindIndex(x => x.Tick == r.Tick);
+        if (idx <= 0) return;
+        var prev = sorted[idx - 1];
+
+        bool linked = ObjectLinkPrevCheck.IsChecked == true;
+        int div = ComboIndexToGridDivision(ObjectLinkPrevGridCombo.SelectedIndex < 0 ? 1 : ObjectLinkPrevGridCombo.SelectedIndex);
+        if (linked == (prev.LinkGridDivision is not null)) return; // 変化なし
+        _document.Execute(new SetValueEventLinkAction(kind, prev.Tick, linked ? div : null));
+        RefreshSelectedObjectPanel();
+    }
+
+    private void ObjectLinkPrevGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        if (ObjectLinkPrevCheck.IsChecked != true) return; // 未リンク時のコンボ初期化は無視(チェック時に反映)
+        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
+        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
+        var sorted = list.OrderBy(x => x.Tick).ToList();
+        int idx = sorted.FindIndex(x => x.Tick == r.Tick);
+        if (idx <= 0) return;
+        var prev = sorted[idx - 1];
+        int div = ComboIndexToGridDivision(ObjectLinkPrevGridCombo.SelectedIndex);
+        if (prev.LinkGridDivision == div) return;
+        _document.Execute(new SetValueEventLinkAction(kind, prev.Tick, div));
+    }
+
+    private void ObjectLinkNext_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
+        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
+        var self = list.FirstOrDefault(x => x.Tick == r.Tick);
+        if (self is null) return;
+
+        bool linked = ObjectLinkNextCheck.IsChecked == true;
+        int div = ComboIndexToGridDivision(ObjectLinkNextGridCombo.SelectedIndex < 0 ? 1 : ObjectLinkNextGridCombo.SelectedIndex);
+        if (linked == (self.LinkGridDivision is not null)) return; // 変化なし
+        _document.Execute(new SetValueEventLinkAction(kind, r.Tick, linked ? div : null));
+        RefreshSelectedObjectPanel();
+    }
+
+    private void ObjectLinkNextGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        if (ObjectLinkNextCheck.IsChecked != true) return;
+        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
+        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
+        var self = list.FirstOrDefault(x => x.Tick == r.Tick);
+        if (self is null) return;
+        int div = ComboIndexToGridDivision(ObjectLinkNextGridCombo.SelectedIndex);
+        if (self.LinkGridDivision == div) return;
+        _document.Execute(new SetValueEventLinkAction(kind, r.Tick, div));
+    }
 
     /// <summary>拍子(TimeSignature)の分子/分母編集(2026-07-26要望対応)。既存のPlaceTimeSignatureActionは
     /// 「同じ小節番号の既存拍子を削除→新しい拍子を追加」を1操作でUndo対応しているため、そのまま
@@ -2839,7 +3018,7 @@ public partial class MainWindow : Window
         if (!IsAnnotatableKind(r.Kind)) return;
         var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
         if ((a?.Comment ?? "") == ObjectCommentBox.Text) return; // 変更なしならUndo履歴を汚さない
-        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, ObjectCommentBox.Text, a?.Warning ?? false));
+        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, ObjectCommentBox.Text, a?.Warning ?? false, a?.ShowIcon ?? false));
         InvalidateChartViews();
     }
 
@@ -2890,7 +3069,22 @@ public partial class MainWindow : Window
         bool warning = ObjectWarningCheck.IsChecked == true;
         var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
         if ((a?.Warning ?? false) == warning) return; // 変更なしならUndo履歴を汚さない
-        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, a?.Comment ?? ObjectCommentBox.Text, warning));
+        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, a?.Comment ?? ObjectCommentBox.Text, warning, a?.ShowIcon ?? false));
+        InvalidateChartViews();
+    }
+
+    /// <summary>コメントお知らせアイコン表示フラグのON/OFF(2026-07-30要望対応)。Warningとは独立した
+    /// ユーザー任意のチェックボックスで、ONの間は譜面ビューにコメント有りお知らせアイコン
+    /// (SystemIcons.Application)を重ね描きする。</summary>
+    private void ObjectShowCommentIcon_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
+        if (!IsAnnotatableKind(r.Kind)) return;
+
+        bool showIcon = ObjectShowCommentIconCheck.IsChecked == true;
+        var a = _document.CurrentTab.Lanes[r.Lane].Annotations.FirstOrDefault(x => x.Tick == r.Tick);
+        if ((a?.ShowIcon ?? false) == showIcon) return; // 変更なしならUndo履歴を汚さない
+        _document.Execute(new SetAnnotationAction(r.Lane, r.Tick, a?.Comment ?? ObjectCommentBox.Text, a?.Warning ?? false, showIcon));
         InvalidateChartViews();
     }
 

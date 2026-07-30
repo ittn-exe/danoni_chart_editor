@@ -1,3 +1,4 @@
+using DanoniEditor.Core.Models;
 using DanoniEditor.Core.Timing;
 
 namespace DanoniEditor.Editing;
@@ -106,7 +107,10 @@ public sealed class SmartToolController
 
     /// <summary>右ドラッグ連続削除(DragDelete)中、これまでにドラッグパスが触れた=削除対象になった
     /// オブジェクトの集合(WPF側で「削除対象であるとわかる」持続的なマーキング描画用、2026-07-16j追加)。
-    /// DragDelete確定中のみ非null。Endで確定削除されるまではモデルは一切変更されない。</summary>
+    /// DragDelete確定中のみ非null。Endで確定削除されるまではモデルは一切変更されない。
+    /// 2026-07-30要望対応: 色編集モード中はこのジェスチャを流用し、Endで削除ではなく色解除
+    /// (FinishColorClearDrag)を行う。プレビュー自体は同じ集合をそのまま使う(WPF側の表示は
+    /// 「削除」の見た目のままだが、色編集モード中は実際には色クリアの対象を示すことになる)。</summary>
     public IReadOnlyCollection<ObjectRef>? DragDeleteTouchedPreview =>
         _sessionActive && _dragConfirmed && _gesture == DragGesture.DragDelete ? _dragDeleteTouched : null;
 
@@ -310,11 +314,16 @@ public sealed class SmartToolController
         // 移動を始めてしまい、配置と移動が二重に発生してしまう。
         if (_clickHandledOnDown) return DragGesture.None;
 
-        // 2026-07-23: 色編集モード中は左ドラッグ(移動・リサイズ)を一切無効化し、
-        // 右ドラッグは常に範囲選択(削除ドラッグは無効)にする。範囲選択自体は
-        // 一括塗りつぶし用の複数選択構築に必要なため許可する。
+        // 2026-07-23: 色編集モード中は左ドラッグ(移動・リサイズ)を一切無効化する。
+        // 2026-07-30要望対応: 右ドラッグは、オブジェクトを始点にした場合のみ通常モードの
+        // ドラッグ削除(DragDelete)と同じ「連続して触れたオブジェクトを対象にする」ジェスチャへ
+        // 切り替え、確定時(FinishDragDelete)で削除ではなく色情報のクリアを行う。空セルからの
+        // 右ドラッグは従来通り範囲選択のまま(一括塗りつぶし用の複数選択構築に必要なため)。
         if (ColorEditModeEnabled)
-            return _button == PointerButton.Right ? DragGesture.RectSelect : DragGesture.None;
+        {
+            if (_button != PointerButton.Right) return DragGesture.None;
+            return _startHit is not null ? DragGesture.DragDelete : DragGesture.RectSelect;
+        }
 
         if (_button == PointerButton.Left)
         {
@@ -495,6 +504,26 @@ public sealed class SmartToolController
         if (entry is null) return;
         if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) return;
         _doc.Execute(new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor, resetBand));
+    }
+
+    /// <summary>色編集モード中の右ドラッグ連続操作(2026-07-30要望対応)。ドラッグパスが触れた
+    /// オブジェクトのうち、実際に色が設定されているものだけをまとめて色解除する(通常モードの
+    /// ドラッグ削除=DragDeleteと同じ操作感)。判定基準はResetColorAt(単発右クリック)と同じ。</summary>
+    private void FinishColorClearDrag()
+    {
+        var actions = new List<IEditAction>();
+        foreach (var hit in _dragDeleteTouched)
+        {
+            bool resetColor = hit.Kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd;
+            bool resetBand = hit.Kind == ObjectKind.FreezeBody;
+            if (!resetColor && !resetBand) continue;
+            var entry = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == hit.Tick);
+            if (entry is null) continue;
+            if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) continue;
+            actions.Add(new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor, resetBand));
+        }
+        if (actions.Count == 0) return;
+        _doc.Execute(new CompositeEditAction(actions, "ドラッグ色解除"));
     }
 
     /// <summary>選択中のノート/フリーズのうち色が設定されているものだけ色を解除する
@@ -688,6 +717,15 @@ public sealed class SmartToolController
     private void FinishDragDelete()
     {
         if (_dragDeleteTouched.Count == 0) return;
+
+        // 2026-07-30要望対応: 色編集モード中は「削除」ではなく「触れたオブジェクトの色情報クリア」
+        // に置き換える(オブジェクト削除時と同じ操作感の挙動)。
+        if (ColorEditModeEnabled)
+        {
+            FinishColorClearDrag();
+            return;
+        }
+
         var actions = _dragDeleteTouched
             .Select(BuildDeleteAction)
             .Where(a => a is not null)
@@ -1067,7 +1105,7 @@ public sealed class SmartToolController
     private static void AddSidecarActions(List<IEditAction> actions, ClipboardEntry e, int lane, long tick)
     {
         if (e.ColorOverride is { } color) actions.Add(new AddColorOverrideAction(lane, tick, color));
-        if (e.Annotation is { } a) actions.Add(new SetAnnotationAction(lane, tick, a.Comment, a.Warning));
+        if (e.Annotation is { } a) actions.Add(new SetAnnotationAction(lane, tick, a.Comment, a.Warning, a.ShowIcon));
     }
 
     /// <summary>指定レーン・tickの通常ノート/フリーズ(始点tickで同定)が持つColorOverrides/Annotationsを
@@ -1081,7 +1119,7 @@ public sealed class SmartToolController
             : new ClipboardColor(c.Color, c.BandColor, c.AllFlag, c.ShadowColor, c.HitColor, c.HitBarColor, c.HitShadowColor);
 
         var a = laneData.Annotations.FirstOrDefault(x => x.Tick == tick);
-        ClipboardAnnotation? annotation = a is null ? null : new ClipboardAnnotation(a.Comment, a.Warning);
+        ClipboardAnnotation? annotation = a is null ? null : new ClipboardAnnotation(a.Comment, a.Warning, a.ShowIcon);
 
         return (color, annotation);
     }
@@ -1100,9 +1138,13 @@ public sealed class SmartToolController
                     : new PlaceNoteAction(col.NoteLaneIndex, tick);
 
             case ColumnKind.Speed:
+                // 2026-07-30要望対応: リンク(自動スムージング)状態のマーカー間には新規配置不可
+                // (ロック。リンク解除まではその範囲を保護する)。
+                if (IsWithinLinkedRange(_doc.CurrentTab.SpeedEvents, tick)) return null;
                 return new PlaceValueEventAction(ValueEventKind.Speed, tick, 1.0);
 
             case ColumnKind.Boost:
+                if (IsWithinLinkedRange(_doc.CurrentTab.BoostEvents, tick)) return null;
                 return new PlaceValueEventAction(ValueEventKind.Boost, tick, 1.0);
 
             case ColumnKind.Bpm:
@@ -1125,6 +1167,19 @@ public sealed class SmartToolController
             default:
                 return null;
         }
+    }
+
+    /// <summary>2026-07-30要望対応: 指定tickが、リンク(自動スムージング)設定済みのイベント対と
+    /// その直後の同種イベントとの間(両端は含まない)に位置するかどうかを判定する。</summary>
+    private static bool IsWithinLinkedRange(List<ValueEvent> events, long tick)
+    {
+        var sorted = events.OrderBy(e => e.Tick).ToList();
+        for (int i = 0; i + 1 < sorted.Count; i++)
+        {
+            if (sorted[i].LinkGridDivision is not null && tick > sorted[i].Tick && tick < sorted[i + 1].Tick)
+                return true;
+        }
+        return false;
     }
 
     private IEditAction? BuildDeleteAction(ObjectRef r) => r.Kind switch

@@ -179,7 +179,7 @@ public static class ProjectSerializer
                     i++;
                 }
             }
-            project.GaugeNames = names;
+            project.GaugeNames = names.Select(n => new Models.GaugeNameDef(n)).ToList();
         }
         catch (JsonException)
         {

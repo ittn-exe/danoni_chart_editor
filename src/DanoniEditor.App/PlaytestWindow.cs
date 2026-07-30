@@ -206,11 +206,12 @@ internal sealed class PlaytestWindow : Window
         var timing = doc.Project.CreateTimingEngine();
 
         // 2026-07-21: speed_data/boost_data(tick単位)をフレーム基準のbreakpointリストに変換
-        _speedBreaks = doc.CurrentTab.SpeedEvents
+        // 2026-07-30追記: リンク(自動スムージング)区間の中間点もExpandLinkedEventsで展開してから変換する。
+        _speedBreaks = DanoniEditor.Core.Timing.ValueEventSmoothing.ExpandLinkedEvents(doc.CurrentTab.SpeedEvents)
             .Select(e => (Frame: timing.TickToFrame(e.Tick) + offsetFrames, e.Value))
             .OrderBy(b => b.Frame)
             .ToList();
-        _boostBreaks = doc.CurrentTab.BoostEvents
+        _boostBreaks = DanoniEditor.Core.Timing.ValueEventSmoothing.ExpandLinkedEvents(doc.CurrentTab.BoostEvents)
             .Select(e => (Frame: timing.TickToFrame(e.Tick) + offsetFrames, e.Value))
             .OrderBy(b => b.Frame)
             .ToList();
@@ -648,6 +649,7 @@ internal sealed class PlaytestWindow : Window
 
             var tab = o._doc.CurrentTab;
             var project = o._doc.Project;
+            var engine = o._doc.Project.CreateTimingEngine();
 
             for (int i = 0; i < o._template.Lanes.Count; i++)
             {
@@ -698,8 +700,16 @@ internal sealed class PlaytestWindow : Window
                     if (!Visible(y1) && !Visible(y2) && Math.Sign(y1 - h / 2) == Math.Sign(y2 - h / 2)) continue;
 
                     colorOverrides.TryGetValue(f.StartTick, out var fOver);
-                    var edgeColor = fOver?.Color is { } ec ? ChartCanvas.ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
-                    var bandColor = fOver?.BandColor is { } bc ? ChartCanvas.ParseDisplayColor(bc, frzBandColor) : frzBandColor;
+                    string? edgeColorCode = fOver?.Color;
+                    string? bandColorCode = fOver?.BandColor;
+                    // 2026-07-30要望対応: 即時適用(AllFlag)の簡易ライブシミュレーション。自分より前の
+                    // tickで既に発火済みの即時適用があれば、その色を優先する(近似ルール、詳細はヘルパー参照)。
+                    edgeColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                        tab.Lanes[i].ColorOverrides, f.StartTick, o._currentFrame, e => e.Color, engine.TickToFrame, edgeColorCode);
+                    bandColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                        tab.Lanes[i].ColorOverrides, f.StartTick, o._currentFrame, e => e.BandColor, engine.TickToFrame, bandColorCode);
+                    var edgeColor = edgeColorCode is { } ec ? ChartCanvas.ParseDisplayColor(ec, frzNoteColor) : frzNoteColor;
+                    var bandColor = bandColorCode is { } bc ? ChartCanvas.ParseDisplayColor(bc, frzBandColor) : frzBandColor;
 
                     var bandBrush = new SolidColorBrush(bandColor) { Opacity = 0.5 };
                     bandBrush.Freeze();
@@ -716,7 +726,9 @@ internal sealed class PlaytestWindow : Window
                     double y = YOf(a.Frame, o.GetBoostFactor(a.Frame));
                     if (!Visible(y)) continue;
                     colorOverrides.TryGetValue(a.Tick, out var nOver);
-                    var noteColor = nOver?.Color is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
+                    string? noteColorCode = ChartCanvas.ResolveImmediateAppliedColor(
+                        tab.Lanes[i].ColorOverrides, a.Tick, o._currentFrame, e => e.Color, engine.TickToFrame, nOver?.Color);
+                    var noteColor = noteColorCode is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
                     DrawNote(dc, image, laneDef, cx, y, noteColor);
                 }
             }

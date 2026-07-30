@@ -23,6 +23,8 @@
                 <!-- 2026-07-23: 合作用途(TBD 5)。カレント難易度タブ1つだけをITTNエディタ形式で書き出す -->
                 <MenuItem Header="現在の難易度タブをエクスポート(_T)..." Click="ExportCurrentTab_Click"/>
                 <Separator/>
+                <!-- 2026-07-30要望対応: FUJI D&D・SKBコピペをまとめた専用ウィンドウ(繰り返しインポートしたい時の近道) -->
+                <MenuItem Header="インポートウィンドウ(_I)..." Click="OpenImportHubWindow_Click"/>
                 <MenuItem Header="FUJIエディタからのインポート..." Click="ImportFuji_Click"/>
                 <MenuItem Header="SKBエディタからのインポート..." Click="ImportSkb_Click"/>
                 <MenuItem Header="dos.txtからのインポート..." Click="ImportDos_Click"/>
@@ -256,6 +258,11 @@
                         <StackPanel Margin="8">
                             <CheckBox x:Name="ObjectTabPinCheck" Content="このタブに固定(選択解除しても自動で切り替わらない)" Margin="0,0,0,8"/>
 
+                            <!-- 2026-07-30要望対応: 「プロジェクト」タブに埋もれて気づきにくいとの声を受け、
+                                 オブジェクト未選択時でも操作できるここにも同じボタンを配置する(プロジェクト
+                                 タブ側は据え置き)。 -->
+                            <Button Content="ゲージ設定..." Margin="0,0,0,10" HorizontalAlignment="Left" Click="OpenGaugeEditor_Click"/>
+
                             <TextBlock x:Name="ObjectNoSelectionText" Text="オブジェクトが選択されていません" FontStyle="Italic" TextWrapping="Wrap"/>
                             <TextBlock x:Name="ObjectMultiSelectText" FontStyle="Italic" TextWrapping="Wrap" Visibility="Collapsed"/>
 
@@ -270,6 +277,34 @@
 
                                 <TextBlock x:Name="ObjectValueLabel" Text="Value" Margin="0,8,0,2" Visibility="Collapsed"/>
                                 <TextBox x:Name="ObjectValueBox" LostFocus="ObjectValue_LostFocus" Visibility="Collapsed" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
+
+                                <!-- 2026-07-30要望対応: speed/boostの「始点終点オートスムージング出力」。
+                                     前/次の同種マーカーとリンクすると、その間を指定した設置間隔(絶対グリッド)で
+                                     自動補間した中間値をdos.txt出力・プレイテスト・プレビューへ反映する。 -->
+                                <StackPanel x:Name="ObjectLinkPrevPanel" Margin="0,10,0,0" Visibility="Collapsed">
+                                    <CheckBox x:Name="ObjectLinkPrevCheck" Content="前の同種マーカーとリンクする(自動スムージング)"
+                                              Checked="ObjectLinkPrev_Changed" Unchecked="ObjectLinkPrev_Changed"/>
+                                    <TextBlock Text="設置間隔" Margin="16,4,0,2"/>
+                                    <ComboBox x:Name="ObjectLinkPrevGridCombo" Width="100" HorizontalAlignment="Left" Margin="16,0,0,0"
+                                              SelectionChanged="ObjectLinkPrevGrid_SelectionChanged">
+                                        <ComboBoxItem Content="4分"/>
+                                        <ComboBoxItem Content="8分"/>
+                                        <ComboBoxItem Content="16分"/>
+                                        <ComboBoxItem Content="32分"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel x:Name="ObjectLinkNextPanel" Margin="0,10,0,0" Visibility="Collapsed">
+                                    <CheckBox x:Name="ObjectLinkNextCheck" Content="次の同種マーカーとリンクする(自動スムージング)"
+                                              Checked="ObjectLinkNext_Changed" Unchecked="ObjectLinkNext_Changed"/>
+                                    <TextBlock Text="設置間隔" Margin="16,4,0,2"/>
+                                    <ComboBox x:Name="ObjectLinkNextGridCombo" Width="100" HorizontalAlignment="Left" Margin="16,0,0,0"
+                                              SelectionChanged="ObjectLinkNextGrid_SelectionChanged">
+                                        <ComboBoxItem Content="4分"/>
+                                        <ComboBoxItem Content="8分"/>
+                                        <ComboBoxItem Content="16分"/>
+                                        <ComboBoxItem Content="32分"/>
+                                    </ComboBox>
+                                </StackPanel>
 
                                 <!-- 2026-07-26: 拍子(TimeSignature)の分子/分母編集(要望対応) -->
                                 <TextBlock x:Name="ObjectSigNumeratorLabel" Text="拍子(分子)" Margin="0,8,0,2" Visibility="Collapsed"/>
@@ -293,6 +328,9 @@
                                 <!-- 2026-07-26: ノート/フリーズの警告フラグ(インポート時丸め処理等でON。手動でOFFにするまで残る) -->
                                 <CheckBox x:Name="ObjectWarningCheck" Content="警告(譜面ビューに警告アイコンを表示)" Margin="0,8,0,0" Visibility="Collapsed"
                                           Checked="ObjectWarning_Changed" Unchecked="ObjectWarning_Changed"/>
+                                <!-- 2026-07-30要望対応: 警告とは独立した、コメント記載お知らせ用アイコン(ユーザー任意) -->
+                                <CheckBox x:Name="ObjectShowCommentIconCheck" Content="コメントありお知らせアイコンを譜面ビューに表示" Margin="0,4,0,0" Visibility="Collapsed"
+                                          Checked="ObjectShowCommentIcon_Changed" Unchecked="ObjectShowCommentIcon_Changed"/>
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>

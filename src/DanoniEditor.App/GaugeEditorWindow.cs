@@ -7,35 +7,44 @@ using DanoniEditor.Core.Models;
 namespace DanoniEditor.App;
 
 /// <summary>
-/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-07-26、2026-07-26再設計)。
-/// 設定メニューから開く。ChartProjectを直接編集するのではなく編集用コピー(VM)上で作業し、
-/// 「保存」時にのみ project.Tabs[].Gauge / project.GaugeParams / project.GaugeRawOverrideText へ反映する
+/// customGauge/gaugeXXX(仕様dos-h0053/dos-h0022)の編集ウィンドウ(2026-07-26新設、2026-07-26/
+/// 2026-07-30の2度再設計)。ChartProjectを直接編集するのではなく編集用コピー(VM)上で作業し、
+/// 「保存」時にのみ project.Tabs[].Gauge / project.GaugeNames / project.GaugeRawOverrideText へ反映する
 /// (テンプレ編集・マクロ編集ウィンドウと同じ「保存確定まではキャンセル可能」の方針)。
 ///
-/// 2026-07-26再設計(ユーザー確定仕様): danoni_main.js(resetCustomGauge/getGaugeSetting)を確認した結果、
-/// 「difDataのborder/recovery/damage/initLife%(本体ゲージ)」と「customGauge/gaugeXXX(切替候補ゲージ)」は
-/// 排他ではなく併存する別機能だと判明したため、「対象の譜面(タブ)を選び、その譜面の設定をまとめて行う」
-/// UIへ再構成した。TabControl(_tabGaugeTabs)がその「対象譜面選択」を兼ねる(GaugeCalculatorWindowが
-/// SelectionChangedを購読して追随する既存の仕組みをそのまま流用)。各TabItem内には
-///   - 本体ゲージ(difData直接指定、旧④): ノルマ(x指定/数値+数値欄)・回復量・ダメージ・初期ライフを
-///     独立した入力欄で編集する(以前は1本の生CSV欄だった)。上書きしない場合はチェックを外せば
-///     DifDataExtraは書き出されず、本体既定値が使われる。
-///   - 切替候補ゲージ(customGauge、旧①): 「指定しない」「継承キーワード」「明示リスト」の3択。
-/// を配置する。ゲージ名(gaugeXXX)自体はプロジェクト全体で共有される情報のため、TabControlの外側に
-/// 「ゲージ別パラメータ」表(旧②、名前の新規作成/削除も含む)として残す。
-/// 「直接入力モード」(旧③、過去資産からのコピペ用)は末尾に残置。空でなければ本体ゲージ・切替候補ゲージ
-/// いずれも完全に無視してこのテキストをそのままdos.txtへ出力する(DosExporter.AppendGaugeHeaders参照)。
-/// 「dos作成後に直接編集する」(2026-07-26)がON中は、上記すべてを無効化しエクスポートも一切行わない。
+/// 2026-07-30再設計(ユーザー確定仕様、以前のUIが分かりづらいとの指摘を受けて全面刷新):
+/// - 「本体ゲージ(difData直接指定)」と「ゲージセット設定(customGauge)」は排他ではなく併用可能な
+///   別機能(danoni_main.jsのresetCustomGauge/getGaugeSetting確認済み)なので、無理に排他UIにはせず、
+///   タブ内で視覚的に分離しつつ両方常に編集できるようにする。
+/// - gaugeXXX(①宣言リスト)は「内部名+既定表示名」をまず宣言し、値は「全譜面で共有」/「譜面毎に
+///   変更」を選べる。共有時は宣言と同時にその場で値を入力でき、個別時は各タブ側で値を入力する。
+/// - 各タブの「ゲージセット設定」は「設定しない」/「カスタムゲージを使用」/「本体の既存セットを使用」
+///   の3択。カスタムゲージ選択時は、①で宣言済みの名前を「採用中」⇄「追加できる」の2群で相互にやり取り
+///   できるリスト形式にする(継承キーワードsurvival/border/customDefaultは、danoni_main.js上
+///   customGauge{N}の値全体が完全一致した場合のみ有効になる別軸の設定のため、リストへは混在させず
+///   独立した選択肢として扱う)。
+/// - 上級者向けの「直接入力モード」は、「記述からゲージを取得」(貼り付けたテキストを解析して上の
+///   構造化UIへ一括反映するインポート専用、以後は構造化UIがそのままexportに使われる)と
+///   「エクスポート時にdosへ直接反映する」(従来のGaugeRawOverrideTextと同じ、構造化UIを完全に無視して
+///   このテキストをそのまま出力)の2モードに分け、常時「非空なら優先」という分かりにくい暗黙優先を廃止した。
 /// </summary>
 internal sealed class GaugeEditorWindow : Window
 {
-    private static readonly string[] InheritKeywords = ["survival", "border", "customDefault"];
+    /// <summary>本体内蔵ゲージセット(danoni_main.js resetCustomGauge確認済み、customGauge{N}の値
+    /// 全体がこのいずれかと完全一致した場合のみキーワードとして解釈される)。Value=dos.txtへ書き出す
+    /// 実際の値、Label=UI表示用の分かりやすい表記。</summary>
+    private static readonly (string Value, string Label)[] BuiltinGaugeSets =
+    [
+        ("survival", "サバイバル(survival)"),
+        ("border", "ボーダー(border)"),
+        ("customDefault", "難易度別既定(customDefault)"),
+    ];
+    private static readonly string[] InheritKeywords = [.. BuiltinGaugeSets.Select(b => b.Value)];
 
     private readonly ChartProject _project;
     private readonly List<TabGaugeVm> _tabVms;
     private readonly List<ParamRowVm> _paramRows;
-    /// <summary>本体ゲージ(difData直接指定)のタブごとの入力値(2026-07-26再設計、旧・生CSV欄を
-    /// フィールドごとの入力欄+チェックボックスへ分解したもの)</summary>
+    /// <summary>本体ゲージ(difData直接指定)のタブごとの入力値</summary>
     private readonly List<DifDataExtraVm> _difDataVms;
 
     private readonly TextBox _rawOverrideBox = new()
@@ -49,19 +58,10 @@ internal sealed class GaugeEditorWindow : Window
         Height = 140,
     };
 
-    private readonly TextBlock _rawActiveNotice = new()
-    {
-        Text = "直接入力が優先されています(上の譜面ごとの設定・ゲージ別パラメータは無視されます)。",
-        Foreground = Brushes.OrangeRed,
-        FontWeight = FontWeights.Bold,
-        Margin = new Thickness(0, 4, 0, 4),
-        Visibility = Visibility.Collapsed,
-    };
-
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
 
-    /// <summary>「dos作成後に直接編集する」フラグ(2026-07-26)。ON中は①②③④すべて無効化し、
-    /// エクスポート時もゲージ関連ヘッダーを一切出力しない(ChartProject.GaugeManualEditAfterExport参照)。</summary>
+    /// <summary>「dos作成後に直接編集する」フラグ。ON中は①②③④すべて無効化し、エクスポート時も
+    /// ゲージ関連ヘッダーを一切出力しない(ChartProject.GaugeManualEditAfterExport参照)。</summary>
     private readonly CheckBox _manualEditAfterExport = new()
     {
         Content = "dos作成後に直接編集する(このエディタでは触らず、書き出し後のdos.txtへ自分で追記する)",
@@ -70,46 +70,49 @@ internal sealed class GaugeEditorWindow : Window
     };
 
     private readonly TabControl _tabGaugeTabs = new();
-    /// <summary>2026-07-26追加: ②ゲージ別パラメータ表の左側固定列(ゲージ名)。横スクロールに追従させない。</summary>
-    private readonly StackPanel _paramNameColumnPanel = new();
-    /// <summary>2026-07-26追加: ②ゲージ別パラメータ表の右側(難易度タブごとの値)。ここだけ横スクロールする。</summary>
-    private readonly StackPanel _paramScrollPanel = new();
-    private readonly Button _addParamButton = new() { Content = "ゲージ名を追加", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
+    /// <summary>①gaugeX宣言リストの描画先(2026-07-30再設計、単一列のリスト形式)。</summary>
+    private readonly StackPanel _gaugeDeclPanel = new();
+    private readonly Button _addParamButton = new() { Content = "ゲージ名を追加", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0) };
 
-    /// <summary>2026-07-26: ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。
-    /// 既に開いている場合は再利用してActivate()するのみにする。</summary>
+    /// <summary>④上級者向け「直接入力モード」の2択("import"=記述から取得/"direct"=直接反映)</summary>
+    private readonly RadioButton _rawModeImport = new() { Content = "記述からゲージを取得する(貼り付けて「インポート」を押すと、上の各項目へ反映されます)", GroupName = "rawMode" };
+    private readonly RadioButton _rawModeDirect = new() { Content = "エクスポート時にdosへ直接反映する(上の各項目は無視され、このテキストがそのまま出力されます)", GroupName = "rawMode" };
+    private readonly Button _importRawButton = new() { Content = "インポート", Width = 100, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly Expander _advancedExpander = new() { Header = "上級者向け: 直接入力モード(過去資産からのコピペ用)", IsExpanded = false, Margin = new Thickness(0, 14, 0, 0) };
+
+    /// <summary>ゲージ計算機(モードレス、開いている間は①のタブ切替に追随する)。</summary>
     private GaugeCalculatorWindow? _calculatorWindow;
 
     /// <summary>保存に成功したかどうか(呼び出し元がNotifyChanged等を行う目安)</summary>
     public bool Saved { get; private set; }
 
-    // --- GaugeCalculatorWindowから参照するための内部アクセサ ---
+    // --- GaugeCalculatorWindowから参照するための内部アクセサ(2026-07-30再設計後も維持) ---
     internal ChartProject ProjectRef => _project;
     internal TabControl TabGaugeTabsControl => _tabGaugeTabs;
     internal List<ParamRowVm> ParamRowsRef => _paramRows;
     internal List<TabGaugeVm> TabVmsRef => _tabVms;
-    internal void RefreshParamTableExternal() => RefreshParamTable();
+    internal void RefreshParamTableExternal() => RefreshAll();
 
     public GaugeEditorWindow(ChartProject project)
     {
         _project = project;
 
-        Title = "ゲージ設定編集(customGauge / gaugeXXX)";
-        Width = 920;
-        Height = 720;
-        MinWidth = 720;
-        MinHeight = 520;
+        Title = "ゲージ設定編集(customGauge / gaugeXXX / difData)";
+        Width = 960;
+        Height = 760;
+        MinWidth = 760;
+        MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         WindowStyle = WindowStyle.ToolWindow;
 
         _tabVms = project.Tabs.Select(t => TabGaugeVm.FromGaugeConfig(t.Gauge)).ToList();
-        // 2026-07-24: ゲージ別パラメータの実値はDifficultyTab.GaugeParams(タブごと)に持たせる方式へ変更。
-        // GaugeNamesは行の並び順(名前一覧)のみを保持するプロジェクト全体の情報。
-        _paramRows = project.GaugeNames.Select(name => new ParamRowVm
+        _paramRows = project.GaugeNames.Select(def => new ParamRowVm
         {
-            GaugeName = name,
-            PerTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "").ToList(),
+            GaugeName = def.Name,
+            DisplayName = def.DisplayName ?? "",
+            PerTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(def.Name, out var csv) ? csv : "").ToList(),
         }).ToList();
+        foreach (var row in _paramRows) row.Shared = InferShared(row, project.Tabs.Count);
         _difDataVms = project.Tabs.Select(t => DifDataExtraVm.Parse(t.DifDataExtra)).ToList();
 
         var root = new DockPanel();
@@ -130,93 +133,54 @@ internal sealed class GaugeEditorWindow : Window
         var outer = new StackPanel { Margin = new Thickness(12) };
 
         _manualEditAfterExport.IsChecked = project.GaugeManualEditAfterExport;
-        _manualEditAfterExport.Checked += (_, _) => UpdateRawActiveState();
-        _manualEditAfterExport.Unchecked += (_, _) => UpdateRawActiveState();
+        _manualEditAfterExport.Checked += (_, _) => UpdateEnabledState();
+        _manualEditAfterExport.Unchecked += (_, _) => UpdateEnabledState();
         outer.Children.Add(_manualEditAfterExport);
 
-        outer.Children.Add(SectionLabel("譜面(難易度)ごとのゲージ設定"));
+        outer.Children.Add(SectionLabel("① ゲージ名の宣言(gaugeXXX、プロジェクト全体で共有)"));
         outer.Children.Add(new TextBlock
         {
-            Text = "対象の譜面をタブで選び、その譜面の本体ゲージ・切替候補ゲージを設定してくださいまし。",
+            Text = "内部名(dos.txt出力用の識別子)と、任意の既定表示名をここで宣言してくださいませ。値は" +
+                   "「全譜面で共有」ならここで直接入力、「譜面毎に変更」なら各難易度タブ側で入力しますの。",
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 6),
         });
-        BuildTabGaugeTabs();
-        outer.Children.Add(_tabGaugeTabs);
-
-        var paramHeaderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 2) };
-        paramHeaderRow.Children.Add(new TextBlock { Text = "ゲージ別パラメータ (gaugeXXX、プロジェクト全体で共有)", FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center });
-        paramHeaderRow.Children.Add(new TextBlock
-        {
-            Text = "  各譜面ごとに設定可能、書式→ ノルマ,回復量,ダメージ(,初期値)",
-            Foreground = Brushes.Gray,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 0, 0),
-        });
-        outer.Children.Add(paramHeaderRow);
-        outer.Children.Add(new TextBlock
-        {
-            Text = "※本体ゲージ(上のタブで「本体ゲージを上書きする」ON)の難易度は、この表では使われないため列を隠しています。",
-            Foreground = Brushes.Gray,
-            Margin = new Thickness(0, 0, 0, 4),
-        });
-
-        RefreshParamTable();
-        var paramGrid = new Grid();
-        paramGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        paramGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(_paramNameColumnPanel, 0);
-        var paramScroll = new ScrollViewer
-        {
-            Content = _paramScrollPanel,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-        };
-        Grid.SetColumn(paramScroll, 1);
-        paramGrid.Children.Add(_paramNameColumnPanel);
-        paramGrid.Children.Add(paramScroll);
-        outer.Children.Add(paramGrid);
+        outer.Children.Add(_gaugeDeclPanel);
         _addParamButton.Click += (_, _) =>
         {
-            _paramRows.Add(new ParamRowVm { GaugeName = "", PerTabCsv = Enumerable.Repeat("", _project.Tabs.Count).ToList() });
-            RefreshParamTable();
+            _paramRows.Add(new ParamRowVm { GaugeName = "", PerTabCsv = Enumerable.Repeat("", _project.Tabs.Count).ToList(), Shared = true });
+            RefreshAll();
         };
-        var openCalculatorButton = new Button
-        {
-            Content = "ゲージ計算機を開く...", Width = 140, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 4, 0, 0),
-        };
+        var openCalculatorButton = new Button { Content = "ゲージ計算機を開く...", Width = 140, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 8, 0, 0) };
         openCalculatorButton.Click += OpenCalculator_Click;
-        var addParamRow = new StackPanel { Orientation = Orientation.Horizontal };
-        addParamRow.Children.Add(_addParamButton);
-        addParamRow.Children.Add(openCalculatorButton);
-        outer.Children.Add(addParamRow);
+        var declButtonsRow = new StackPanel { Orientation = Orientation.Horizontal };
+        declButtonsRow.Children.Add(_addParamButton);
+        declButtonsRow.Children.Add(openCalculatorButton);
+        outer.Children.Add(declButtonsRow);
 
-        outer.Children.Add(SectionLabel("直接入力モード(過去資産からのコピペ用)"));
-        outer.Children.Add(_rawActiveNotice);
-        _rawOverrideBox.Text = project.GaugeRawOverrideText ?? "";
-        _rawOverrideBox.TextChanged += (_, _) => UpdateRawActiveState();
-        outer.Children.Add(_rawOverrideBox);
-        var loadFromRawButton = new Button
+        outer.Children.Add(SectionLabel("② 難易度タブごとの設定"));
+        outer.Children.Add(new TextBlock
         {
-            Content = "この内容を読み取って上の各入力欄に反映する",
-            Width = 260,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 4, 0, 0),
-            ToolTip = "customGauge/gaugeXXXのヘッダー行を解析し、「譜面ごとのゲージ設定」と「ゲージ別パラメータ」を上書きします。このテキスト欄自体はクリアされません(直接入力が優先されたままになります)。",
-        };
-        loadFromRawButton.Click += LoadFromRawOverride_Click;
-        outer.Children.Add(loadFromRawButton);
+            Text = "対象の譜面をタブで選び、本体ゲージ・ゲージセット設定を行ってくださいまし(この2つは独立した" +
+                   "機能で、同時に使えますの)。",
+            Margin = new Thickness(0, 0, 0, 6),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        outer.Children.Add(_tabGaugeTabs);
+
+        _advancedExpander.Content = BuildAdvancedSection();
+        outer.Children.Add(_advancedExpander);
 
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = outer };
         root.Children.Add(scroll);
 
         Content = root;
-        UpdateRawActiveState();
+        RefreshAll();
+        UpdateEnabledState();
 
         Closed += (_, _) => _calculatorWindow?.Close();
     }
 
-    /// <summary>「ゲージ計算機を開く...」ボタン(2026-07-26)。モードレスウィンドウとして開き、
-    /// 既に開いている場合は前面に出すだけにする(複数出さない)。</summary>
     private void OpenCalculator_Click(object sender, RoutedEventArgs e)
     {
         if (_calculatorWindow is { IsVisible: true })
@@ -236,24 +200,282 @@ internal sealed class GaugeEditorWindow : Window
         Margin = new Thickness(0, 12, 0, 6),
     };
 
-    private void UpdateRawActiveState()
+    /// <summary>「dos作成後に直接編集する」フラグ・直接入力モードの状態に応じて①②を有効/無効化する。</summary>
+    private void UpdateEnabledState()
     {
         bool manualEdit = _manualEditAfterExport.IsChecked == true;
-        // 2026-07-26再設計: _tabGaugeTabsが「対象譜面選択+本体ゲージ+切替候補ゲージ」をすべて
-        // 内包するため、これを無効化するだけで両方まとめて無効化される。
-        bool rawActive = !manualEdit && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
-        _rawActiveNotice.Visibility = rawActive ? Visibility.Visible : Visibility.Collapsed;
-        _tabGaugeTabs.IsEnabled = !manualEdit && !rawActive;
-        _paramNameColumnPanel.IsEnabled = !manualEdit && !rawActive;
-        _paramScrollPanel.IsEnabled = !manualEdit && !rawActive;
-        _addParamButton.IsEnabled = !manualEdit && !rawActive;
-        // 2026-07-26: 「dos作成後に直接編集する」がON中は直接入力モードも無効化する
-        // (エディタでは一切触らせない、というユーザー確定仕様のため)。
+        bool directActive = !manualEdit && _rawModeDirect.IsChecked == true && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text);
+        _gaugeDeclPanel.IsEnabled = !manualEdit && !directActive;
+        _addParamButton.IsEnabled = !manualEdit && !directActive;
+        _tabGaugeTabs.IsEnabled = !manualEdit && !directActive;
+        _importRawButton.IsEnabled = !manualEdit && _rawModeImport.IsChecked == true;
         _rawOverrideBox.IsEnabled = !manualEdit;
     }
 
     // =====================================================================
-    // ① 難易度タブ別ゲージ名リスト
+    // ① gaugeXXX宣言リスト(2026-07-30再設計)
+    // =====================================================================
+
+    internal sealed class ParamRowVm
+    {
+        public string GaugeName = "";
+        /// <summary>宣言時の既定表示名(空欄可)。各タブのEntryVm.DisplayNameが空の場合のフォールバック。</summary>
+        public string DisplayName = "";
+        /// <summary>true=全譜面で同じ値を共有(宣言行でまとめて編集)、false=譜面毎に個別入力
+        /// (エディタのUI状態のみ、プロジェクトファイルへは保存しない。読み込み時は全タブの値が
+        /// 一致していれば共有とみなす)。</summary>
+        public bool Shared = true;
+        public List<string> PerTabCsv = [];
+    }
+
+    /// <summary>全タブの値が(空を除いて)一致していれば共有とみなす既定推測。</summary>
+    private static bool InferShared(ParamRowVm row, int tabCount)
+    {
+        var distinctNonEmpty = Enumerable.Range(0, tabCount)
+            .Select(i => i < row.PerTabCsv.Count ? row.PerTabCsv[i] : "")
+            .Where(v => !string.IsNullOrEmpty(v))
+            .Distinct()
+            .ToList();
+        return distinctNonEmpty.Count <= 1;
+    }
+
+    private void RefreshAll()
+    {
+        int selectedTab = _tabGaugeTabs.SelectedIndex;
+        RefreshDeclarationPanel();
+        BuildTabGaugeTabs();
+        if (selectedTab >= 0 && selectedTab < _tabGaugeTabs.Items.Count) _tabGaugeTabs.SelectedIndex = selectedTab;
+    }
+
+    private void RefreshDeclarationPanel()
+    {
+        _gaugeDeclPanel.Children.Clear();
+
+        foreach (var row in _paramRows)
+        {
+            var card = new Border
+            {
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(1),
+                Margin = new Thickness(0, 0, 0, 8),
+                Padding = new Thickness(8),
+            };
+            var cardPanel = new StackPanel();
+
+            var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            headerRow.Children.Add(new TextBlock { Text = "内部名:", Width = 60, VerticalAlignment = VerticalAlignment.Center });
+            var nameBox = new TextBox { Width = 140, Text = row.GaugeName };
+            nameBox.TextChanged += (_, _) => row.GaugeName = nameBox.Text;
+            headerRow.Children.Add(nameBox);
+
+            var removeButton = new Button { Content = "このゲージ名を削除", Width = 130, Margin = new Thickness(12, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+            removeButton.Click += (_, _) => { _paramRows.Remove(row); RefreshAll(); };
+            headerRow.Children.Add(removeButton);
+            cardPanel.Children.Add(headerRow);
+
+            var dispRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            var dispCheck = new CheckBox { Content = "表示名を変える", IsChecked = !string.IsNullOrEmpty(row.DisplayName), VerticalAlignment = VerticalAlignment.Center };
+            var dispBox = new TextBox { Width = 140, Text = row.DisplayName, Margin = new Thickness(8, 0, 0, 0), IsEnabled = dispCheck.IsChecked == true };
+            dispCheck.Checked += (_, _) => dispBox.IsEnabled = true;
+            dispCheck.Unchecked += (_, _) => { dispBox.IsEnabled = false; dispBox.Text = ""; row.DisplayName = ""; };
+            dispBox.TextChanged += (_, _) => { if (dispCheck.IsChecked == true) row.DisplayName = dispBox.Text; };
+            dispRow.Children.Add(dispCheck);
+            dispRow.Children.Add(dispBox);
+            cardPanel.Children.Add(dispRow);
+
+            var sharedRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            var groupName = $"shared_{Guid.NewGuid():N}";
+            var sharedRadio = new RadioButton { Content = "全譜面で共有する", GroupName = groupName, IsChecked = row.Shared, Margin = new Thickness(0, 0, 12, 0) };
+            var perTabRadio = new RadioButton { Content = "譜面毎に変更する", GroupName = groupName, IsChecked = !row.Shared };
+            sharedRow.Children.Add(sharedRadio);
+            sharedRow.Children.Add(perTabRadio);
+            cardPanel.Children.Add(sharedRow);
+
+            var sharedValuePanel = new StackPanel { Margin = new Thickness(16, 4, 0, 0), Visibility = row.Shared ? Visibility.Visible : Visibility.Collapsed };
+            sharedValuePanel.Children.Add(BuildGaugeValueFields(
+                () => row.PerTabCsv.Count > 0 ? row.PerTabCsv[0] : "",
+                csv =>
+                {
+                    while (row.PerTabCsv.Count < _project.Tabs.Count) row.PerTabCsv.Add("");
+                    for (int i = 0; i < _project.Tabs.Count; i++) row.PerTabCsv[i] = csv;
+                }));
+            cardPanel.Children.Add(sharedValuePanel);
+
+            sharedRadio.Checked += (_, _) =>
+            {
+                row.Shared = true;
+                sharedValuePanel.Visibility = Visibility.Visible;
+                // 共有へ切り替えた際、既存の値がバラバラなら先頭の非空値で揃える
+                var first = row.PerTabCsv.FirstOrDefault(v => !string.IsNullOrEmpty(v)) ?? "";
+                for (int i = 0; i < row.PerTabCsv.Count; i++) row.PerTabCsv[i] = first;
+                RefreshAll();
+            };
+            perTabRadio.Checked += (_, _) =>
+            {
+                row.Shared = false;
+                sharedValuePanel.Visibility = Visibility.Collapsed;
+                RefreshAll();
+            };
+
+            card.Child = cardPanel;
+            _gaugeDeclPanel.Children.Add(card);
+        }
+
+        if (_paramRows.Count == 0)
+            _gaugeDeclPanel.Children.Add(new TextBlock { Text = "(まだ宣言されていません)", Foreground = Brushes.Gray });
+    }
+
+    /// <summary>ノルマ(またはx)/回復/ダメージ/初期ライフの4欄入力UI(2026-07-30新設、difData入力欄と
+    /// gaugeXXX値入力欄の両方から共通で使う汎用ヘルパー)。</summary>
+    private static FrameworkElement BuildGaugeValueFields(Func<string> getCsv, Action<string> setCsv)
+    {
+        var parts = (getCsv() ?? "").Split(',');
+        string border = parts.Length > 0 ? parts[0].Trim() : "";
+        bool borderIsX = border == "x";
+        string borderVal = borderIsX || border.Length == 0 ? "70" : border;
+        string recovery = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "6";
+        string damage = parts.Length > 2 && parts[2].Length > 0 ? parts[2] : "40";
+        string initLife = parts.Length > 3 ? parts[3] : "";
+
+        var groupName = $"border_{Guid.NewGuid():N}";
+        var borderXRadio = new RadioButton { Content = "x指定", GroupName = groupName, Margin = new Thickness(0, 0, 12, 0), IsChecked = borderIsX };
+        var borderNumRadio = new RadioButton { Content = "数値", GroupName = groupName, IsChecked = !borderIsX };
+        var borderValueBox = new TextBox { Width = 70, Text = borderVal, Margin = new Thickness(8, 0, 0, 0), IsEnabled = !borderIsX };
+        var recoveryBox = new TextBox { Width = 70, Text = recovery };
+        var damageBox = new TextBox { Width = 70, Text = damage };
+        var initLifeBox = new TextBox { Width = 70, Text = initLife };
+
+        void Commit()
+        {
+            string b = borderXRadio.IsChecked == true ? "x" : borderValueBox.Text;
+            string csv = $"{b},{recoveryBox.Text},{damageBox.Text}";
+            setCsv(string.IsNullOrWhiteSpace(initLifeBox.Text) ? csv : $"{csv},{initLifeBox.Text}");
+        }
+
+        borderXRadio.Checked += (_, _) => { borderValueBox.IsEnabled = false; Commit(); };
+        borderNumRadio.Checked += (_, _) => { borderValueBox.IsEnabled = true; Commit(); };
+        borderValueBox.TextChanged += (_, _) => Commit();
+        recoveryBox.TextChanged += (_, _) => Commit();
+        damageBox.TextChanged += (_, _) => Commit();
+        initLifeBox.TextChanged += (_, _) => Commit();
+
+        var panel = new StackPanel();
+        var row1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        row1.Children.Add(new TextBlock { Text = "ノルマ(0-100):", Width = 100, VerticalAlignment = VerticalAlignment.Center });
+        row1.Children.Add(borderXRadio);
+        row1.Children.Add(borderNumRadio);
+        row1.Children.Add(borderValueBox);
+        panel.Children.Add(row1);
+        panel.Children.Add(LabeledFieldRow("回復量:", recoveryBox));
+        panel.Children.Add(LabeledFieldRow("ダメージ:", damageBox));
+        panel.Children.Add(LabeledFieldRow("初期ライフ(空欄可):", initLifeBox));
+        return panel;
+    }
+
+    private static StackPanel LabeledFieldRow(string label, FrameworkElement control)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        row.Children.Add(new TextBlock { Text = label, Width = 100, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(control);
+        return row;
+    }
+
+    // =====================================================================
+    // 本体ゲージ(difData直接指定)
+    // =====================================================================
+
+    internal sealed class DifDataExtraVm
+    {
+        public bool Enabled;
+        public bool BorderIsX;
+        public string BorderValue = "70";
+        public string Recovery = "6";
+        public string Damage = "40";
+        public string InitLife = "";
+
+        public static DifDataExtraVm Parse(string? csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv)) return new DifDataExtraVm { Enabled = false };
+            var parts = csv.Split(',');
+            string border = parts.Length > 0 ? parts[0].Trim() : "";
+            bool isX = border == "x";
+            return new DifDataExtraVm
+            {
+                Enabled = true,
+                BorderIsX = isX,
+                BorderValue = isX || border.Length == 0 ? "70" : border,
+                Recovery = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "6",
+                Damage = parts.Length > 2 && parts[2].Length > 0 ? parts[2] : "40",
+                InitLife = parts.Length > 3 ? parts[3] : "",
+            };
+        }
+
+        public string ToCsv()
+        {
+            if (!Enabled) return "";
+            string border = BorderIsX ? "x" : BorderValue;
+            string csv = $"{border},{Recovery},{Damage}";
+            return string.IsNullOrWhiteSpace(InitLife) ? csv : $"{csv},{InitLife}";
+        }
+    }
+
+    private FrameworkElement BuildDifDataExtraFields(int tabIndex)
+    {
+        var vm = _difDataVms[tabIndex];
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+
+        var enabledCheck = new CheckBox
+        {
+            Content = "本体ゲージ(border/recovery/damage/initLife%)を上書きする(OFF=本体既定値を使用)",
+            IsChecked = vm.Enabled,
+            Margin = new Thickness(0, 0, 0, 6),
+        };
+        panel.Children.Add(enabledCheck);
+
+        var fieldsPanel = new StackPanel { Margin = new Thickness(16, 0, 0, 0) };
+        panel.Children.Add(fieldsPanel);
+
+        var groupName = $"border_{tabIndex}_{Guid.NewGuid():N}";
+        var borderXRadio = new RadioButton { Content = "x指定", GroupName = groupName, Margin = new Thickness(0, 0, 12, 0), IsChecked = vm.BorderIsX };
+        var borderNumRadio = new RadioButton { Content = "数値", GroupName = groupName, IsChecked = !vm.BorderIsX };
+        var borderValueBox = new TextBox { Width = 80, Text = vm.BorderValue, Margin = new Thickness(8, 0, 0, 0) };
+        var borderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        borderRow.Children.Add(new TextBlock { Text = "ノルマ(0-100):", Width = 110, VerticalAlignment = VerticalAlignment.Center });
+        borderRow.Children.Add(borderXRadio);
+        borderRow.Children.Add(borderNumRadio);
+        borderRow.Children.Add(borderValueBox);
+        fieldsPanel.Children.Add(borderRow);
+
+        var recoveryBox = new TextBox { Width = 80, Text = vm.Recovery };
+        fieldsPanel.Children.Add(LabeledFieldRow("回復量:", recoveryBox));
+
+        var damageBox = new TextBox { Width = 80, Text = vm.Damage };
+        fieldsPanel.Children.Add(LabeledFieldRow("ダメージ:", damageBox));
+
+        var initLifeBox = new TextBox { Width = 80, Text = vm.InitLife };
+        fieldsPanel.Children.Add(LabeledFieldRow("初期ライフ(空欄可):", initLifeBox));
+
+        void RefreshEnabledState()
+        {
+            fieldsPanel.IsEnabled = vm.Enabled;
+            borderValueBox.IsEnabled = !vm.BorderIsX;
+        }
+
+        enabledCheck.Checked += (_, _) => { vm.Enabled = true; RefreshEnabledState(); };
+        enabledCheck.Unchecked += (_, _) => { vm.Enabled = false; RefreshEnabledState(); };
+        borderXRadio.Checked += (_, _) => { vm.BorderIsX = true; RefreshEnabledState(); };
+        borderNumRadio.Checked += (_, _) => { vm.BorderIsX = false; RefreshEnabledState(); };
+        borderValueBox.TextChanged += (_, _) => vm.BorderValue = borderValueBox.Text;
+        recoveryBox.TextChanged += (_, _) => vm.Recovery = recoveryBox.Text;
+        damageBox.TextChanged += (_, _) => vm.Damage = damageBox.Text;
+        initLifeBox.TextChanged += (_, _) => vm.InitLife = initLifeBox.Text;
+
+        RefreshEnabledState();
+        return panel;
+    }
+
+    // =====================================================================
+    // ② 難易度タブ別「ゲージセット設定」(customGauge、2026-07-30再設計)
     // =====================================================================
 
     internal sealed class TabGaugeVm
@@ -282,310 +504,203 @@ internal sealed class GaugeEditorWindow : Window
         public string DisplayName = "";
     }
 
-    // =====================================================================
-    // 本体ゲージ(difData直接指定、旧④、2026-07-26再設計でタブパネル内へ統合)
-    // =====================================================================
-
-    /// <summary>本体ゲージ(difDataのborder/recovery/damage/initLife%)のタブごとの入力値。
-    /// Enabled=falseの間はDifDataExtraを出力しない(本体既定値が使われる)。ノルマはdanoniplus側で
-    /// "x"という特殊キーワードを受け付ける(danoni_main.js getGaugeSetting確認済み)ため、
-    /// 数値入力とx指定をラジオボタンで切り替えられるようにしている。</summary>
-    internal sealed class DifDataExtraVm
-    {
-        public bool Enabled;
-        public bool BorderIsX;
-        public string BorderValue = "70";
-        public string Recovery = "6";
-        public string Damage = "40";
-        public string InitLife = "";
-
-        public static DifDataExtraVm Parse(string? csv)
-        {
-            if (string.IsNullOrWhiteSpace(csv)) return new DifDataExtraVm { Enabled = false };
-            var parts = csv.Split(',');
-            string border = parts.Length > 0 ? parts[0].Trim() : "";
-            bool isX = border == "x";
-            return new DifDataExtraVm
-            {
-                Enabled = true,
-                BorderIsX = isX,
-                BorderValue = isX || border.Length == 0 ? "70" : border,
-                Recovery = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "6",
-                Damage = parts.Length > 2 && parts[2].Length > 0 ? parts[2] : "40",
-                InitLife = parts.Length > 3 ? parts[3] : "",
-            };
-        }
-
-        /// <summary>Enabled=falseなら空文字(=出力なし)、trueならCSVを組み立てる。初期ライフのみ
-        /// 空欄可(danoniplus側で末尾フィールド省略時は本体既定のinitLifeが使われるため)。</summary>
-        public string ToCsv()
-        {
-            if (!Enabled) return "";
-            string border = BorderIsX ? "x" : BorderValue;
-            string csv = $"{border},{Recovery},{Damage}";
-            return string.IsNullOrWhiteSpace(InitLife) ? csv : $"{csv},{InitLife}";
-        }
-    }
-
-    /// <summary>本体ゲージ(difData)の入力欄一式を組み立てる(2026-07-26)。</summary>
-    private FrameworkElement BuildDifDataExtraFields(int tabIndex)
-    {
-        var vm = _difDataVms[tabIndex];
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
-
-        var enabledCheck = new CheckBox
-        {
-            Content = "本体ゲージ(border/recovery/damage/initLife%)を上書きする(OFF=本体既定値を使用)",
-            IsChecked = vm.Enabled,
-            Margin = new Thickness(0, 0, 0, 6),
-        };
-        panel.Children.Add(enabledCheck);
-
-        var fieldsPanel = new StackPanel { Margin = new Thickness(16, 0, 0, 0) };
-        panel.Children.Add(fieldsPanel);
-
-        var borderXRadio = new RadioButton { Content = "x指定", GroupName = $"border_{tabIndex}", Margin = new Thickness(0, 0, 12, 0), IsChecked = vm.BorderIsX };
-        var borderNumRadio = new RadioButton { Content = "数値", GroupName = $"border_{tabIndex}", IsChecked = !vm.BorderIsX };
-        var borderValueBox = new TextBox { Width = 80, Text = vm.BorderValue, Margin = new Thickness(8, 0, 0, 0) };
-        var borderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-        borderRow.Children.Add(new TextBlock { Text = "ノルマ(0-100):", Width = 110, VerticalAlignment = VerticalAlignment.Center });
-        borderRow.Children.Add(borderXRadio);
-        borderRow.Children.Add(borderNumRadio);
-        borderRow.Children.Add(borderValueBox);
-        fieldsPanel.Children.Add(borderRow);
-
-        var recoveryBox = new TextBox { Width = 80, Text = vm.Recovery };
-        fieldsPanel.Children.Add(LabeledFieldRow("回復量:", recoveryBox));
-
-        var damageBox = new TextBox { Width = 80, Text = vm.Damage };
-        fieldsPanel.Children.Add(LabeledFieldRow("ダメージ:", damageBox));
-
-        var initLifeBox = new TextBox { Width = 80, Text = vm.InitLife };
-        fieldsPanel.Children.Add(LabeledFieldRow("初期ライフ(空欄可):", initLifeBox));
-
-        void RefreshEnabledState()
-        {
-            fieldsPanel.IsEnabled = vm.Enabled;
-            borderValueBox.IsEnabled = !vm.BorderIsX;
-        }
-
-        enabledCheck.Checked += (_, _) => { vm.Enabled = true; RefreshEnabledState(); RefreshParamTable(); };
-        enabledCheck.Unchecked += (_, _) => { vm.Enabled = false; RefreshEnabledState(); RefreshParamTable(); };
-        borderXRadio.Checked += (_, _) => { vm.BorderIsX = true; RefreshEnabledState(); };
-        borderNumRadio.Checked += (_, _) => { vm.BorderIsX = false; RefreshEnabledState(); };
-        borderValueBox.TextChanged += (_, _) => vm.BorderValue = borderValueBox.Text;
-        recoveryBox.TextChanged += (_, _) => vm.Recovery = recoveryBox.Text;
-        damageBox.TextChanged += (_, _) => vm.Damage = damageBox.Text;
-        initLifeBox.TextChanged += (_, _) => vm.InitLife = initLifeBox.Text;
-
-        RefreshEnabledState();
-        return panel;
-    }
-
-    private static StackPanel LabeledFieldRow(string label, FrameworkElement control)
-    {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-        row.Children.Add(new TextBlock { Text = label, Width = 110, VerticalAlignment = VerticalAlignment.Center });
-        row.Children.Add(control);
-        return row;
-    }
-
-    // =====================================================================
-    // ① 難易度タブ別ゲージ名リスト(customGauge、切替候補ゲージ)
-    // =====================================================================
-
     private void BuildTabGaugeTabs()
     {
         _tabGaugeTabs.Items.Clear();
         for (int i = 0; i < _project.Tabs.Count; i++)
         {
+            int tabIndex = i;
             var tab = _project.Tabs[i];
             var vm = _tabVms[i];
 
             var panel = new StackPanel { Margin = new Thickness(8) };
 
-            panel.Children.Add(SectionLabel("本体ゲージ(difDataへの直接指定)"));
-            panel.Children.Add(BuildDifDataExtraFields(i));
+            var difDataBorder = new Border { BorderBrush = Brushes.SteelBlue, BorderThickness = new Thickness(1), Padding = new Thickness(8), Margin = new Thickness(0, 0, 0, 12) };
+            var difDataPanel = new StackPanel();
+            difDataPanel.Children.Add(SectionLabel("本体ゲージ(difDataへの直接指定)"));
+            difDataPanel.Children.Add(BuildDifDataExtraFields(i));
+            difDataBorder.Child = difDataPanel;
+            panel.Children.Add(difDataBorder);
 
-            panel.Children.Add(SectionLabel("切替候補ゲージ(customGauge)"));
-            var modeCombo = new ComboBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8) };
-            modeCombo.Items.Add("指定しない(本体既定を使用)");
-            modeCombo.Items.Add("継承キーワードを使用");
-            modeCombo.Items.Add("明示リストを指定");
-            modeCombo.SelectedIndex = vm.Mode switch { "inherit" => 1, "list" => 2, _ => 0 };
-            panel.Children.Add(modeCombo);
+            var gaugeSetBorder = new Border { BorderBrush = Brushes.DarkOliveGreen, BorderThickness = new Thickness(1), Padding = new Thickness(8) };
+            var gaugeSetPanel = new StackPanel();
+            gaugeSetPanel.Children.Add(SectionLabel("ゲージセット設定(customGauge)"));
+            gaugeSetPanel.Children.Add(new TextBlock
+            {
+                Text = "上の本体ゲージとは独立した機能で、同時に使えますの(本体ゲージ=既定表示、ゲージセット=" +
+                       "プレイヤーが選べる代替候補)。",
+                Foreground = Brushes.Gray,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 8),
+            });
 
-            var inheritCombo = new ComboBox { Width = 160, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8), ItemsSource = InheritKeywords, SelectedItem = vm.InheritKeyword };
-            inheritCombo.SelectionChanged += (_, _) => vm.InheritKeyword = inheritCombo.SelectedItem as string ?? InheritKeywords[0];
-            panel.Children.Add(inheritCombo);
+            var setGroupName = $"gaugeSetMode_{tabIndex}_{Guid.NewGuid():N}";
+            var setModeNone = new RadioButton { Content = "設定しない(本体既定を使用)", GroupName = setGroupName, Margin = new Thickness(0, 0, 0, 4) };
+            var setModeCustom = new RadioButton { Content = "カスタムゲージを使用", GroupName = setGroupName, Margin = new Thickness(0, 0, 0, 4) };
+            var setModeBuiltin = new RadioButton { Content = "本体の既存セットを使用", GroupName = setGroupName, Margin = new Thickness(0, 0, 0, 4) };
+            switch (vm.Mode)
+            {
+                case "list": setModeCustom.IsChecked = true; break;
+                case "inherit": setModeBuiltin.IsChecked = true; break;
+                default: setModeNone.IsChecked = true; break;
+            }
+            gaugeSetPanel.Children.Add(setModeNone);
+            gaugeSetPanel.Children.Add(setModeCustom);
+            gaugeSetPanel.Children.Add(setModeBuiltin);
 
-            var entriesPanel = new StackPanel();
-            panel.Children.Add(entriesPanel);
+            var builtinCombo = new ComboBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(16, 0, 0, 8) };
+            foreach (var (_, label) in BuiltinGaugeSets) builtinCombo.Items.Add(label);
+            int builtinIdx = Array.IndexOf(InheritKeywords, vm.InheritKeyword);
+            builtinCombo.SelectedIndex = builtinIdx >= 0 ? builtinIdx : 0;
+            gaugeSetPanel.Children.Add(builtinCombo);
 
-            var addEntryButton = new Button { Content = "ゲージを追加", Width = 100, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
-            panel.Children.Add(addEntryButton);
+            var customPanel = new StackPanel { Margin = new Thickness(16, 0, 0, 0) };
+            gaugeSetPanel.Children.Add(customPanel);
 
             void RefreshVisibility()
             {
-                inheritCombo.Visibility = vm.Mode == "inherit" ? Visibility.Visible : Visibility.Collapsed;
-                entriesPanel.Visibility = vm.Mode == "list" ? Visibility.Visible : Visibility.Collapsed;
-                addEntryButton.Visibility = vm.Mode == "list" ? Visibility.Visible : Visibility.Collapsed;
+                builtinCombo.Visibility = setModeBuiltin.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+                customPanel.Visibility = setModeCustom.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
             }
 
-            void RefreshEntries()
+            void RefreshCustomPanel()
             {
-                entriesPanel.Children.Clear();
-                foreach (var entry in vm.Entries)
+                customPanel.Children.Clear();
+                customPanel.Children.Add(new TextBlock { Text = "採用中のゲージ", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 4, 0, 2) });
+                if (vm.Entries.Count == 0)
+                    customPanel.Children.Add(new TextBlock { Text = "(まだありません)", Foreground = Brushes.Gray, Margin = new Thickness(0, 0, 0, 4) });
+
+                for (int k = 0; k < vm.Entries.Count; k++)
                 {
-                    var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-                    // 2026-07-26: gaugeX表(_paramRows)に登録済みの名前から選ぶドロップダウンと、
-                    // 未登録の新規名を直接打つ自由入力の両方を、編集可能ComboBoxで両立させる。
-                    var nameBox = new ComboBox
-                    {
-                        Width = 140,
-                        IsEditable = true,
-                        Text = entry.Name,
-                        ToolTip = "ゲージ名(下の「ゲージ別パラメータ」表に登録済みの名前から選択、または新規名を直接入力)",
-                    };
-                    nameBox.DropDownOpened += (_, _) =>
-                        nameBox.ItemsSource = _paramRows
-                            .Select(r => r.GaugeName.Trim())
-                            .Where(n => n.Length > 0)
-                            .Distinct()
-                            .ToList();
-                    nameBox.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
-                        new TextChangedEventHandler((_, _) => entry.Name = nameBox.Text));
-                    var varCheck = new CheckBox { Content = "V(可変)", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0), IsChecked = entry.IsVariable };
+                    int idx = k;
+                    var entry = vm.Entries[idx];
+                    var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 2) };
+
+                    var upBtn = new Button { Content = "↑", Width = 24, IsEnabled = idx > 0 };
+                    var downBtn = new Button { Content = "↓", Width = 24, IsEnabled = idx < vm.Entries.Count - 1, Margin = new Thickness(2, 0, 6, 0) };
+                    upBtn.Click += (_, _) => { (vm.Entries[idx - 1], vm.Entries[idx]) = (vm.Entries[idx], vm.Entries[idx - 1]); RefreshCustomPanel(); };
+                    downBtn.Click += (_, _) => { (vm.Entries[idx + 1], vm.Entries[idx]) = (vm.Entries[idx], vm.Entries[idx + 1]); RefreshCustomPanel(); };
+                    row.Children.Add(upBtn);
+                    row.Children.Add(downBtn);
+
+                    row.Children.Add(new TextBlock { Text = entry.Name, Width = 110, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.Bold });
+
+                    var varCheck = new CheckBox { Content = "V(可変)", IsChecked = entry.IsVariable, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
                     varCheck.Checked += (_, _) => entry.IsVariable = true;
                     varCheck.Unchecked += (_, _) => entry.IsVariable = false;
-                    var dispBox = new TextBox { Width = 140, Text = entry.DisplayName, ToolTip = "表示名(空欄可)" };
-                    dispBox.TextChanged += (_, _) => entry.DisplayName = dispBox.Text;
-                    var removeButton = new Button { Content = "削除", Width = 50, Margin = new Thickness(8, 0, 0, 0) };
-                    removeButton.Click += (_, _) => { vm.Entries.Remove(entry); RefreshEntries(); };
-
-                    row.Children.Add(nameBox);
                     row.Children.Add(varCheck);
+
+                    string declaredDefault = _paramRows.FirstOrDefault(r => r.GaugeName == entry.Name)?.DisplayName ?? "";
+                    var dispCheck = new CheckBox { Content = "表示名を変える", IsChecked = !string.IsNullOrEmpty(entry.DisplayName), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+                    var dispBox = new TextBox
+                    {
+                        Width = 120,
+                        Text = entry.DisplayName,
+                        IsEnabled = dispCheck.IsChecked == true,
+                        ToolTip = string.IsNullOrEmpty(declaredDefault) ? "" : $"未指定時は①の既定表示名「{declaredDefault}」が使われます",
+                    };
+                    dispCheck.Checked += (_, _) => dispBox.IsEnabled = true;
+                    dispCheck.Unchecked += (_, _) => { dispBox.IsEnabled = false; dispBox.Text = ""; entry.DisplayName = ""; };
+                    dispBox.TextChanged += (_, _) => { if (dispCheck.IsChecked == true) entry.DisplayName = dispBox.Text; };
+                    row.Children.Add(dispCheck);
                     row.Children.Add(dispBox);
-                    row.Children.Add(removeButton);
-                    entriesPanel.Children.Add(row);
+
+                    var removeBtn = new Button { Content = "未採用に戻す", Width = 100, Margin = new Thickness(8, 0, 0, 0) };
+                    removeBtn.Click += (_, _) => { vm.Entries.RemoveAt(idx); RefreshCustomPanel(); };
+                    row.Children.Add(removeBtn);
+
+                    customPanel.Children.Add(row);
+
+                    var paramRow = _paramRows.FirstOrDefault(r => r.GaugeName == entry.Name);
+                    if (paramRow is not null && !paramRow.Shared)
+                    {
+                        var valuePanel = BuildGaugeValueFields(
+                            () => tabIndex < paramRow.PerTabCsv.Count ? paramRow.PerTabCsv[tabIndex] : "",
+                            csv =>
+                            {
+                                while (paramRow.PerTabCsv.Count <= tabIndex) paramRow.PerTabCsv.Add("");
+                                paramRow.PerTabCsv[tabIndex] = csv;
+                            });
+                        valuePanel.Margin = new Thickness(58, 2, 0, 8);
+                        customPanel.Children.Add(valuePanel);
+                    }
+                }
+
+                customPanel.Children.Add(new TextBlock { Text = "追加できるゲージ(①で宣言済み)", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 8, 0, 2) });
+                var available = _paramRows.Where(r => !string.IsNullOrWhiteSpace(r.GaugeName) && !vm.Entries.Any(e => e.Name == r.GaugeName)).ToList();
+                if (available.Count == 0)
+                    customPanel.Children.Add(new TextBlock { Text = "(すべて採用済み、または①で未宣言)", Foreground = Brushes.Gray });
+                foreach (var r in available)
+                {
+                    var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 2) };
+                    row.Children.Add(new TextBlock { Text = r.GaugeName, Width = 140, VerticalAlignment = VerticalAlignment.Center });
+                    var addBtn = new Button { Content = "→ 追加", Width = 80 };
+                    string name = r.GaugeName;
+                    addBtn.Click += (_, _) => { vm.Entries.Add(new EntryVm { Name = name }); RefreshCustomPanel(); };
+                    row.Children.Add(addBtn);
+                    customPanel.Children.Add(row);
                 }
             }
 
-            modeCombo.SelectionChanged += (_, _) =>
-            {
-                vm.Mode = modeCombo.SelectedIndex switch { 1 => "inherit", 2 => "list", _ => "none" };
-                RefreshVisibility();
-            };
-            addEntryButton.Click += (_, _) => { vm.Entries.Add(new EntryVm()); RefreshEntries(); };
+            setModeNone.Checked += (_, _) => { vm.Mode = "none"; RefreshVisibility(); };
+            setModeCustom.Checked += (_, _) => { vm.Mode = "list"; RefreshVisibility(); };
+            setModeBuiltin.Checked += (_, _) => { vm.Mode = "inherit"; vm.InheritKeyword = InheritKeywords[builtinCombo.SelectedIndex]; RefreshVisibility(); };
+            builtinCombo.SelectionChanged += (_, _) => { if (setModeBuiltin.IsChecked == true) vm.InheritKeyword = InheritKeywords[builtinCombo.SelectedIndex]; };
 
             RefreshVisibility();
-            RefreshEntries();
+            RefreshCustomPanel();
 
-            _tabGaugeTabs.Items.Add(new TabItem { Header = tab.DisplayLabel, Content = panel });
+            gaugeSetBorder.Child = gaugeSetPanel;
+            panel.Children.Add(gaugeSetBorder);
+
+            _tabGaugeTabs.Items.Add(new TabItem { Header = tab.DisplayLabel, Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
         }
     }
 
     // =====================================================================
-    // ② ゲージ別パラメータ
+    // ④ 上級者向け: 直接入力モード(2026-07-30再設計)
     // =====================================================================
 
-    internal sealed class ParamRowVm
+    private FrameworkElement BuildAdvancedSection()
     {
-        public string GaugeName = "";
-        public List<string> PerTabCsv = [];
+        var panel = new StackPanel { Margin = new Thickness(8, 8, 8, 0) };
+
+        bool hasRawText = !string.IsNullOrWhiteSpace(_project.GaugeRawOverrideText);
+        _rawModeImport.IsChecked = !hasRawText;
+        _rawModeDirect.IsChecked = hasRawText;
+        if (hasRawText) _rawOverrideBox.Text = _project.GaugeRawOverrideText ?? "";
+
+        panel.Children.Add(_rawModeImport);
+        panel.Children.Add(_rawModeDirect);
+        panel.Children.Add(_rawOverrideBox);
+
+        _importRawButton.Click += ImportRawOverride_Click;
+        panel.Children.Add(_importRawButton);
+
+        void RefreshRawModeVisibility()
+        {
+            _importRawButton.Visibility = _rawModeImport.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+            UpdateEnabledState();
+        }
+        _rawModeImport.Checked += (_, _) => RefreshRawModeVisibility();
+        _rawModeDirect.Checked += (_, _) => RefreshRawModeVisibility();
+        _rawOverrideBox.TextChanged += (_, _) => UpdateEnabledState();
+        RefreshRawModeVisibility();
+
+        return panel;
     }
 
-    /// <summary>2026-07-26: 本体ゲージ(difData直接指定)を上書き中の難易度は、この表(customGaugeの
-    /// 明示リストが参照するgaugeXXXパラメータ)では使われないため列を隠す対象にする。</summary>
-    private bool IsParamColumnVisible(int tabIndex) => !_difDataVms[tabIndex].Enabled;
-
-    /// <summary>2026-07-26: 左側固定列(ゲージ名)と右側スクロール領域(タブ値)は別々のStackPanelで
-    /// 独立に縦積みしているため、行の高さがAuto任せだと中身次第(TextBox単体 vs TextBox+削除ボタン等)で
-    /// 微妙にズレが生じ、行数が増えるほど「段がずれる」不具合が起きていた。両側の全行(ヘッダー含む)に
-    /// 同じ固定高さを明示することで、中身の違いに関わらずピクセル単位で行位置を一致させる。</summary>
-    private const double ParamRowHeight = 26;
-
-    private void RefreshParamTable()
-    {
-        _paramNameColumnPanel.Children.Clear();
-        _paramScrollPanel.Children.Clear();
-
-        // --- 左側固定列: ゲージ名 ---
-        _paramNameColumnPanel.Children.Add(new TextBlock
-        {
-            Text = "ゲージ名", Width = 110, Height = ParamRowHeight, FontWeight = FontWeights.Bold,
-            Margin = new Thickness(0, 0, 0, 4),
-        });
-        foreach (var row in _paramRows)
-        {
-            var nameBox = new TextBox
-            {
-                Width = 110, Height = ParamRowHeight, Text = row.GaugeName,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 4),
-            };
-            nameBox.TextChanged += (_, _) => row.GaugeName = nameBox.Text;
-            _paramNameColumnPanel.Children.Add(nameBox);
-        }
-
-        // --- 右側スクロール領域: 難易度タブごとの値+削除ボタン ---
-        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Height = ParamRowHeight, Margin = new Thickness(0, 0, 0, 4) };
-        for (int i = 0; i < _project.Tabs.Count; i++)
-        {
-            if (!IsParamColumnVisible(i)) continue;
-            headerRow.Children.Add(new TextBlock { Text = _project.Tabs[i].DisplayLabel, Width = 110, FontWeight = FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis });
-        }
-        headerRow.Children.Add(new TextBlock { Text = "", Width = 50 });
-        _paramScrollPanel.Children.Add(headerRow);
-
-        foreach (var row in _paramRows)
-        {
-            var rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Height = ParamRowHeight, Margin = new Thickness(0, 0, 0, 4) };
-
-            for (int i = 0; i < _project.Tabs.Count; i++)
-            {
-                if (!IsParamColumnVisible(i)) continue;
-                int idx = i;
-                var cell = new TextBox
-                {
-                    Width = 105, Height = ParamRowHeight,
-                    VerticalContentAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(2, 0, 2, 0),
-                    Text = idx < row.PerTabCsv.Count ? row.PerTabCsv[idx] : "",
-                    ToolTip = "ノルマ(またはx),回復,ダメージ,初期ライフ(空欄=先頭タブと同じ)",
-                };
-                cell.TextChanged += (_, _) =>
-                {
-                    while (row.PerTabCsv.Count <= idx) row.PerTabCsv.Add("");
-                    row.PerTabCsv[idx] = cell.Text;
-                };
-                rowPanel.Children.Add(cell);
-            }
-
-            var removeButton = new Button { Content = "削除", Width = 50, Height = ParamRowHeight, Margin = new Thickness(2, 0, 0, 0) };
-            removeButton.Click += (_, _) => { _paramRows.Remove(row); RefreshParamTable(); };
-            rowPanel.Children.Add(removeButton);
-
-            _paramScrollPanel.Children.Add(rowPanel);
-        }
-    }
-
-    // =====================================================================
-    // 直接入力欄からの読み取り反映(2026-07-26)
-    // =====================================================================
-
-    /// <summary>「この内容を読み取って上の各入力欄に反映する」ボタン。_rawOverrideBoxに貼り付けられた
-    /// customGaugeN/gaugeXXXのヘッダー行(|key=value|形式、DosExporter.AppendGaugeHeadersが書き出す
-    /// フォーマットの逆変換)を解析し、①「譜面ごとのゲージ設定」と②「ゲージ別パラメータ」表を
-    /// 丸ごと上書きする。_rawOverrideBox自体はクリアしない(ユーザー確定仕様: 直接入力モードが
-    /// 優先されたままにする。反映結果は①②のUI上で見た目確認できるが、無効化されたまま表示される)。</summary>
-    private void LoadFromRawOverride_Click(object sender, RoutedEventArgs e)
+    /// <summary>「インポート」ボタン(2026-07-30再設計、旧LoadFromRawOverride_Clickの後継)。
+    /// _rawOverrideBoxに貼り付けられたcustomGaugeN/gaugeXXXのヘッダー行(|key=value|形式)を解析し、
+    /// ①②の構造化UIへ一括反映する。成功時はテキスト欄をクリアし(以後は構造化UIがexportに使われる)、
+    /// 失敗時は内容を保持したままエラーを表示する。</summary>
+    private void ImportRawOverride_Click(object sender, RoutedEventArgs e)
     {
         _error.Text = "";
         string text = _rawOverrideBox.Text;
         if (string.IsNullOrWhiteSpace(text))
         {
-            _error.Text = "直接入力欄が空のため読み取れませんの。";
+            _error.Text = "テキスト欄が空のため読み取れませんの。";
             return;
         }
 
@@ -640,7 +755,9 @@ internal sealed class GaugeEditorWindow : Window
                 var perTab = value.Split('$').ToList();
                 while (perTab.Count < tabCount) perTab.Add("");
                 if (perTab.Count > tabCount) perTab = perTab.Take(tabCount).ToList();
-                parsedRows.Add(new ParamRowVm { GaugeName = name, PerTabCsv = perTab });
+                var row = new ParamRowVm { GaugeName = name, PerTabCsv = perTab };
+                row.Shared = InferShared(row, tabCount);
+                parsedRows.Add(row);
             }
         }
 
@@ -650,14 +767,15 @@ internal sealed class GaugeEditorWindow : Window
             return;
         }
 
-        for (int i = 0; i < tabCount; i++)
-            _tabVms[i] = parsedTabVms[i];
-
+        for (int i = 0; i < tabCount; i++) _tabVms[i] = parsedTabVms[i];
         _paramRows.Clear();
         _paramRows.AddRange(parsedRows);
 
-        BuildTabGaugeTabs();
-        RefreshParamTable();
+        _rawOverrideBox.Text = "";
+        RefreshAll();
+        _error.Text = "";
+        _error.Foreground = Brushes.LightGreen;
+        _error.Text = "①②へ反映しましたの。";
     }
 
     // =====================================================================
@@ -667,8 +785,11 @@ internal sealed class GaugeEditorWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         _error.Text = "";
+        _error.Foreground = Brushes.Red;
 
-        string? rawText = string.IsNullOrWhiteSpace(_rawOverrideBox.Text) ? null : _rawOverrideBox.Text;
+        string? rawText = _rawModeDirect.IsChecked == true && !string.IsNullOrWhiteSpace(_rawOverrideBox.Text)
+            ? _rawOverrideBox.Text
+            : null;
 
         var gaugeConfigs = new GaugeConfig?[_project.Tabs.Count];
         if (rawText is null)
@@ -706,7 +827,7 @@ internal sealed class GaugeEditorWindow : Window
             var names = _paramRows.Where(r => !string.IsNullOrWhiteSpace(r.GaugeName)).Select(r => r.GaugeName.Trim()).ToList();
             if (names.Distinct(StringComparer.Ordinal).Count() != names.Count)
             {
-                _error.Text = "ゲージ別パラメータのゲージ名が重複していますの。";
+                _error.Text = "①のゲージ名が重複していますの。";
                 return;
             }
         }
@@ -714,13 +835,13 @@ internal sealed class GaugeEditorWindow : Window
         for (int i = 0; i < _project.Tabs.Count; i++)
             _project.Tabs[i].Gauge = rawText is null ? gaugeConfigs[i] : null;
 
-        // 2026-07-24: ②の表内容(行=ゲージ名, 列=タブ)を、ChartProject.GaugeNames(並び順)と
-        // 各DifficultyTab.GaugeParams(タブごとの実値)へ分解して書き戻す。
         List<ParamRowVm> validRows = rawText is not null
             ? []
             : _paramRows.Where(r => !string.IsNullOrWhiteSpace(r.GaugeName)).ToList();
 
-        _project.GaugeNames = validRows.Select(r => r.GaugeName.Trim()).ToList();
+        _project.GaugeNames = validRows
+            .Select(r => new GaugeNameDef(r.GaugeName.Trim(), string.IsNullOrWhiteSpace(r.DisplayName) ? null : r.DisplayName.Trim()))
+            .ToList();
         for (int i = 0; i < _project.Tabs.Count; i++)
         {
             Dictionary<string, string>? gp = null;
@@ -735,15 +856,12 @@ internal sealed class GaugeEditorWindow : Window
 
         _project.GaugeRawOverrideText = rawText;
 
-        // 2026-07-26: 本体ゲージ(difData直接指定、名前を介さないborder/recovery/damage/initLife%生値)の書き戻し。
-        // 直接入力モード(customGauge/gaugeXXX)とは無関係な別ヘッダーのため、rawTextの有無を問わず常に反映する。
         for (int i = 0; i < _project.Tabs.Count; i++)
         {
             var csv = _difDataVms[i].ToCsv();
             _project.Tabs[i].DifDataExtra = string.IsNullOrEmpty(csv) ? null : csv;
         }
 
-        // 2026-07-26: 「dos作成後に直接編集する」フラグの書き戻し(プロジェクト全体で1つ)。
         _project.GaugeManualEditAfterExport = _manualEditAfterExport.IsChecked == true;
 
         Saved = true;

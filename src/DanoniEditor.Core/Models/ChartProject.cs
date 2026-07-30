@@ -62,13 +62,15 @@ public sealed class ChartProject
     /// <summary>難易度タブ(並び順=出力順=サフィックス採番順)</summary>
     public List<DifficultyTab> Tabs { get; set; } = [];
 
-    /// <summary>customGauge/gaugeXXX機能で使うゲージ名の並び順(2026-07-26、GaugeEditorWindow)。
-    /// 表の行順・出力順を保持するためだけのプロジェクト全体の情報で、実際のパラメータ値
-    /// (border/recovery/damage/initLife)はタブごとに<see cref="DifficultyTab.GaugeParams"/>が持つ
-    /// (2026-07-24: 旧GaugeParamSet.PerTabCsvはタブ削除時にインデックス調整が漏れて値がズレる不具合が
-    /// あったため、他のタブ別設定(setColor/frzColor/customGauge)と同じ「タブ自身が値を持つ」方式へ統一した。
-    /// タブを削除すればそのタブの値も一緒に破棄されるだけで整合するようになる)。</summary>
-    public List<string> GaugeNames { get; set; } = [];
+    /// <summary>customGauge/gaugeXXX機能で使うゲージ名の宣言(名前+既定表示名)の並び順
+    /// (2026-07-26、GaugeEditorWindow。2026-07-30再設計でstringからGaugeNameDefへ変更、宣言時に
+    /// 既定表示名を持てるようにした)。表の行順・出力順を保持するためだけのプロジェクト全体の情報で、
+    /// 実際のパラメータ値(border/recovery/damage/initLife)はタブごとに
+    /// <see cref="DifficultyTab.GaugeParams"/>が持つ(2026-07-24: 旧GaugeParamSet.PerTabCsvはタブ削除時に
+    /// インデックス調整が漏れて値がズレる不具合があったため、他のタブ別設定(setColor/frzColor/
+    /// customGauge)と同じ「タブ自身が値を持つ」方式へ統一した。タブを削除すればそのタブの値も
+    /// 一緒に破棄されるだけで整合するようになる)。</summary>
+    public List<GaugeNameDef> GaugeNames { get; set; } = [];
 
     /// <summary>「直接入力モード」(2026-07-26、ユーザー確定仕様)。空でなければ、ゲージ関連ヘッダー
     /// (customGauge系・gaugeXXX系)の出力はこのテキストの内容(dos.txtにそのまま書き込む前提の
@@ -245,14 +247,28 @@ public sealed class LaneNotes
     public List<NoteAnnotation> Annotations { get; set; } = [];
 }
 
-/// <summary>ノート/フリーズ1件分のコメント・警告(2026-07-26)。Comment=""かつWarning=falseの
-/// エントリはリストから削除してよい(空エントリを残さない規約)。</summary>
-public sealed record NoteAnnotation(long Tick, string Comment, bool Warning);
+/// <summary>ノート/フリーズ1件分のコメント・警告(2026-07-26)。Comment=""かつWarning=falseかつ
+/// ShowIcon=falseのエントリはリストから削除してよい(空エントリを残さない規約)。
+/// ShowIcon(2026-07-30要望対応、「コメント記載お知らせ用アイコン」): Warningとは独立したユーザー
+/// 任意のON/OFF(プロパティパネルのチェックボックス)。trueの間、譜面ビューにコメント有りお知らせ
+/// アイコン(SystemIcons.Application)を重ね描きする。Warning(SystemIcons.Warning、インポート時の
+/// 自動フラグ)とは別系統で、両方同時にONにもできる。</summary>
+public sealed record NoteAnnotation(long Tick, string Comment, bool Warning, bool ShowIcon = false);
 
 public sealed record FreezeNote(long StartTick, long EndTick);
 
-/// <summary>speed/boost等の値変化点(tick位置+値)</summary>
-public sealed record ValueEvent(long Tick, double Value);
+/// <summary>speed/boost等の値変化点(tick位置+値)。
+/// LinkGridDivision(2026-07-30要望対応、「始点終点オートスムージング出力」): nullの場合は通常の
+/// イベント(リンク無し)。非nullの場合、このイベントはtick順で直後(次)の同種イベント(speed同士/
+/// boost同士)と自動的にリンクしており、両者の間を指定した設置間隔(4=4分/8=8分/16=16分/32=32分、
+/// 既存ノートと同じ絶対グリッド基準)で区切った中間点を自動生成し、区間内を線形補間した値を
+/// 割り当てる(ValueEventSmoothing.ExpandLinkedEvents参照)。生成される中間点はSpeedEvents/
+/// BoostEvents自体には追加されず、dos.txt出力・プレイテスト・プレビューの速度/ブースト計算にのみ
+/// 都度展開して用いる(選択・削除・ドラッグ移動の単純さを保つため)。
+/// リンクは常に「tick順で早い方のイベントがLinkGridDivisionを持つ」形で表現するため、
+/// 「1つ手前のイベントとリンクする」設定をしたい場合は、手前のイベント側のLinkGridDivisionを
+/// 設定する(③プロパティパネルのUIが自動的にこの変換を行う)。</summary>
+public sealed record ValueEvent(long Tick, double Value, int? LinkGridDivision = null);
 
 /// <summary>エディタ専用マーカー(仕様書7.4)</summary>
 public sealed record Marker(long Tick, string Comment);
@@ -285,8 +301,16 @@ public sealed class GaugeConfig
     public List<GaugeListEntry> Entries { get; set; } = [];
 }
 
-/// <summary>customGauge{N}の明示リスト1項目分(name::F|V(::displayName)?)。</summary>
+/// <summary>customGauge{N}の明示リスト1項目分(name::F|V(::displayName)?)。DisplayNameが未指定
+/// (null/空)の場合、エクスポート時にChartProject.GaugeNamesで宣言された既定表示名があればそちらを
+/// 使う(2026-07-30再設計、GaugeNameDef参照)。</summary>
 public sealed record GaugeListEntry(string Name, bool IsVariable, string? DisplayName = null);
+
+/// <summary>gaugeXXX(ChartProject.GaugeNames)の宣言1件分(2026-07-30再設計)。内部名(gauge{Name}
+/// ヘッダーやcustomGauge{N}のリストが参照するキー)と、宣言時に設定できる既定表示名の組。
+/// DisplayNameは各タブのGaugeListEntry.DisplayNameが空の場合のフォールバックとして使われるのみで、
+/// タブ側で個別に上書きもできる。</summary>
+public sealed record GaugeNameDef(string Name, string? DisplayName = null);
 
 // =====================================================================
 // 歌詞表示(word_data、仕様dos-e0003-wordData、2026-07-23、TBD 4)

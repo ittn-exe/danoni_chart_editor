@@ -1155,6 +1155,64 @@ public sealed class ChartCanvas : FrameworkElement
         dc.DrawImage(WarningIcon, new Rect(cx, y - size, size, size));
     }
 
+    /// <summary>色編集モードの「即時適用(ncolor_dataのAllFlag)」が指定されたオブジェクトを示す
+    /// Windows標準の情報アイコンのWPF用ImageSource(2026-07-30要望対応)。ユーザーが直接ON/OFFする
+    /// ものではなく、色編集モードの「即時適用にする」チェックボックスON中に塗った/一括塗りつぶした
+    /// ncolor_dataエントリの内部フラグ(NColorEntry.AllFlag)をそのまま可視化するための表示専用アイコン。
+    /// SystemIcons.InformationをHIcon経由で変換し、初回のみ生成して使い回す。</summary>
+    private static ImageSource? _immediateApplyIconCache;
+    private static ImageSource ImmediateApplyIcon
+    {
+        get
+        {
+            if (_immediateApplyIconCache is null)
+            {
+                var src = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
+                    System.Drawing.SystemIcons.Information.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                src.Freeze();
+                _immediateApplyIconCache = src;
+            }
+            return _immediateApplyIconCache;
+        }
+    }
+
+    /// <summary>即時適用(AllFlag)ONのオブジェクトへ情報アイコンを重ね描きする(2026-07-30要望対応)。
+    /// 警告アイコンと同時に表示されても重ならないよう、ノート中心の左上へ配置する。</summary>
+    private static void DrawImmediateApplyOverlay(DrawingContext dc, double cx, double y, double noteSize)
+    {
+        double size = Math.Max(10, noteSize * 0.55);
+        dc.DrawImage(ImmediateApplyIcon, new Rect(cx - size, y - size, size, size));
+    }
+
+    /// <summary>コメント記載お知らせ用(NoteAnnotation.ShowIcon)のWindows標準アイコンの
+    /// WPF用ImageSource(2026-07-30要望対応)。Warning(SystemIcons.Warning)とは独立した、
+    /// ユーザーがプロパティパネルのチェックボックスで任意にON/OFFできるお知らせアイコン。
+    /// SystemIcons.ApplicationをHIcon経由で変換し、初回のみ生成して使い回す。</summary>
+    private static ImageSource? _commentIconCache;
+    private static ImageSource CommentIcon
+    {
+        get
+        {
+            if (_commentIconCache is null)
+            {
+                var src = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
+                    System.Drawing.SystemIcons.Application.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                src.Freeze();
+                _commentIconCache = src;
+            }
+            return _commentIconCache;
+        }
+    }
+
+    /// <summary>コメントお知らせフラグ(ShowIcon)ONのオブジェクトへアイコンを重ね描きする
+    /// (2026-07-30要望対応)。警告アイコン・即時適用アイコンと同時に表示されても重ならないよう、
+    /// ノート中心の右側(警告アイコンのさらに右)へ配置する。</summary>
+    private static void DrawCommentIconOverlay(DrawingContext dc, double cx, double y, double noteSize)
+    {
+        double size = Math.Max(10, noteSize * 0.55);
+        dc.DrawImage(CommentIcon, new Rect(cx + size, y - size, size, size));
+    }
+
     /// <summary>タブリンク機能(2026-07-26要望対応)。リンク中の相手タブ(非アクティブタブ)のノート・
     /// フリーズを、本体のノート描画より奥に、固定色・縮小サイズで簡易表示する。2026-07-26b要望対応:
     /// ノートは(ベクター丸ではなく)各レーンのノート画像をLinkedNoteColorで着色して表示し
@@ -1237,6 +1295,10 @@ public sealed class ChartCanvas : FrameworkElement
             var warningTicks = tab.Lanes[i].Annotations.Count == 0
                 ? null
                 : tab.Lanes[i].Annotations.Where(a => a.Warning).Select(a => a.Tick).ToHashSet();
+            // 2026-07-30要望対応: コメントお知らせアイコン(ShowIcon)ONのtick集合(警告とは別系統)
+            var commentIconTicks = tab.Lanes[i].Annotations.Count == 0
+                ? null
+                : tab.Lanes[i].Annotations.Where(a => a.ShowIcon).Select(a => a.Tick).ToHashSet();
 
             // 2026-07-24: frzHitColor編集モード中は、判定中(ヒット時)の色をプレビュー表示する
             // (仕様: 対象色パラメータが変わり、譜面ビュー上のフリーズアローの表示色がヒット時設定の
@@ -1334,6 +1396,13 @@ public sealed class ChartCanvas : FrameworkElement
                 // 2026-07-26: 警告フラグON(StartTickで同定)のフリーズは始点側へ警告アイコンを重ねる
                 if (warningTicks is not null && warningTicks.Contains(f.StartTick))
                     DrawWarningOverlay(dc, cx, y1, layout.NoteSize);
+                // 2026-07-30要望対応: 即時適用(AllFlag)ONのncolor_dataエントリを持つフリーズは
+                // 始点側へ情報アイコンを重ねる
+                if (fOver?.AllFlag == true)
+                    DrawImmediateApplyOverlay(dc, cx, y1, layout.NoteSize);
+                // 2026-07-30要望対応: コメントお知らせフラグ(ShowIcon)ONのフリーズは始点側へアイコンを重ねる
+                if (commentIconTicks is not null && commentIconTicks.Contains(f.StartTick))
+                    DrawCommentIconOverlay(dc, cx, y1, layout.NoteSize);
             }
 
             foreach (var t in tab.Lanes[i].Notes)
@@ -1374,6 +1443,12 @@ public sealed class ChartCanvas : FrameworkElement
                 // 2026-07-26: 警告フラグONのノートは通常描写の上に警告アイコンを重ねる
                 if (warningTicks is not null && warningTicks.Contains(t))
                     DrawWarningOverlay(dc, cx, y, layout.NoteSize);
+                // 2026-07-30要望対応: 即時適用(AllFlag)ONのncolor_dataエントリを持つノートは情報アイコンを重ねる
+                if (nOver?.AllFlag == true)
+                    DrawImmediateApplyOverlay(dc, cx, y, layout.NoteSize);
+                // 2026-07-30要望対応: コメントお知らせフラグ(ShowIcon)ONのノートはアイコンを重ねる
+                if (commentIconTicks is not null && commentIconTicks.Contains(t))
+                    DrawCommentIconOverlay(dc, cx, y, layout.NoteSize);
             }
         }
     }
@@ -1492,14 +1567,40 @@ public sealed class ChartCanvas : FrameworkElement
         return TryParseColor(head, fallback);
     }
 
+    /// <summary>ncolor_dataの即時適用(AllFlag)を、プレイテスト/プレビューのライブ再生描画へ
+    /// 簡易的に反映するための近似解決(2026-07-30要望対応)。本家は「指定フレーム時点で既に
+    /// 出現済みの矢印/フリーズも含めて即座に塗り替える」挙動だが、本エディタは出現(スポーン)
+    /// フレームの厳密な計算(スクロール速度からの逆算)までは行わない近似実装とする(将来、
+    /// ユーザーから違和感の指摘があれば改めて精緻化する方針)。
+    /// 近似ルール: 対象オブジェクト自身のtickにまだ到達していない(=まだ画面上に存在しうる)間、
+    /// 自分より前のtickに置かれた即時適用エントリのうち、既に発火済み(そのtickに対応するframeが
+    /// currentFrame以下)で最もtickが新しいものの値を優先して採用する。該当が無ければ、
+    /// 通常通りbaseColor(自分自身のColorOverride、無ければレーン既定色)をそのまま使う。</summary>
+    internal static string? ResolveImmediateAppliedColor(
+        IEnumerable<NColorEntry> laneOverrides, long ownTick, double currentFrame,
+        Func<NColorEntry, string?> fieldPicker, Func<long, double> tickToFrame, string? baseColor)
+    {
+        NColorEntry? latest = null;
+        foreach (var e in laneOverrides)
+        {
+            if (e.Tick >= ownTick || !e.AllFlag) continue;
+            if (fieldPicker(e) is null) continue;
+            if (tickToFrame(e.Tick) > currentFrame) continue;
+            if (latest is null || e.Tick > latest.Tick) latest = e;
+        }
+        return latest is not null && currentFrame < tickToFrame(ownTick) ? fieldPicker(latest) : baseColor;
+    }
+
     private static void DrawValueEvents(DrawingContext dc, ChartLayout layout, DifficultyTab tab, ChartProject project, long tickMin, long tickMax)
     {
         var speedCol = layout.Column(ColumnKind.Speed);
+        DrawValueEventLinks(dc, layout, speedCol, tab.SpeedEvents, SpeedBrush, tickMin, tickMax);
         foreach (var e in tab.SpeedEvents)
             if (e.Tick >= tickMin && e.Tick <= tickMax)
                 DrawEventTag(dc, speedCol, layout.TickToY(e.Tick), SpeedBrush, e.Value.ToString("0.00"), pointLeft: true, layout.ZoomScale);
 
         var boostCol = layout.Column(ColumnKind.Boost);
+        DrawValueEventLinks(dc, layout, boostCol, tab.BoostEvents, BoostBrush, tickMin, tickMax);
         foreach (var e in tab.BoostEvents)
             if (e.Tick >= tickMin && e.Tick <= tickMax)
                 DrawEventTag(dc, boostCol, layout.TickToY(e.Tick), BoostBrush, e.Value.ToString("0.00"), pointLeft: true, layout.ZoomScale);
@@ -1508,6 +1609,40 @@ public sealed class ChartCanvas : FrameworkElement
         foreach (var e in project.BpmEvents)
             if (e.Tick >= tickMin && e.Tick <= tickMax)
                 DrawEventTag(dc, bpmCol, layout.TickToY(e.Tick), BpmBrush, e.Bpm.ToString("0.##"), pointLeft: true, layout.ZoomScale);
+    }
+
+    /// <summary>2026-07-30要望対応: speed/boostの「始点終点オートスムージング出力」の可視化。
+    /// LinkGridDivisionが設定されたイベントと、その直後の同種イベントとの間に、値を表す直線を描く。
+    /// 値→X座標は「レーン左端+5px=0.0、中央=1.0、右端-5px=2.0」の線形マッピングで、2.0を超える値・
+    /// 0.0を下回る値はいずれも振り切れ表示をせず、その端(2.0相当/0.0相当)の座標でキャップする
+    /// (ユーザー確定仕様)。TickToYはtickに対して線形のため、tick順で線形補間した値もこの直線一本で
+    /// 正しく表現できる(中間点を個別に描く必要は無い)。</summary>
+    private static void DrawValueEventLinks(DrawingContext dc, ChartLayout layout, ColumnInfo col,
+        List<ValueEvent> events, Brush brush, long tickMin, long tickMax)
+    {
+        if (events.Count < 2) return;
+        var sorted = events.OrderBy(e => e.Tick).ToList();
+        var linkPen = new Pen(brush, 2.0);
+
+        for (int i = 0; i + 1 < sorted.Count; i++)
+        {
+            if (sorted[i].LinkGridDivision is null) continue;
+            var a = sorted[i];
+            var b = sorted[i + 1];
+            if (b.Tick < tickMin || a.Tick > tickMax) continue;
+
+            var p1 = new Point(ValueToLinkX(col, a.Value), layout.TickToY(a.Tick));
+            var p2 = new Point(ValueToLinkX(col, b.Value), layout.TickToY(b.Tick));
+            dc.DrawLine(linkPen, p1, p2);
+        }
+    }
+
+    private static double ValueToLinkX(ColumnInfo col, double value)
+    {
+        double v = Math.Clamp(value, 0.0, 2.0);
+        double left = col.X + 5;
+        double right = col.X + col.Width - 5;
+        return left + (right - left) * (v / 2.0);
     }
 
     /// <summary>マーカーコメントの表示方式(仕様書7.4: 全文/先頭数文字、環境設定から適用、2026-07-19b)</summary>
