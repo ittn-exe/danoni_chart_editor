@@ -383,6 +383,42 @@ public sealed class AppSettings
     public string MusicUrlBaseFolder { get; set; } = "";
 
     // =====================================================================
+    // コピーマネージャー(異なるキー種間のコピー&ペースト、2026-07-31)。
+    // コピー元タブとペースト先タブのキー種が異なる場合、CopyManagerWindowでレーン対応を指定して
+    // 貼り付ける。その際に発生しうる6種類のオブジェクト衝突の解決方法をここで保持する
+    // (CopyManagerWindow内の折り畳み「コピー・ペースト設定」から変更可能、値は即時保存)。
+    // 値はいずれもラジオボタンの選択肢を表す文字列定数(enumではなく既存の他設定と同じ流儀)。
+    // =====================================================================
+
+    /// <summary>通常ノートとフリーズ先頭が同一tickで衝突した場合の優先。
+    /// "note"=通常ノートを優先(フリーズ側を破棄)、"freeze"=フリーズを優先(通常ノート側を破棄)。</summary>
+    public string CopyManagerNoteVsFreezeHeadMode { get; set; } = "note";
+
+    /// <summary>通常ノートがフリーズの帯(始点・終点を除く区間内部)に衝突した場合の解決方法。
+    /// "trim"=フリーズをそのノートの16分手前で切る、"ignoreNote"=そのノート側を無視する。</summary>
+    public string CopyManagerNoteVsFreezeBodyMode { get; set; } = "trim";
+
+    /// <summary>通常ノートがフリーズ終端と同一tickで衝突した場合の解決方法。
+    /// "trim"=フリーズをそのノートの16分手前で切る、"ignoreNote"=そのノート側を無視する。</summary>
+    public string CopyManagerNoteVsFreezeTailMode { get; set; } = "trim";
+
+    /// <summary>2つのフリーズの先頭同士が同一tickで衝突した場合、どちらを残すか。
+    /// "long"=長い方を残す、"short"=短い方を残す。</summary>
+    public string CopyManagerFreezeHeadVsHeadMode { get; set; } = "long";
+
+    /// <summary>フリーズの先頭が、別のフリーズの帯(始点・終点を除く区間内部)に衝突した場合の解決方法。
+    /// "trim"=時間的に後ろのフリーズの16分手前で前側のフリーズを切る、"ignoreFreeze"=後ろのフリーズ側を無視する。</summary>
+    public string CopyManagerFreezeHeadVsBodyMode { get; set; } = "trim";
+
+    /// <summary>フリーズの先頭が、別のフリーズ終端と同一tickで衝突した場合の解決方法。
+    /// "trim"=時間的に後ろのフリーズの16分手前で前側のフリーズを切る、"ignoreFreeze"=後ろのフリーズ側を無視する。</summary>
+    public string CopyManagerFreezeHeadVsTailMode { get; set; } = "trim";
+
+    /// <summary>異なるキー種間の貼り付け時、色編集モードの色情報・コメント/警告注釈といった付随プロパティを
+    /// 新しいレーンへ引き継ぐか。"carryOver"=引き継ぐ、"discard"=引き継がない。</summary>
+    public string CopyManagerPreservePropertiesMode { get; set; } = "carryOver";
+
+    // =====================================================================
     // 色履歴(仕様書6.4.2/14章 colorHistory、2026-07-19b)
     // ※履歴の記録・呼び出しUI(カラーピッカー連携)は今後の実装。上限と保存領域を先に用意する。
     // =====================================================================

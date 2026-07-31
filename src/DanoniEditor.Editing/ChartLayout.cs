@@ -52,7 +52,8 @@ public sealed class ChartLayout
 
     public const double DefaultPxPerTick = 0.5 * 48.0 / TimingEngine.TicksPerBeat;
     public const double MinPxPerTick = 0.05 * 48.0 / TimingEngine.TicksPerBeat;
-    public const double MaxPxPerTick = 5.0 * 48.0 / TimingEngine.TicksPerBeat;
+    // 2026-08-01要望対応: 拡大倍率上限を既定の10倍→50倍へ引き上げ(25.0 = 0.5(既定係数) * 50)。
+    public const double MaxPxPerTick = 25.0 * 48.0 / TimingEngine.TicksPerBeat;
 
     /// <summary>
     /// 作業エリア全体のズーム倍率(Ctrl+スクロールで可変)。カラム幅・ノート表示サイズは

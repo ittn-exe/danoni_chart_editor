@@ -36,6 +36,13 @@ public sealed class SmartToolController
 {
     public const double DragThreshold = 3.0;
 
+    /// <summary>2026-08-01要望対応: グリッド上に無いノート(例: 12分で入力後に16分グリッドへ戻した場合等)を
+    /// クリックで選択できるようにするための、グリッド外ノート専用の小さな判定幅(片側、px)。
+    /// 通常の当たり判定(NoteSize/2、既定17px)よりずっと小さくしてあるのは、これを大きくすると
+    /// 「ノート画像が密集して重なっている場合に空いているグリッドマスへ配置できなくなる」という
+    /// 2026-07-25に修正済みの不具合が別の形でぶり返してしまうため(IsEmptyForPlacement参照)。</summary>
+    private const double OffGridNoteHitToleranceY = 4.0;
+
     private readonly EditorDocument _doc;
 
     /// <summary>スマートツールON/OFF(仕様書6.3上段パネル)。OFF時は選択済みオブジェクトのグループ移動のみ有効。</summary>
@@ -217,12 +224,41 @@ public sealed class SmartToolController
     /// ノート画像は密集すると見た目上で隣接ノートの分まで当たり判定が重なってしまい、実際には
     /// 空いているグリッドマスへ配置できなくなる不具合があったための対応(選択・掴みの当たり判定
     /// である_startHit/HitAt自体はここでは変更しない、既存オブジェクトの掴みやすさは維持する)。
-    /// ノートレーン以外の列(Speed/Boost/Bpm/Marker/Word等)は従来通り広い当たり判定で判定する。</summary>
+    /// ノートレーン以外の列(Speed/Boost/Bpm/Marker/Word等)は従来通り広い当たり判定で判定する。
+    /// 2026-08-01追加: 上記のスナップtick一致判定だけだと、グリッド上に無いノート(例: 12分入力後に
+    /// 16分グリッドへ戻した場合等)がクリック位置に実在していても「空セル」と誤判定され、選択より先に
+    /// 新規配置が走ってしまう(結果としてグリッド外ノートが事実上選択不能になる)。クリック位置の
+    /// ごく近く(OffGridNoteHitToleranceY)にスナップtickとは異なるノート/フリーズ端点があれば
+    /// 占有扱いにして、配置ではなく選択・掴みへ処理を譲る。</summary>
     private bool IsEmptyForPlacement(PointerPos pos)
     {
         if (_startColumn is { Kind: ColumnKind.Note } col)
-            return !NoteExistsAtExactTick(col.NoteLaneIndex, SnappedTickAt(pos));
+        {
+            long snappedTick = SnappedTickAt(pos);
+            if (NoteExistsAtExactTick(col.NoteLaneIndex, snappedTick)) return false;
+            return !NearOffGridNote(col.NoteLaneIndex, pos.Y, snappedTick);
+        }
         return _startHit is null;
+    }
+
+    /// <summary>IsEmptyForPlacement専用: クリック位置のごく近くに、スナップtickとは異なる位置の
+    /// 通常ノート/フリーズ端点が実在するか(グリッド外ノートの検出、2026-08-01)。判定幅は
+    /// OffGridNoteHitToleranceY(既定4px、通常の当たり判定より大幅に小さい)。</summary>
+    private bool NearOffGridNote(int laneIndex, double y, long snappedTick)
+    {
+        var layout = _doc.CurrentLayout;
+        var lane = _doc.CurrentTab.Lanes[laneIndex];
+        foreach (var t in lane.Notes)
+        {
+            if (t == snappedTick) continue; // 既にNoteExistsAtExactTickで判定済み
+            if (Math.Abs(layout.TickToY(t) - y) <= OffGridNoteHitToleranceY) return true;
+        }
+        foreach (var f in lane.Freezes)
+        {
+            if (f.StartTick != snappedTick && Math.Abs(layout.TickToY(f.StartTick) - y) <= OffGridNoteHitToleranceY) return true;
+            if (f.EndTick != snappedTick && Math.Abs(layout.TickToY(f.EndTick) - y) <= OffGridNoteHitToleranceY) return true;
+        }
+        return false;
     }
 
     /// <summary>指定レーンの指定tickに、通常ノート・フリーズの端点(始点/終点)・フリーズの帯範囲内
@@ -939,7 +975,7 @@ public sealed class SmartToolController
     {
         var entries = BuildClipboardEntries(_doc.Selection);
         if (entries.Count == 0) return false;
-        EditorClipboard.Set(entries);
+        EditorClipboard.Set(entries, _doc.CurrentTab.KeyTypeId);
         return true;
     }
 
@@ -1022,6 +1058,183 @@ public sealed class SmartToolController
         _doc.Selection.Clear();
         foreach (var r in pasted) _doc.Selection.Add(r);
         _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択更新の通知のみ
+        return true;
+    }
+
+    // =====================================================================
+    // コピーマネージャー(異なるキー種間のコピー&ペースト、2026-07-31)
+    // =====================================================================
+
+    /// <summary>クリップボードの内容が、現在の貼り付け先タブと異なるキー種のノート・フリーズを
+    /// 含んでいるか(コピーマネージャーの起動判定用)。キー種が違っていても、コピー内容が
+    /// ノート・フリーズを1件も含まない場合(BPM/speed/boost/マーカーのみ等、キー種に依存しない
+    /// レーンのみのコピー)はfalseを返す(その場合は通常のPaste()でそのまま貼り付けてよい)。</summary>
+    public bool ClipboardNeedsLaneMapping()
+    {
+        var entries = EditorClipboard.Entries;
+        if (entries is null || entries.Count == 0) return false;
+        if (EditorClipboard.SourceKeyTypeId is not { } sourceKeyTypeId) return false;
+        if (sourceKeyTypeId == _doc.CurrentTab.KeyTypeId) return false;
+        return entries.Any(e => e.Kind is ObjectKind.Note or ObjectKind.FreezeStart);
+    }
+
+    /// <summary>コピー元のキー種ID(コピーマネージャーが上段レーンのアイコン取得に使う)。未コピー時はnull。</summary>
+    public string? ClipboardSourceKeyTypeId => EditorClipboard.SourceKeyTypeId;
+
+    /// <summary>コピー元のレーンのうち、実際にノート・フリーズを含むレーン番号一覧(昇順・重複無し、
+    /// コピーマネージャーの上段表示用)。</summary>
+    public IReadOnlyList<int> ClipboardSourceLanesWithObjects()
+    {
+        var entries = EditorClipboard.Entries;
+        if (entries is null) return [];
+        return entries.Where(e => e.Kind is ObjectKind.Note or ObjectKind.FreezeStart)
+            .Select(e => e.Lane).Distinct().OrderBy(l => l).ToList();
+    }
+
+    /// <summary>コピーマネージャーで指定したレーン対応表に従い、異なるキー種間でノート・フリーズを
+    /// 貼り付ける。mappingは(コピー元レーン, 貼り付け先レーン)の組の列で、同じコピー元レーンが
+    /// 複数の貼り付け先へ、また同じ貼り付け先レーンへ複数のコピー元レーンが対応してもよい
+    /// (CopyManagerWindow参照。対応表に含まれないコピー元レーンのノート・フリーズは貼り付けない)。
+    /// ノート・フリーズ以外のエントリ(speed/boost/BPM/マーカー)はレーンに依存しないため、
+    /// 通常のPaste()と同じ処理でそのまま貼り付ける。
+    /// 貼り付け先レーンごとに、既存のNotes/Freezesを初期状態としたPasteLaneStateを組み立て、
+    /// mappingで割り当てられたコピー元エントリをtick順に1件ずつ試行する(衝突はconflictOptionsに
+    /// 従って解決する)。PasteLaneState.Operationsをそのまま辿ってIEditActionへ変換するため、
+    /// 既存オブジェクトの削除/短縮は必ず新規オブジェクトの配置より先に実行される。
+    /// 全体で1回のCompositeEditActionにまとめて実行する(1回の呼び出し=1Undoアクション)。
+    /// preserveProperties=falseの場合、色編集モードの色情報・コメント/警告注釈は引き継がない
+    /// (この設定は「新たに貼り付けたオブジェクト自身」にのみ適用され、衝突解決で短縮された
+    /// 既存フリーズが元々持っていた色・コメントには影響しない)。</summary>
+    public bool PasteWithLaneMapping(IReadOnlyList<(int SourceLane, int DestLane)> mapping, PasteConflictOptions conflictOptions, bool preserveProperties)
+    {
+        var entries = EditorClipboard.Entries;
+        if (entries is null || entries.Count == 0) return false;
+
+        long anchorTick = 0;
+        if (_doc.Project.PlaybackStartFrame is { } startFrame)
+        {
+            var engine = _doc.Project.CreateTimingEngine();
+            anchorTick = (long)Math.Round(engine.FrameToTick(startFrame));
+        }
+        int laneCount = _doc.CurrentTemplate.KeyCount;
+
+        var actions = new List<IEditAction>();
+        var pasted = new List<ObjectRef>();
+
+        // --- レーンに依存しないエントリ(speed/boost/BPM/マーカー)は通常のPasteと同じロジックでそのまま貼り付ける ---
+        foreach (var e in entries)
+        {
+            long tick = anchorTick + e.TickOffset;
+            if (tick < 0) continue;
+            switch (e.Kind)
+            {
+                case ObjectKind.Speed:
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Speed, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Speed, -1, tick));
+                    break;
+                case ObjectKind.Boost:
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Boost, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Boost, -1, tick));
+                    break;
+                case ObjectKind.Bpm:
+                    if (tick == 0) break; // tick0は不変条件
+                    actions.Add(new PlaceValueEventAction(ValueEventKind.Bpm, tick, e.Value));
+                    pasted.Add(new ObjectRef(ObjectKind.Bpm, -1, tick));
+                    break;
+                case ObjectKind.Marker:
+                    actions.Add(new PlaceMarkerAction(tick, e.Comment));
+                    pasted.Add(new ObjectRef(ObjectKind.Marker, -1, tick));
+                    break;
+            }
+        }
+
+        // --- コピー元レーン番号 → 貼り付け先レーン番号一覧(1対多対応) ---
+        var destLanesBySource = mapping
+            .GroupBy(m => m.SourceLane)
+            .ToDictionary(g => g.Key, g => g.Select(m => m.DestLane).Distinct().ToList());
+
+        // --- 貼り付け先レーンごとに、割り当てられたコピー元エントリを集約する ---
+        var entriesByDestLane = new Dictionary<int, List<(ClipboardEntry Entry, long Tick)>>();
+        foreach (var e in entries)
+        {
+            if (e.Kind is not (ObjectKind.Note or ObjectKind.FreezeStart)) continue;
+            if (!destLanesBySource.TryGetValue(e.Lane, out var destLanes)) continue;
+            long tick = anchorTick + e.TickOffset;
+            if (tick < 0) continue;
+            foreach (var destLane in destLanes)
+            {
+                if (destLane < 0 || destLane >= laneCount) continue;
+                if (!entriesByDestLane.TryGetValue(destLane, out var list)) entriesByDestLane[destLane] = list = [];
+                list.Add((e, tick));
+            }
+        }
+
+        foreach (var (destLane, list) in entriesByDestLane)
+        {
+            var existingLane = _doc.CurrentTab.Lanes[destLane];
+            var state = new PasteLaneState(existingLane.Notes, existingLane.Freezes);
+            var pendingSidecars = new List<(long Tick, ClipboardEntry Entry)>();
+
+            foreach (var (entry, tick) in list.OrderBy(x => x.Tick))
+            {
+                bool placed = entry.Kind == ObjectKind.Note
+                    ? state.TryPlaceNote(tick, conflictOptions)
+                    : state.TryPlaceFreeze(tick, tick + entry.DurationTicks, conflictOptions);
+                if (!placed) continue;
+
+                // 直前に積まれた操作が、今まさに配置した新規オブジェクトそのもの(必ずAddNoteOp/AddFreezeOp)
+                long resultTick = state.Operations[^1] switch
+                {
+                    AddNoteOp n => n.Tick,
+                    AddFreezeOp f => f.StartTick,
+                    _ => tick,
+                };
+                pasted.Add(new ObjectRef(entry.Kind, destLane, resultTick));
+                if (preserveProperties && (entry.ColorOverride is not null || entry.Annotation is not null))
+                    pendingSidecars.Add((resultTick, entry));
+            }
+
+            // --- 発生順の操作(削除/短縮が必ず新規配置より先)をそのままIEditActionへ変換する ---
+            foreach (var op in state.Operations)
+            {
+                switch (op)
+                {
+                    case AddNoteOp add:
+                        actions.Add(new PlaceNoteAction(destLane, add.Tick));
+                        break;
+                    case RemoveExistingNoteOp rem:
+                        actions.Add(new DeleteNoteAction(destLane, rem.Tick));
+                        break;
+                    case AddFreezeOp addF:
+                        actions.Add(new PlaceFreezeAction(destLane, addF.StartTick, addF.EndTick));
+                        break;
+                    case RemoveExistingFreezeOp remF:
+                        actions.Add(new DeleteFreezeAction(destLane, remF.StartTick));
+                        break;
+                    case TrimExistingFreezeOp trim:
+                        // 始点は変わらないため色・コメント等の付随データは自動的に有効なまま引き継がれる
+                        actions.Add(new ResizeFreezeAction(destLane, trim.Original, trim.Original.StartTick, trim.NewEndTick));
+                        break;
+                }
+            }
+
+            // --- サイドカー(色・コメント)は、削除/配置が全て終わった後にまとめて追加する
+            //     (先にDeleteFreezeAction等が実行され得るため、それより後に追加しないと消される事故を防ぐ) ---
+            foreach (var (tick, entry) in pendingSidecars)
+            {
+                var sidecar = new ClipboardEntry(entry.Kind, destLane, 0, 0, 0, "", entry.ColorOverride, entry.Annotation);
+                AddSidecarActions(actions, sidecar, destLane, tick);
+            }
+        }
+
+        if (actions.Count == 0) return false;
+
+        _doc.Execute(new CompositeEditAction(actions, "貼り付け(コピーマネージャー)"));
+        _doc.RecordStat(EditorStatKind.ObjectsPlaced, pasted.Count);
+        _doc.RecordStat(EditorStatKind.Paste);
+        _doc.Selection.Clear();
+        foreach (var r in pasted) _doc.Selection.Add(r);
+        _doc.NotifyChanged(markModified: false);
         return true;
     }
 

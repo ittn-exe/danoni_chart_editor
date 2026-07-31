@@ -44,6 +44,8 @@
                 <Separator/>
                 <!-- 2026-07-26: バグ報告時にデバッグの情報源として使える環境情報を1ファイルへ書き出す要望対応 -->
                 <MenuItem Header="環境報告作成(_R)..." Click="CreateDiagnosticsReport_Click"/>
+                <!-- 2026-07-31: バージョン情報ダイアログ -->
+                <MenuItem Header="バージョン情報(_V)..." Click="OpenAbout_Click"/>
             </MenuItem>
         </Menu>
         <Border DockPanel.Dock="Top" Height="108" Background="#F0F0F0">
@@ -175,7 +177,7 @@
                 <ColumnDefinition x:Name="RightPanelColumn" Width="280"/>
             </Grid.ColumnDefinitions>
         <Border Grid.Column="2" Background="#E8E8E8">
-            <TabControl x:Name="PropertyTabControl">
+            <TabControl x:Name="PropertyTabControl" PreviewMouseLeftButtonDown="PropertyTabControl_PreviewMouseLeftButtonDown">
                 <TabItem Header="プロジェクト">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
@@ -556,7 +558,8 @@
                 <Border x:Name="ChartPane1Border" Grid.Column="0" BorderThickness="0" BorderBrush="Transparent">
                     <ScrollViewer x:Name="ChartScrollViewer"
                                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                                  ScrollChanged="ChartScrollViewer_ScrollChanged">
+                                  ScrollChanged="ChartScrollViewer_ScrollChanged"
+                                  PreviewMouseDown="ChartScrollViewer_PreviewMouseDown">
                         <local:ChartCanvas x:Name="Canvas"/>
                     </ScrollViewer>
                 </Border>
@@ -567,7 +570,8 @@
                 <Border x:Name="ChartPane2Border" Grid.Column="3" Visibility="Collapsed" BorderThickness="0" BorderBrush="Transparent">
                     <ScrollViewer x:Name="ChartScrollViewer2"
                                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                                  ScrollChanged="ChartScrollViewer2_ScrollChanged">
+                                  ScrollChanged="ChartScrollViewer2_ScrollChanged"
+                                  PreviewMouseDown="ChartScrollViewer2_PreviewMouseDown">
                         <local:ChartCanvas x:Name="Canvas2"/>
                     </ScrollViewer>
                 </Border>

@@ -45,8 +45,19 @@ public static class EditorClipboard
 
     public static IReadOnlyList<ClipboardEntry>? Entries => _entries;
 
-    public static void Set(IReadOnlyList<ClipboardEntry> entries) => _entries = entries.Count > 0 ? entries : null;
+    /// <summary>コピー元タブのキー種ID(2026-07-31、異なるキー種間コピー〈コピーマネージャー〉の
+    /// 検出用に追加)。Entriesが無い間はnull。ノート・フリーズを1件も含まないコピー内容
+    /// (BPM/speed/boost/マーカーのみ等)であっても、コピー時点のタブのキー種IDをそのまま記録する
+    /// (対象外判定はSmartToolController側でエントリ種別を見て行う)。</summary>
+    public static string? SourceKeyTypeId { get; private set; }
+
+    public static void Set(IReadOnlyList<ClipboardEntry> entries, string sourceKeyTypeId)
+    {
+        if (entries.Count == 0) { _entries = null; SourceKeyTypeId = null; return; }
+        _entries = entries;
+        SourceKeyTypeId = sourceKeyTypeId;
+    }
 
     /// <summary>主にテスト用: クリップボードを空に戻す</summary>
-    public static void Clear() => _entries = null;
+    public static void Clear() { _entries = null; SourceKeyTypeId = null; }
 }

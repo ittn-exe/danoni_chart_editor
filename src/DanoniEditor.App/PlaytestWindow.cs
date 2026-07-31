@@ -788,20 +788,28 @@ internal sealed class PlaytestWindow : Window
 
         /// <summary>プレイテスト中の小節線・小節番号表示(2026-07-27要望対応)。譜面ビューの
         /// DrawTimeInfoLane/DrawGridAndMeasureLinesと同じ「拍子イベント列に沿って小節先頭tickを
-        /// 順に辿る」ロジックを、frameベースの画面座標(YOf相当)へ適用したもの。テンプレート内で
-        /// レーンごとにスクロール方向が混在する特殊なキー種では、先頭レーンの向きを代表として使う
-        /// (近似表示)。現在フレームの1小節前から走査を始め、画面外(dirが向かう側)へ完全に
+        /// 順に辿る」ロジックを、frameベースの画面座標(YOf相当)へ適用したもの。
+        /// 2026-08-01修正: 小節線はレーンに紐付かない全体基準の表示であるため、基準となる
+        /// ScrollDirectionは「先頭レーンの値」ではなく「全レーン中で最も多いScrollDirection」を使う
+        /// (旧実装は先頭レーンをそのまま代表にしていたため、上下でスクロール方向が混在する
+        /// 折返しキー種等で小節線がReverseに正しく追随して見えないことがあった)。
+        /// 現在フレームの1小節前から走査を始め、画面外(dirが向かう側)へ完全に
         /// 出た時点で打ち切る(安全弁としてmaxScan回で強制終了)。</summary>
         private static void DrawMeasureLines(DrawingContext dc, PlaytestWindow o, double w, double h)
         {
             if (o._template.Lanes.Count == 0) return;
-            var laneDef0 = o._template.Lanes[0];
-            bool flipped = (laneDef0.ScrollDirection == "down") ^ o._reverse;
+            string majorityDirection = o._template.Lanes
+                .GroupBy(l => l.ScrollDirection)
+                .OrderByDescending(g => g.Count())
+                .First().Key;
+            bool flipped = (majorityDirection == "down") ^ o._reverse;
             double stepY = flipped ? o._stepYBottom : o._stepYTop;
             double dir = flipped ? -1 : 1;
 
+            // 2026-08-01修正: ノート側のYOf(654行目付近)はboost_dataの倍率を反映しているのに対し、
+            // こちらは反映していなかったため、boost_dataがある譜面で小節線がノートとずれるバグを修正。
             double YOf(double frame) =>
-                stepY + (o.CumulativeSpeedDistance(frame) - o.CumulativeSpeedDistance(o._currentFrame)) * o._baseScrollSpeed * dir;
+                stepY + o.GetBoostFactor(frame) * (o.CumulativeSpeedDistance(frame) - o.CumulativeSpeedDistance(o._currentFrame)) * o._baseScrollSpeed * dir;
 
             var engine = o._doc.Project.CreateTimingEngine();
             long currentTick = (long)Math.Round(engine.FrameToTick(o._currentFrame));

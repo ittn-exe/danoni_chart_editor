@@ -760,6 +760,9 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>設定メニュー「バージョン情報」(2026-07-31)</summary>
+    private void OpenAbout_Click(object sender, RoutedEventArgs e) => new AboutWindow { Owner = this }.ShowDialog();
+
     /// <summary>キーマクロ(Ctrl+Shift+1〜9、2026-07-26要望対応)の実行。指定スロットに登録された
     /// 手順を先頭から順に実行する。未登録スロットは何もしない。</summary>
     private void RunKeyMacro(int slot)
@@ -2579,10 +2582,22 @@ public partial class MainWindow : Window
         }
 
         // --- 単一選択 ---
+        // 2026-08-01要望対応: 選択状態がある状態でオブジェクトタブが開いているとShift+A等の
+        // ショートカットが効かなくなる不具合の修正。原因は、③タブが「未表示→表示」または
+        // 「他タブ→オブジェクトタブ」へ切り替わる瞬間、WPF標準の挙動で新しく表示された
+        // ObjectFrameBox(先頭のフォーカス可能コントロール)へ自動的にフォーカスが移ってしまい、
+        // それ以降ショートカットがtextInputFocused判定で無効化されていたこと。
+        // 既にオブジェクトタブが表示されていた場合(=プロパティ編集のコミット等による再描画)は
+        // このWPFの自動フォーカス移動自体が起こらないため、ここでの判定・復帰処理は不要
+        // (毎回復帰させるとTabキーでのフィールド間移動や、Enter確定後の継続編集を妨げてしまう)。
+        bool objectTabAlreadyShowing = PropertyTabControl.SelectedIndex == ObjectTabIndex
+            && ObjectDetailPanel.Visibility == Visibility.Visible;
+
         ObjectNoSelectionText.Visibility = Visibility.Collapsed;
         ObjectMultiSelectText.Visibility = Visibility.Collapsed;
         ObjectDetailPanel.Visibility = Visibility.Visible;
         AutoSwitchToObjectTab();
+        if (!objectTabAlreadyShowing) Keyboard.Focus(Canvas); // WPFの自動フォーカス移動を打ち消し、譜面ビューへ戻す
 
         var r = sel.Single();
         _currentPropertyObject = r;
@@ -3291,10 +3306,15 @@ public partial class MainWindow : Window
     /// <summary>キーボードモード中は「再生開始ライン」(PlaybackStartFrame)がそのままカーソル位置を
     /// 兼ねている。グリッド分解能を変えた瞬間、カーソルが旧グリッドには沿っていても新グリッドには
     /// 沿っていない「半端な位置」のまま取り残されてしまうため、常に現在位置から最も近い新グリッド線へ
-    /// スナップし直す(2026-07-26要望対応、Ctrl+数字ショートカット/上部パネルのプルダウン両方から呼ぶ)。</summary>
+    /// スナップし直す(2026-07-26要望対応、Ctrl+数字ショートカット/上部パネルのプルダウン両方から呼ぶ)。
+    /// 2026-08-01不具合修正: スナップOFF中に上部パネルの分解能プルダウンだけを操作した場合、
+    /// スナップ自体はOFFのままなのにここが無条件にグリッドスナップを適用してしまい、
+    /// 「スナップをオフにしてもスナップしてしまう」不具合になっていた。Snap.Enabled=falseなら
+    /// 何もしない(ApplyGridShortcut経由の場合は呼び出し前にEnabled=trueへ変更済みのため影響なし)。</summary>
     private void SnapKeyboardCursorToNearestGrid()
     {
-        if (_document is null || !_keyboardModeActive || _document.Project.PlaybackStartFrame is not { } f) return;
+        if (_document is null || !_keyboardModeActive || !_document.Snap.Enabled
+            || _document.Project.PlaybackStartFrame is not { } f) return;
         var engine = _document.Project.CreateTimingEngine();
         long cur = (long)Math.Round(engine.FrameToTick(f));
         long step = _document.Snap.GridTicks;
@@ -3325,6 +3345,32 @@ public partial class MainWindow : Window
             ChartScrollViewer2.ViewportWidth, ChartScrollViewer2.ViewportHeight);
         Canvas2.UpdateViewport(rect);
         Minimap2.InvalidateVisual(); // 2026-07-26b: 右ペイン用ミニマップの表示範囲インジケータを最新化
+    }
+
+    /// <summary>2026-08-01要望対応: 譜面ビュー内でもスクロールバー等、ChartCanvas自身が
+    /// マウスイベントを受け取らない領域(ScrollViewerの既定テンプレートが処理する部分)をクリックすると、
+    /// ChartCanvas.OnMouseXXXButtonDownのFocus()呼び出しが発生せず、以前フォーカスを持っていた
+    /// 他コントロール(ツールバーのテキストボックス等)にフォーカスが残ったままになり、結果として
+    /// ショートカットキーがtextInputFocused判定で無効化されてしまう不具合があった。
+    /// ChartMinimap.RestoreFocusと同様に、ScrollViewer内でのクリックをPreviewMouseDownで検知し、
+    /// 対応するChartCanvasへ明示的にフォーカスを戻す。</summary>
+    private void ChartScrollViewer_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas);
+
+    /// <summary>右ペイン(Canvas2)用。ChartScrollViewer_PreviewMouseDown参照。</summary>
+    private void ChartScrollViewer2_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas2);
+
+    /// <summary>2026-08-01要望対応: 右パネル(PropertyTabControl)のタブをマウスクリックで切り替えると、
+    /// WPF標準の挙動により新しく表示されたタブ内の先頭フォーカス可能コントロール(TextBox等)へ
+    /// フォーカスが移ってしまい、以降ショートカットキーが譜面ビューに届かなくなる不具合があった。
+    /// マウスでタブヘッダーをクリックした場合のみ(キーボード操作によるタブ切替やコード側での
+    /// SelectedIndex変更は対象外)、選択切替の処理(WPFの既定フォーカス移動を含む)が完了した後に
+    /// Dispatcher経由でChartCanvasへフォーカスを戻す(ChartScrollViewer_PreviewMouseDownと同じ
+    /// Keyboard.Focus復帰パターン。ただしこちらはタブ切替直後のWPF既定フォーカス移動と競合するため、
+    /// 同一クリックの入力処理が全て終わった後(DispatcherPriority.Input)まで遅延させる必要がある)。</summary>
+    private void PropertyTabControl_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindTabItemAncestor(e.OriginalSource as DependencyObject) is null) return;
+        Dispatcher.BeginInvoke(new Action(() => Keyboard.Focus(Canvas)), DispatcherPriority.Input);
     }
 
     // =====================================================================
@@ -3581,7 +3627,7 @@ public partial class MainWindow : Window
                 _controller?.CopySelection();
                 return true;
             case ShortcutId.PasteSelection:
-                if (_controller is not null && _controller.Paste()) InvalidateChartViews();
+                ExecutePaste();
                 return true;
             // --- 2026-07-21: 全選択・選択解除(仕様書13章TBD) ---
             case ShortcutId.SelectAllTargets:
@@ -3624,6 +3670,33 @@ public partial class MainWindow : Window
             default:
                 return false;
         }
+    }
+
+    /// <summary>Ctrl+V(貼り付け)の実処理(2026-07-31)。コピー元タブと現在のタブでキー種が異なり、
+    /// かつコピー内容にノート・フリーズが含まれる場合はコピーマネージャー(CopyManagerWindow)を
+    /// 表示してレーン対応を指定させる(キャンセル可)。それ以外は従来通り即座に貼り付ける。</summary>
+    private void ExecutePaste()
+    {
+        if (_document is null || _controller is null) return;
+
+        if (_controller.ClipboardNeedsLaneMapping())
+        {
+            CopyManagerWindow win;
+            try
+            {
+                win = new CopyManagerWindow(_document, _controller, _appSettings) { Owner = this };
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"コピーマネージャーを開けませんでした: {ex.Message}", "コピーマネージャー",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            if (win.ShowDialog() == true && win.Pasted) InvalidateChartViews();
+            return;
+        }
+
+        if (_controller.Paste()) InvalidateChartViews();
     }
 
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)

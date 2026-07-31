@@ -1332,6 +1332,7 @@ public sealed class CompositeEditAction(IReadOnlyList<IEditAction> actions, stri
 public sealed class ApplyLaneSwapMacroAction(IReadOnlyList<int> laneMapping, string macroName) : IEditAction
 {
     private List<LaneNotes>? _before;
+    private Dictionary<int, int>? _oldToNewLane;
 
     public string Label => $"マクロ適用: {macroName}";
 
@@ -1340,12 +1341,17 @@ public sealed class ApplyLaneSwapMacroAction(IReadOnlyList<int> laneMapping, str
         var lanes = doc.CurrentTab.Lanes;
         var snapshot = new List<LaneNotes>(lanes);
         _before = snapshot;
+
+        var oldToNew = new Dictionary<int, int>();
         for (int i = 0; i < lanes.Count && i < laneMapping.Count; i++)
         {
             int from = laneMapping[i];
             if (from < 0 || from >= snapshot.Count) continue;
             lanes[i] = snapshot[from];
+            oldToNew[from] = i;
         }
+        _oldToNewLane = oldToNew;
+        RemapSelection(doc, oldToNew);
     }
 
     public void Undo(EditorDocument doc)
@@ -1354,6 +1360,25 @@ public sealed class ApplyLaneSwapMacroAction(IReadOnlyList<int> laneMapping, str
         var lanes = doc.CurrentTab.Lanes;
         for (int i = 0; i < lanes.Count && i < _before.Count; i++)
             lanes[i] = _before[i];
+
+        if (_oldToNewLane is not null)
+        {
+            var newToOld = _oldToNewLane.ToDictionary(kv => kv.Value, kv => kv.Key);
+            RemapSelection(doc, newToOld);
+        }
+    }
+
+    /// <summary>選択中のObjectRefのLaneを、指定されたマッピング(旧Lane→新Lane)に従って更新する。
+    /// マッピングに含まれないLaneの選択はそのまま維持する(2026-08-01: マクロでレーンを入れ替えた後も
+    /// 選択範囲表示が移動元の位置に表示されっぱなしになる不具合の修正)。</summary>
+    private static void RemapSelection(EditorDocument doc, IReadOnlyDictionary<int, int> laneRemap)
+    {
+        if (doc.Selection.Count == 0) return;
+        var updated = doc.Selection
+            .Select(r => laneRemap.TryGetValue(r.Lane, out var newLane) ? r with { Lane = newLane } : r)
+            .ToList();
+        doc.Selection.Clear();
+        foreach (var r in updated) doc.Selection.Add(r);
     }
 }
 
@@ -1372,6 +1397,7 @@ public sealed class ApplyLaneSwapMacroRangeAction(
     : IEditAction
 {
     private List<LaneNotes>? _before;
+    private List<(int FromLane, long Tick, int ToLane)>? _movedObjects;
 
     public string Label => $"マクロ適用(範囲選択): {macroName}";
 
@@ -1387,12 +1413,20 @@ public sealed class ApplyLaneSwapMacroRangeAction(
         for (int i = 0; i < snapshot.Count; i++)
             SplitByRange(snapshot[i], lo, hi, includeStraddlingFreezes, out inRange[i], out outRange[i]);
 
+        // 2026-08-01: 範囲内で実際に移動する(移動元レーン,tick,移動先レーン)を記録し、
+        // 選択範囲表示(ObjectRef)を移動先へ追従させるのに使う(選択追従バグの修正)。
+        var movedObjects = new List<(int FromLane, long Tick, int ToLane)>();
         for (int i = 0; i < lanes.Count && i < laneMapping.Count; i++)
         {
             int from = laneMapping[i];
             if (from < 0 || from >= inRange.Length) continue;
             lanes[i] = MergeLaneNotes(outRange[i], inRange[from]);
+            if (from == i) continue; // 同一レーンへの入替(移動なし)は対象外
+            foreach (var t in inRange[from].Notes) movedObjects.Add((from, t, i));
+            foreach (var f in inRange[from].Freezes) movedObjects.Add((from, f.StartTick, i));
         }
+        _movedObjects = movedObjects;
+        RemapSelection(doc, movedObjects, forward: true);
     }
 
     public void Undo(EditorDocument doc)
@@ -1401,6 +1435,26 @@ public sealed class ApplyLaneSwapMacroRangeAction(
         var lanes = doc.CurrentTab.Lanes;
         for (int i = 0; i < lanes.Count && i < _before.Count; i++)
             lanes[i] = _before[i];
+
+        if (_movedObjects is not null) RemapSelection(doc, _movedObjects, forward: false);
+    }
+
+    /// <summary>選択中のObjectRefのうち、実際に移動した(Lane,Tick)に一致するものをLaneのみ
+    /// 付け替える(Tick・種別は不変のため、ここではLaneの対応表だけで足りる)。</summary>
+    private static void RemapSelection(EditorDocument doc, List<(int FromLane, long Tick, int ToLane)> moved, bool forward)
+    {
+        if (doc.Selection.Count == 0 || moved.Count == 0) return;
+        var map = new Dictionary<(int Lane, long Tick), int>();
+        foreach (var m in moved)
+        {
+            var key = forward ? (m.FromLane, m.Tick) : (m.ToLane, m.Tick);
+            map[key] = forward ? m.ToLane : m.FromLane;
+        }
+        var updated = doc.Selection
+            .Select(r => map.TryGetValue((r.Lane, r.Tick), out var newLane) ? r with { Lane = newLane } : r)
+            .ToList();
+        doc.Selection.Clear();
+        foreach (var r in updated) doc.Selection.Add(r);
     }
 
     private static LaneNotes CloneLaneNotes(LaneNotes source) => new()

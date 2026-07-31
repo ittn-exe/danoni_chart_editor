@@ -56,9 +56,52 @@ public sealed class KeyboardModeController
     {
         var engine = _doc.Project.CreateTimingEngine();
         long cur = CurrentCursorTick(engine);
-        long step = _doc.Snap.GridTicks;
-        long next = forward ? cur + step : Math.Max(0, cur - step);
+        long next;
+        if (_doc.Snap.Enabled)
+        {
+            long step = _doc.Snap.GridTicks;
+            long gridNext = forward ? cur + step : Math.Max(0, cur - step);
+            // 2026-08-01要望対応: 現在位置と移動先グリッドの間に、グリッド上には無いノート
+            // (例: 12分で入力後に16分グリッドへ戻した場合等)が存在する場合は、グリッド線ではなく
+            // そのノートのタイミングへ移動する(グリッド外ノートへ辿り着く手段が無かった不便さの解消)。
+            next = FindOffGridNoteBetween(cur, gridNext, forward) ?? gridNext;
+        }
+        else
+        {
+            // 2026-08-01不具合修正: スナップOFF時はグリッドという概念が無意味なため、
+            // マウス操作時のOFF時挙動(SmartToolController.SnappedTickAt)に合わせて
+            // 最寄りの整数フレーム単位で1段階だけ前後させる。
+            next = StepByOneFrame(engine, cur, forward);
+        }
         ApplyExplicitCursorMove(engine, next);
+    }
+
+    /// <summary>MoveCursor専用(2026-08-01): fromExclusive〜toExclusiveの開区間(順不同で渡してよい)に
+    /// ある全レーンの通常ノート/フリーズ端点のうち、移動方向(forward)側から見て最も近いtickを返す。
+    /// 区間内に見つかった時点でそれは必然的にグリッド外ノート(区間内には他のグリッド線が存在しない
+    /// 1グリッド分の幅のため)。無ければnull(=通常通りグリッド線へ移動)。</summary>
+    private long? FindOffGridNoteBetween(long fromExclusive, long toExclusive, bool forward)
+    {
+        long lo = Math.Min(fromExclusive, toExclusive);
+        long hi = Math.Max(fromExclusive, toExclusive);
+        long? best = null;
+
+        void Consider(long t)
+        {
+            if (t <= lo || t >= hi) return;
+            if (best is null || (forward ? t < best.Value : t > best.Value)) best = t;
+        }
+
+        foreach (var lane in _doc.CurrentTab.Lanes)
+        {
+            foreach (var t in lane.Notes) Consider(t);
+            foreach (var f in lane.Freezes)
+            {
+                Consider(f.StartTick);
+                Consider(f.EndTick);
+            }
+        }
+        return best;
     }
 
     /// <summary>カーソルを小節単位で移動する(2026-07-21追加: →/Ctrl+←→/Shift+Ctrl+←→ショートカット)。
@@ -206,8 +249,23 @@ public sealed class KeyboardModeController
     private void AdvanceCursorAfterInput()
     {
         var engine = _doc.Project.CreateTimingEngine();
-        long next = CurrentCursorTick(engine) + _doc.Snap.GridTicks;
+        long cur = CurrentCursorTick(engine);
+        // 2026-08-01不具合修正: MoveCursorと同様、スナップOFF時はGridTicks固定ではなく
+        // 最寄りの整数フレーム単位で進める。
+        long next = _doc.Snap.Enabled ? cur + _doc.Snap.GridTicks : StepByOneFrame(engine, cur, forward: true);
         _doc.Project.PlaybackStartFrame = engine.TickToFrame(next);
         _doc.NotifyChanged(markModified: false);
+    }
+
+    /// <summary>スナップOFF時のカーソル1段階移動量。グリッドという概念が意味を持たないため、
+    /// マウス操作時のOFF時挙動(SmartToolController.SnappedTickAt)に合わせ、最寄りの整数フレーム単位で
+    /// 前後させる(2026-08-01: スナップをオフにしてもキーボードモードのカーソル移動だけはグリッド単位の
+    /// ままだった不具合の修正)。</summary>
+    private static long StepByOneFrame(TimingEngine engine, long currentTick, bool forward)
+    {
+        double frame = Math.Round(engine.TickToFrame(currentTick));
+        double nextFrame = forward ? frame + 1 : frame - 1;
+        long nextTick = (long)Math.Round(engine.FrameToTick(nextFrame));
+        return Math.Max(0, nextTick);
     }
 }

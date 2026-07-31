@@ -1788,8 +1788,11 @@ public sealed class ChartCanvas : FrameworkElement
     /// その位置へ描き直す方式(ChartCanvas全体が1枚のCanvasで、ScrollViewerが外側にあるため)。
     /// </summary>
     /// <summary>2026-07-26: レーンラベル欄のノート数表示(要望対応)。マウスモード中はラベルの次の行に、
-    /// キーボードモード中(既に2行使用中)はレーンラベル(1行目)をノート数表示に置き換える。</summary>
-    private static readonly Brush NoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0xD5, 0x4F)));
+    /// キーボードモード中(既に2行使用中)はレーンラベル(1行目)をノート数表示に置き換える。
+    /// 2026-08-01要望対応: 「通常ノート数/フリーズ数」の形で表示し、通常ノートをオレンジ、
+    /// フリーズを青、区切りのスラッシュを白で色分けする(DrawNoteCountTextを参照)。</summary>
+    private static readonly Brush NormalNoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0x98, 0x00)));
+    private static readonly Brush FreezeNoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x42, 0xA5, 0xF5)));
 
     private void DrawLaneLabels(DrawingContext dc, ChartLayout layout, Rect viewport)
     {
@@ -1806,12 +1809,16 @@ public sealed class ChartCanvas : FrameworkElement
 
         foreach (var col in layout.Columns)
         {
+            int normalCount = 0, freezeCount = 0;
             string? noteCountText = null;
             if (col.Kind == ColumnKind.Note && ShowLaneNoteCount)
             {
                 var lane = tab.Lanes[col.NoteLaneIndex];
-                int count = lane.Notes.Count + lane.Freezes.Count;
-                noteCountText = $"{count}"; // 2026-07-27要望対応: 「×」を付けず数字のみ表示
+                normalCount = lane.Notes.Count;
+                freezeCount = lane.Freezes.Count;
+                // 2026-08-01要望対応: 「通常/フリーズ」を合算せず分けて表示する。実際の色分け(オレンジ/青、
+                // スラッシュは白)はDrawNoteCountTextが行うため、ここでの文字列は表示有無の判定用。
+                noteCountText = $"{normalCount}/{freezeCount}";
             }
 
             string? line1 = col.Kind switch
@@ -1829,7 +1836,10 @@ public sealed class ChartCanvas : FrameworkElement
             if (string.IsNullOrEmpty(line1)) continue;
 
             bool line1IsNoteCount = col.Kind == ColumnKind.Note && KeyboardModeActive && ShowLaneNoteCount;
-            DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, line1IsNoteCount ? NoteCountBrush : Brushes.White);
+            if (line1IsNoteCount)
+                DrawNoteCountText(dc, col.CenterX, barTop + 3, normalCount, freezeCount, fontSize);
+            else
+                DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, Brushes.White);
 
             if (col.Kind == ColumnKind.Note && KeyboardModeActive)
             {
@@ -1839,7 +1849,7 @@ public sealed class ChartCanvas : FrameworkElement
             }
             else if (col.Kind == ColumnKind.Note && ShowLaneNoteCount && noteCountText is not null)
             {
-                DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, noteCountText, fontSize, NoteCountBrush);
+                DrawNoteCountText(dc, col.CenterX, barTop + 3 + lineH, normalCount, freezeCount, fontSize);
             }
         }
     }
@@ -1848,6 +1858,22 @@ public sealed class ChartCanvas : FrameworkElement
     {
         var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight, Typeface, fontSize, brush, 1.0);
+        dc.DrawText(ft, new Point(centerX - ft.Width / 2, top));
+    }
+
+    /// <summary>2026-08-01要望対応: レーンのノート数を「通常ノート数/フリーズ数」の形式で、
+    /// 通常ノートをオレンジ(NormalNoteCountBrush)、フリーズを青(FreezeNoteCountBrush)、
+    /// 区切りのスラッシュを白で色分け表示する。1つのFormattedTextに範囲指定でブラシを
+    /// 適用する(SetForegroundBrush)ことで、DrawText1回の呼び出しのまま3色を混在させている。</summary>
+    private static void DrawNoteCountText(DrawingContext dc, double centerX, double top, int normalCount, int freezeCount, double fontSize)
+    {
+        string normalText = normalCount.ToString();
+        string freezeText = freezeCount.ToString();
+        string text = $"{normalText}/{freezeText}";
+        var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight, Typeface, fontSize, Brushes.White, 1.0);
+        ft.SetForegroundBrush(NormalNoteCountBrush, 0, normalText.Length);
+        ft.SetForegroundBrush(FreezeNoteCountBrush, normalText.Length + 1, freezeText.Length);
         dc.DrawText(ft, new Point(centerX - ft.Width / 2, top));
     }
 
