@@ -17,10 +17,16 @@ public static class ColorDefaults
     /// <summary>
     /// レーンの矢印本体の既定色(hex)を解決する。tab自身のSetColorOverrideが無ければ
     /// 1タブ目(=共通値の実体、仕様書6.4.2)へ、それも無ければDefaultLaneColorsへフォールバックする。
+    /// referenceTabs省略時はproject.Tabs(全タブ、編集画面表示用の既定挙動)を「1タブ目」の基準にする。
+    /// 2026-08-02: DosExporterはdosロック(除外)後のタブ一覧を渡すことで、書き出されるdos.txt内の
+    /// 「1タブ目」(setColor、サフィックス無し)と解決される色を一致させる(除外されたタブが
+    /// 実プロジェクト先頭にあってもそれを無視する必要があるため)。
     /// </summary>
-    public static string ResolveSetColorHex(DifficultyTab tab, ChartProject project, int colorGroup)
+    public static string ResolveSetColorHex(
+        DifficultyTab tab, ChartProject project, int colorGroup, IReadOnlyList<DifficultyTab>? referenceTabs = null)
     {
-        var overrides = tab.SetColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].SetColorOverride : null);
+        var refTabs = referenceTabs ?? project.Tabs;
+        var overrides = tab.SetColorOverride ?? (refTabs.Count > 0 ? refTabs[0].SetColorOverride : null);
         if (overrides is not null && colorGroup >= 0 && colorGroup < overrides.Count)
             return overrides[colorGroup];
         return DefaultLaneColors[colorGroup % DefaultLaneColors.Length];
@@ -36,12 +42,13 @@ public static class ColorDefaults
     /// フォールバックする(ChartCanvas.FrzColorsと同じ、ユーザー向けに開示済みの簡略化)。
     /// </summary>
     public static (string NormalHex, string BarHex) ResolveFrzColorsHex(
-        DifficultyTab tab, ChartProject project, string arrowDefaultHex)
+        DifficultyTab tab, ChartProject project, string arrowDefaultHex, IReadOnlyList<DifficultyTab>? referenceTabs = null)
     {
         bool defaultFrzColorUse = project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
         if (defaultFrzColorUse) return (arrowDefaultHex, arrowDefaultHex);
 
-        var frz = tab.FrzColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].FrzColorOverride : null);
+        var refTabs = referenceTabs ?? project.Tabs;
+        var frz = tab.FrzColorOverride ?? (refTabs.Count > 0 ? refTabs[0].FrzColorOverride : null);
         if (frz is null) return (arrowDefaultHex, arrowDefaultHex);
 
         string? noteHex = frz.Count > 0 ? frz[0] : null;
@@ -60,9 +67,10 @@ public static class ColorDefaults
     /// 値が無いスロットは通常時(Normal/NormalBar)の解決値へフォールバックする。
     /// </summary>
     public static (string HitHex, string HitBarHex) ResolveFrzHitColorsHex(
-        DifficultyTab tab, ChartProject project, string normalHex, string normalBarHex)
+        DifficultyTab tab, ChartProject project, string normalHex, string normalBarHex, IReadOnlyList<DifficultyTab>? referenceTabs = null)
     {
-        var frz = tab.FrzColorOverride ?? (project.Tabs.Count > 0 ? project.Tabs[0].FrzColorOverride : null);
+        var refTabs = referenceTabs ?? project.Tabs;
+        var frz = tab.FrzColorOverride ?? (refTabs.Count > 0 ? refTabs[0].FrzColorOverride : null);
         if (frz is null) return (normalHex, normalBarHex);
 
         string? hitHex = frz.Count > 2 ? frz[2] : null;

@@ -37,6 +37,15 @@ public sealed class DosExporter
         if (project.Tabs.Count == 0)
             throw new InvalidOperationException("難易度タブが1つもありません");
 
+        // 2026-08-02要望対応(dosロック): ExcludeFromDosExport=trueのタブはdifData一覧・
+        // データブロックのどちらからも完全に除外する。並び順=出力順=サフィックス採番順という
+        // 前提(ChartProject.Tabsのコメント参照)は変わらないため、除外後のリストに対して
+        // そのまま連番を振り直せば自動的に詰まった採番になる(以降このメソッド内では
+        // project.Tabsではなくこのtabsを参照する)。
+        var tabs = project.Tabs.Where(t => !t.ExcludeFromDosExport).ToList();
+        if (tabs.Count == 0)
+            throw new InvalidOperationException("dosロックされていないタブが1つもありません(全タブがdosロック中です)");
+
         var engine = project.CreateTimingEngine();
         // 2026-07-19f: dos.txtのフレーム値は「内部フレーム(StartNumber基準)+blankFrame」で出力する
         // (ユーザー指定)。内部軸はblankFrameを含まないため、本体のゲーム軸(曲がblankFrame遅れで
@@ -58,7 +67,7 @@ public sealed class DosExporter
 
         // 2026-07-26: GaugeManualEditAfterExportがONの間はdifData内のborder/recovery/damage/initLife%
         // (DifDataExtra)も出力しない(ゲージ関連は一切エディタが触れず、ユーザーが後から手で追記する運用のため)。
-        var difData = string.Join("$", project.Tabs.Select(t =>
+        var difData = string.Join("$", tabs.Select(t =>
             $"{t.KeyTypeId},{t.DifficultyName},{Num(t.InitialSpeed)}" +
             (project.GaugeManualEditAfterExport || string.IsNullOrEmpty(t.DifDataExtra) ? "" : $",{t.DifDataExtra}")));
         AppendParam(sb, "difData", difData);
@@ -68,14 +77,14 @@ public sealed class DosExporter
         // (本体側の既定フリーズアロー色セットが優先され、frzColorの値が無視される仕様のため。
         // UI側でも入力を無効化・FrzColorOverrideをクリアしているが、念のためexport側でも二重に抑止する)。
         bool defaultFrzColorUse = project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
-        var firstTab = project.Tabs[0];
+        var firstTab = tabs[0];
         if (firstTab.SetColorOverride is { Count: > 0 } sc)
             AppendParam(sb, "setColor", string.Join(",", sc));
         if (!defaultFrzColorUse && firstTab.FrzColorOverride is { Count: > 0 } fc)
             AppendParam(sb, "frzColor", string.Join(",", fc));
-        for (int i = 1; i < project.Tabs.Count; i++)
+        for (int i = 1; i < tabs.Count; i++)
         {
-            var t = project.Tabs[i];
+            var t = tabs[i];
             var suffix = (i + 1).ToString();
             if (t.SetColorOverride is { Count: > 0 } sco)
                 AppendParam(sb, $"setColor{suffix}", string.Join(",", sco));
@@ -92,14 +101,14 @@ public sealed class DosExporter
         foreach (var (key, value) in project.ExtraHeaders)
             AppendParam(sb, key, value);
 
-        AppendGaugeHeaders(sb, project);
+        AppendGaugeHeaders(sb, project, tabs);
 
         sb.AppendLine();
 
         // --- 譜面本体(タブごと。サフィックス: 先頭=無し、2番目以降=2,3...) ---
-        for (int tabIndex = 0; tabIndex < project.Tabs.Count; tabIndex++)
+        for (int tabIndex = 0; tabIndex < tabs.Count; tabIndex++)
         {
-            var tab = project.Tabs[tabIndex];
+            var tab = tabs[tabIndex];
             var template = _templateResolver(tab.KeyTypeId);
             var suffix = tabIndex == 0 ? "" : (tabIndex + 1).ToString();
 
@@ -148,7 +157,7 @@ public sealed class DosExporter
                     // 連続する同色区間は状態が変化しないため自動的に省略され、着色→無着色→着色のような
                     // 区間には「基本色へ戻す」行が自動的に挿入される。
                     var overrideByTick = data.ColorOverrides.ToDictionary(c => c.Tick);
-                    string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, lane.ColorGroup);
+                    string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, lane.ColorGroup, tabs);
 
                     void ScanTrack(IEnumerable<long> ticks, string defaultHex, string targetSuffix,
                         Func<NColorEntry, string?> pick)
@@ -179,9 +188,9 @@ public sealed class DosExporter
                     if (data.Freezes.Count > 0)
                     {
                         var (normalDefault, barDefault) =
-                            ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault);
+                            ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault, tabs);
                         var (hitDefault, hitBarDefault) =
-                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault);
+                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault, tabs);
                         string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "frzShadowColor");
                         var freezeStartTicks = data.Freezes.Select(f => f.StartTick);
                         ScanTrack(freezeStartTicks, normalDefault, "Normal", e => e.Color);
@@ -329,8 +338,10 @@ public sealed class DosExporter
     /// そのまま出力し、GaugeParams/DifficultyTab.GaugeによるUI組み立てロジックは完全に無視する
     /// (ユーザー確定仕様: 直接入力が常にUI設定より優先)。
     /// 2026-07-26: GaugeManualEditAfterExportがONの間は、直接入力モードを含めゲージ関連の出力を
-    /// 一切行わない(何も書き出さず、ユーザーが書き出し後のdos.txtへ自分で追記する運用のため)。</summary>
-    private static void AppendGaugeHeaders(StringBuilder sb, ChartProject project)
+    /// 一切行わない(何も書き出さず、ユーザーが書き出し後のdos.txtへ自分で追記する運用のため)。
+    /// 2026-08-02: tabsはdosロック(ExcludeFromDosExport)されたタブを除外・詰め直し済みのリストを
+    /// 呼び出し元(Export)から受け取る(サフィックス採番をこの除外後の並びと一致させるため)。</summary>
+    private static void AppendGaugeHeaders(StringBuilder sb, ChartProject project, List<DifficultyTab> tabs)
     {
         if (project.GaugeManualEditAfterExport) return;
 
@@ -343,9 +354,9 @@ public sealed class DosExporter
             return;
         }
 
-        for (int i = 0; i < project.Tabs.Count; i++)
+        for (int i = 0; i < tabs.Count; i++)
         {
-            var gauge = project.Tabs[i].Gauge;
+            var gauge = tabs[i].Gauge;
             if (gauge is null) continue;
             var suffix = i == 0 ? "" : (i + 1).ToString();
 
@@ -374,7 +385,7 @@ public sealed class DosExporter
         foreach (var nameDef in project.GaugeNames)
         {
             var name = nameDef.Name;
-            var perTabCsv = project.Tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "");
+            var perTabCsv = tabs.Select(t => t.GaugeParams is { } gp && gp.TryGetValue(name, out var csv) ? csv : "");
             var values = perTabCsv.ToList();
             if (values.All(string.IsNullOrEmpty)) continue;
             AppendParam(sb, $"gauge{name}", string.Join("$", values));

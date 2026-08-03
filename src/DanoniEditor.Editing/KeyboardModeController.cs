@@ -60,7 +60,21 @@ public sealed class KeyboardModeController
         if (_doc.Snap.Enabled)
         {
             long step = _doc.Snap.GridTicks;
-            long gridNext = forward ? cur + step : Math.Max(0, cur - step);
+            // 2026-08-02不具合修正: 「cur ± step」の相対計算だと、カーソルが(オフグリッドノートへの
+            // 着地等により)グリッド外にある場合、以降何回移動してもグリッド外のズレがそのまま引き継がれ
+            // 続けてグリッド線へ二度と戻れなくなる。実際に存在する直近のグリッド線を絶対値で求める
+            // (curがちょうどグリッド上にある場合は従来通りcur±stepと一致する)。
+            long gridNext;
+            if (forward)
+            {
+                long floorMul = (cur / step) * step;
+                gridNext = floorMul + step;
+            }
+            else
+            {
+                long ceilMul = ((cur + step - 1) / step) * step;
+                gridNext = Math.Max(0, ceilMul - step);
+            }
             // 2026-08-01要望対応: 現在位置と移動先グリッドの間に、グリッド上には無いノート
             // (例: 12分で入力後に16分グリッドへ戻した場合等)が存在する場合は、グリッド線ではなく
             // そのノートのタイミングへ移動する(グリッド外ノートへ辿り着く手段が無かった不便さの解消)。

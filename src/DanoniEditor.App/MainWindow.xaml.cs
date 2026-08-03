@@ -233,6 +233,7 @@ public partial class MainWindow : Window
         ShowNoteImagesToggle.IsChecked = _appSettings.ShowNoteImages;
         ShowHighlightGridToggle.IsChecked = _appSettings.ShowHighlightGrid;
         NoteCountToggle.IsChecked = _appSettings.ShowLaneNoteCount; // 2026-07-26
+        LaneNameLabelToggle.IsChecked = _appSettings.ShowLaneNameLabel; // 2026-08-02
         ApplyDisplaySettingsToCanvas();
         // 2026-07-26要望対応: 譜面ビュー分割表示(既定OFF、エディタ全体で共通の設定)
         SplitViewToggle.IsChecked = _appSettings.SplitViewEnabled;
@@ -396,7 +397,8 @@ public partial class MainWindow : Window
     private void ApplyDisplaySettingsToCanvas()
     {
         var color = (Color)ColorConverter.ConvertFromString(_appSettings.HighlightLineColorHex)!;
-        Canvas.ApplyDisplaySettings(_appSettings.ShowNoteImages, _appSettings.ShowHighlightGrid, _appSettings.HighlightLineWidth, color, _appSettings.ExcludeFreezeEndFromHighlight);
+        Canvas.ApplyDisplaySettings(_appSettings.ShowNoteImages, _appSettings.ShowHighlightGrid, _appSettings.HighlightLineWidth, color,
+            _appSettings.ExcludeFreezeEndFromHighlight, _appSettings.UseNoteColorForHighlight);
         var startColor = (Color)ColorConverter.ConvertFromString(_appSettings.PlaybackStartLineColorHex)!;
         Canvas.ApplyPlaybackStartLineSettings(_appSettings.PlaybackStartLineWidth, startColor);
         // 2026-07-25b: カーソルライン(マウスホバー中の最寄りスナップ位置)の太さ・色
@@ -417,6 +419,7 @@ public partial class MainWindow : Window
         Canvas.MarkerFontSize = _appSettings.MarkerFontSize;         // 2026-07-26
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
         Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-07-26
+        Canvas.ShowLaneNameLabel = _appSettings.ShowLaneNameLabel; // 2026-08-02
         InvalidateChartViews();
     }
 
@@ -431,6 +434,16 @@ public partial class MainWindow : Window
     {
         if (!_initialized) return;
         _appSettings.ShowLaneNoteCount = NoteCountToggle.IsChecked == true;
+        ApplyDisplaySettingsToCanvas();
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>「レーン名表示」トグル(2026-08-02要望対応)。レーンラベル欄の1行目表示を
+    /// キー割当(既定)⇔レーン名(LaneId)で切り替える。他のトグルとの排他制約は無い。</summary>
+    private void LaneNameLabelToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _appSettings.ShowLaneNameLabel = LaneNameLabelToggle.IsChecked == true;
         ApplyDisplaySettingsToCanvas();
         _appSettings.Save(AppPaths.SettingsFilePath);
     }
@@ -469,7 +482,11 @@ public partial class MainWindow : Window
     private void DisplaySettings_Click(object sender, RoutedEventArgs e) => OpenPreferences(0);
 
     /// <summary>右パネル「プロジェクト」タブ・「オブジェクト」タブ双方の「ゲージ設定...」ボタン共通
-    /// (customGauge/gaugeXXX/difData専用ウィンドウ、2026-07-30よりオブジェクトタブにも導線追加)</summary>
+    /// (customGauge/gaugeXXX/difData専用ウィンドウ、2026-07-30よりオブジェクトタブにも導線追加)。
+    /// 2026-08-02要望対応: モーダル(ShowDialog)だと、そこから開くゲージ計算機の結果を見ながら
+    /// 譜面ビュー等の他ウィンドウを参照できず不便なため、WordLaneManagerWindowと同じパターンで
+    /// モードレス化した(フィールドで保持しActivate()により多重起動を防止、Closedで保存有無を反映)。</summary>
+    private GaugeEditorWindow? _gaugeEditorWindow;
     private void OpenGaugeEditor_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null)
@@ -477,9 +494,19 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        if (_gaugeEditorWindow is { IsLoaded: true })
+        {
+            _gaugeEditorWindow.Activate();
+            return;
+        }
         var win = new GaugeEditorWindow(_document.Project) { Owner = this };
-        if (win.ShowDialog() == true && win.Saved)
-            _document.NotifyChanged();
+        win.Closed += (_, _) =>
+        {
+            if (win.Saved) _document.NotifyChanged();
+            _gaugeEditorWindow = null;
+        };
+        _gaugeEditorWindow = win;
+        win.Show();
     }
 
     /// <summary>歌詞レーンの管理ウィンドウを開く(2026-07-23、TBD 4)。モードレスなので開いたまま
@@ -1006,6 +1033,7 @@ public partial class MainWindow : Window
 
         bool autoEstimate;
         double defaultBpm;
+        (double StartNumber, IReadOnlyList<BpmEvent> BpmEvents)? timingOverride = null;
         if (addingToExistingTab)
         {
             autoEstimate = false;
@@ -1013,18 +1041,21 @@ public partial class MainWindow : Window
         }
         else
         {
-            autoEstimate = MessageBox.Show(this,
-                "タイミング情報(de_*/es_*)が見つからなかった場合、ノートの分布からBPMを自動推定してみますか?\n" +
-                "(推定できなければ既定BPM=120・4/4拍子を仮定します)",
-                "BPM自動推定", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            // 2026-08-02要望対応: 新規プロジェクト作成時のみ、BPMを自動検出/手動入力のどちらにするか
+            // 冒頭で選ばせる。手動入力ならDosImportOptions.TimingOverrideへ渡し最優先で採用させる。
+            var choice = DosBpmSetupDialog.Ask(this, _appSettings.DefaultBpm);
+            if (choice is null) return; // キャンセル
+            autoEstimate = choice.Value.AutoEstimate;
             defaultBpm = _appSettings.DefaultBpm; // 環境設定(仕様書15.2、2026-07-19b)
+            if (choice.Value.ManualBpm is { } manualBpm)
+                timingOverride = (StartNumber: 0, BpmEvents: (IReadOnlyList<BpmEvent>)[new BpmEvent(0, manualBpm)]);
         }
 
         try
         {
             var text = File.ReadAllText(path);
             var importer = new DosImporter(_templates.Get);
-            var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = defaultBpm };
+            var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = defaultBpm, TimingOverride = timingOverride };
             var result = importer.Import(text, options);
 
             int addedTabCount = result.Project.Tabs.Count;
@@ -1203,7 +1234,25 @@ public partial class MainWindow : Window
             _selectionSubscribedDoc = doc;
         }
 
+        // 2026-08-02要望対応: スナップ分解能をプロジェクトファイルへ永続化し、次回オープン時に
+        // 前回値を復元する(未設定の旧プロジェクトファイルは既定の16分にフォールバック)。
+        // ここでコンボの選択値を書き換えてから、直後のApplySnapToDocumentでdoc.Snap側へ反映させる。
+        SnapDivisionCombo.SelectedItem = doc.Project.SnapDivision ?? 16;
         ApplySnapToDocument();
+
+        // 2026-08-02要望対応: 再生音量(目視テスト・プレイテスト共通)をプロジェクトファイルへ
+        // 永続化し、次回オープン時に前回値を復元する(音源によって適正音量が異なるため)。
+        // 未設定の旧プロジェクトファイルはAppSettings.PlaybackVolume(エディタ全体の既定値)へ
+        // フォールバックする。ApplyVolumePercentは使わない(呼ぶとAppSettings側も上書き保存されてしまい、
+        // 「直前に開いたプロジェクトの音量がエディタ全体の既定値になる」という意図しない副作用が
+        // 出るため、ここではUI表示とMediaPlayerへの反映のみ行う)。
+        double restoredVolume = doc.Project.PlaybackVolume ?? _appSettings.PlaybackVolume;
+        _suppressVolumeEvents = true;
+        VolumeSlider.Value = Math.Clamp(restoredVolume, 0.0, 1.0) * 100;
+        VolumeBox.Text = Math.Round(VolumeSlider.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _suppressVolumeEvents = false;
+        _audioPlayer.Volume = restoredVolume;
+
         ResetAudioForDocument(doc);
         RefreshProjectPropertiesPanel();
         RefreshSelectedObjectPanel();
@@ -1854,7 +1903,14 @@ public partial class MainWindow : Window
     private void DuplicateDifficultyTab_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null) return;
-        int idx = _document.CurrentTabIndex;
+        DuplicateTabAt(_document.CurrentTabIndex);
+    }
+
+    /// <summary>指定インデックスのタブを複製する(2026-08-02: 右クリックメニューから任意のタブを
+    /// 直接操作できるよう、DuplicateDifficultyTab_Clickの本体をインデックス指定版として分離)。</summary>
+    private void DuplicateTabAt(int idx)
+    {
+        if (_document is null) return;
         var tabs = _document.Project.Tabs;
         if (idx < 0 || idx >= tabs.Count) return;
 
@@ -1868,14 +1924,22 @@ public partial class MainWindow : Window
     private void CloseCurrentTab_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null) return;
+        CloseTabAt(_document.CurrentTabIndex);
+    }
+
+    /// <summary>指定インデックスのタブを閉じる(2026-08-02: 右クリックメニューから任意のタブを
+    /// 直接操作できるよう、CloseCurrentTab_Clickの本体をインデックス指定版として分離)。</summary>
+    private void CloseTabAt(int idx)
+    {
+        if (_document is null) return;
         var tabs = _document.Project.Tabs;
         if (tabs.Count <= 1)
         {
             MessageBox.Show(this, "最後の1タブは閉じられませんわ。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        if (idx < 0 || idx >= tabs.Count) return;
 
-        int idx = _document.CurrentTabIndex;
         var target = tabs[idx];
         var confirm = MessageBox.Show(this, $"タブ「{target.DifficultyName}」を閉じますか？(この操作はUndoできません)",
             "タブを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
@@ -1897,6 +1961,62 @@ public partial class MainWindow : Window
         // NotifyTabsChangedは値の異同に関わらず無条件でキャッシュ等を作り直すため、これを使う。
         _document.NotifyTabsChanged(Math.Min(idx, tabs.Count - 1));
         OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+    }
+
+    /// <summary>指定インデックスのタブの「dosロック」(ExcludeFromDosExport)を切り替える
+    /// (2026-08-02要望対応)。dosロック中のタブはDosExporterがdifData一覧・データブロックの
+    /// どちらからも除外する(制作中で未公開にしたい譜面向け)。DisplayLabelはINotifyPropertyChanged非対応の
+    /// ためOpenDocumentで一覧を作り直し、先頭の"[×]"表示を反映させる。</summary>
+    private void ToggleDosLock(int idx)
+    {
+        if (_document is null) return;
+        var tabs = _document.Project.Tabs;
+        if (idx < 0 || idx >= tabs.Count) return;
+
+        tabs[idx].ExcludeFromDosExport = !tabs[idx].ExcludeFromDosExport;
+        OpenDocument(_document); // タブ一覧の[×]表示を更新するため作り直す
+    }
+
+    /// <summary>難易度タブ行の右クリックメニュー(2026-08-02要望対応)。タブの上で右クリックした場合は
+    /// 「dosロック」(切替)・「タブを複製」・「タブを削除」、タブの無い場所(行の余白)で右クリックした
+    /// 場合は「タブを追加」を表示する。既存のD&D(FindTabItemAncestor/IndexFromContainer)と同じ
+    /// ヒットテスト方式でどのタブが右クリックされたかを判定する。</summary>
+    private void DifficultyTabControl_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_document is null) return;
+        var tc = (TabControl)sender;
+        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
+        var menu = new ContextMenu();
+
+        if (item is not null)
+        {
+            int idx = tc.ItemContainerGenerator.IndexFromContainer(item);
+            var tabs = _document.Project.Tabs;
+            if (idx < 0 || idx >= tabs.Count) return;
+            bool locked = tabs[idx].ExcludeFromDosExport;
+
+            var lockItem = new MenuItem { Header = locked ? "dosロックを解除" : "dosロック" };
+            lockItem.Click += (_, _) => ToggleDosLock(idx);
+            menu.Items.Add(lockItem);
+
+            var dupItem = new MenuItem { Header = "タブを複製" };
+            dupItem.Click += (_, _) => DuplicateTabAt(idx);
+            menu.Items.Add(dupItem);
+
+            var delItem = new MenuItem { Header = "タブを削除" };
+            delItem.Click += (_, _) => CloseTabAt(idx);
+            menu.Items.Add(delItem);
+        }
+        else
+        {
+            var addItem = new MenuItem { Header = "タブを追加" };
+            addItem.Click += (_, _) => AddDifficultyTab_Click(sender, new RoutedEventArgs());
+            menu.Items.Add(addItem);
+        }
+
+        menu.PlacementTarget = tc;
+        menu.IsOpen = true;
+        e.Handled = true;
     }
 
     // =====================================================================
@@ -3245,7 +3365,13 @@ public partial class MainWindow : Window
     {
         if (_document is null) return;
         _document.Snap.Enabled = SnapEnabledCheck.IsChecked == true;
-        if (SnapDivisionCombo.SelectedItem is int division) _document.Snap.Division = division;
+        if (SnapDivisionCombo.SelectedItem is int division)
+        {
+            _document.Snap.Division = division;
+            // 2026-08-02要望対応: スナップ分解能をプロジェクトファイルへ永続化する
+            // (再起動・開き直し後も前回値を復元できるようにする)。
+            _document.Project.SnapDivision = division;
+        }
         InvalidateChartViews();
     }
 
@@ -3477,6 +3603,7 @@ public partial class MainWindow : Window
         Canvas2.HighlightLineWidth = Canvas.HighlightLineWidth;
         Canvas2.HighlightLineColor = Canvas.HighlightLineColor;
         Canvas2.ExcludeFreezeEndFromHighlight = Canvas.ExcludeFreezeEndFromHighlight;
+        Canvas2.UseNoteColorForHighlight = Canvas.UseNoteColorForHighlight;
         Canvas2.PlaybackStartLineWidth = Canvas.PlaybackStartLineWidth;
         Canvas2.PlaybackStartLineColor = Canvas.PlaybackStartLineColor;
         Canvas2.CursorLineWidth = Canvas.CursorLineWidth;
@@ -3495,6 +3622,7 @@ public partial class MainWindow : Window
         Canvas2.TimeInfoFontSize = Canvas.TimeInfoFontSize;
         Canvas2.MarkerFontSize = Canvas.MarkerFontSize;
         Canvas2.ShowLaneNoteCount = Canvas.ShowLaneNoteCount;
+        Canvas2.ShowLaneNameLabel = Canvas.ShowLaneNameLabel;
         Canvas2.ShowWaveform = Canvas.ShowWaveform;
         Canvas2.Waveform = Canvas.Waveform;
         Canvas2.AudioTotalFrames = Canvas.AudioTotalFrames;
@@ -5088,8 +5216,10 @@ public partial class MainWindow : Window
 
         double volume = percent / 100.0;
         _audioPlayer.Volume = volume;
-        _appSettings.PlaybackVolume = volume;
+        _appSettings.PlaybackVolume = volume; // エディタ全体の既定値・新規プロジェクトのフォールバック用
         _appSettings.Save(AppPaths.SettingsFilePath);
+        // 2026-08-02要望対応: 音源によって適正音量が異なるため、プロジェクトごとにも保存する。
+        if (_document is not null) _document.Project.PlaybackVolume = volume;
     }
 
     /// <summary>スライダー操作: 動かすたびに数値入力欄・実際の音量へ即時反映する。</summary>

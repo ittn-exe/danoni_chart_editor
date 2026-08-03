@@ -865,6 +865,9 @@ internal sealed class GaugeEditorWindow : Window
         _project.GaugeManualEditAfterExport = _manualEditAfterExport.IsChecked == true;
 
         Saved = true;
-        DialogResult = true;
+        // 2026-08-02: モードレス化(MainWindow.OpenGaugeEditor_Click参照)に伴い、DialogResult経由の
+        // 自動クローズはShowDialog()前提のためInvalidOperationExceptionになる。Close()で明示的に閉じ、
+        // 呼び出し元はClosedイベント側でSavedを見てNotifyChangedするよう変更した。
+        Close();
     }
 }

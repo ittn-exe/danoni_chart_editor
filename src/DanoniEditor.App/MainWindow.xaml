@@ -48,7 +48,10 @@
                 <MenuItem Header="バージョン情報(_V)..." Click="OpenAbout_Click"/>
             </MenuItem>
         </Menu>
-        <Border DockPanel.Dock="Top" Height="108" Background="#F0F0F0">
+        <!-- 2026-08-02要望対応: FHD(1920x1080)環境だと上パネルが画面幅に見切れるとの指摘対応で
+             「ピッチで指定...」より後ろの項目を2段目へ折り返した。行数が増えるため高さは固定値を
+             やめてコンテンツに合わせて自動算出させる(Height指定を撤去)。 -->
+        <Border DockPanel.Dock="Top" Background="#F0F0F0">
             <StackPanel VerticalAlignment="Center" Margin="8">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock x:Name="ProjectTitleText" Text="(プロジェクト未作成)" VerticalAlignment="Center" Margin="0,0,16,0" FontWeight="Bold"/>
@@ -120,6 +123,10 @@
                     <!-- 2026-07-26: 再生速度をピッチ(半音移動量)から指定するダイアログを開く -->
                     <Button Content="ピッチで指定..." Width="90" VerticalAlignment="Center" Margin="0,0,8,0"
                             Click="PlaybackSpeedByPitch_Click"/>
+                </StackPanel>
+                <!-- 2026-08-02要望対応: FHD環境での見切れ対策で、「ピッチで指定...」より後ろの
+                     表示系トグル群をここで2段目へ折り返した(元は1つ上の行に全て収まっていた)。 -->
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                     <ToggleButton x:Name="ShowNoteImagesToggle" Content="ノート画像 表示" Width="100" Margin="0,0,4,0"
                                   IsChecked="True" Checked="ShowNoteImagesToggle_Changed" Unchecked="ShowNoteImagesToggle_Changed"/>
                     <!-- 2026-07-16j: ノート画像と強調表示を独立にON/OFFできるようにする要望対応。
@@ -130,6 +137,11 @@
                     <ToggleButton x:Name="NoteCountToggle" Content="ノート数表示" Width="90" Margin="0,0,4,0"
                                   Checked="NoteCountToggle_Changed" Unchecked="NoteCountToggle_Changed"
                                   ToolTip="レーンラベル欄に各レーンのノート数(通常+フリーズ)を表示する"/>
+                    <!-- 2026-08-02: 同じレーンに複数キーをアサインした場合等、キー表示だとラベルが
+                         長くなり隣接レーンと重なって読みづらいとの要望対応。レーン名表示に切替可能にする -->
+                    <ToggleButton x:Name="LaneNameLabelToggle" Content="レーン名表示" Width="90" Margin="0,0,4,0"
+                                  Checked="LaneNameLabelToggle_Changed" Unchecked="LaneNameLabelToggle_Changed"
+                                  ToolTip="レーンラベル欄の表示をキー割当からレーン名(内部ID)へ切り替える"/>
                     <Button x:Name="DisplaySettingsButton" Content="表示設定..." Width="80" Click="DisplaySettings_Click"/>
                     <!-- 2026-07-26要望対応(第三者提案): 譜面ビューを左右に分割し、同じ難易度タブを
                          両方に表示する(既定OFF、エディタ全体で共通の設定)。左右とも独立してスクロール可能で、
@@ -540,7 +552,8 @@
                             PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
                             PreviewMouseMove="TabControl_PreviewMouseMove"
                             PreviewDragOver="TabControl_PreviewDragOver"
-                            Drop="DifficultyTabControl_Drop"/>
+                            Drop="DifficultyTabControl_Drop"
+                            MouseRightButtonUp="DifficultyTabControl_MouseRightButtonUp"/>
             </DockPanel>
             <!-- 2026-07-26要望対応: 譜面ビュー分割表示。既定は分割用の列(スプリッタ/ペイン2/ミニマップ2)が
                  幅0・非表示(分割OFF)で、SplitViewToggle_ChangedがApplySplitViewLayoutで列幅とVisibilityを

@@ -103,6 +103,21 @@ public class ChartLayoutTests
         Assert.Contains(refs, r => r.Kind == ObjectKind.Bpm && r.Tick == 96 * T);
     }
 
+    [Fact]
+    public void ObjectsInRect_IncludesMarkers()
+    {
+        // 2026-08-02要望対応: マーカーが範囲選択(矩形ドラッグ)の対象から漏れていた不具合の修正確認。
+        // speed/boost/BPM等、他のイベント系オブジェクトと同じ基準(tickが範囲内かどうか)で
+        // 選択できることを検証する。
+        var layout = NewLayout();
+        var project = TestFixtures.NewProject();
+        project.Markers.Add(new Marker(96 * T, "テストマーカー"));
+        var col = layout.Column(ColumnKind.Marker);
+        var refs = layout.ObjectsInRect(project.Tabs[0], project,
+            col.X, layout.TickToY(-10 * T), col.X + col.Width, layout.TickToY(300 * T)).ToList();
+        Assert.Contains(refs, r => r.Kind == ObjectKind.Marker && r.Tick == 96 * T);
+    }
+
     // --- Reverse(譜面ビュー、2026-07-22追加) ---
 
     [Fact]

@@ -36,11 +36,35 @@ internal static class KeyLabelMapper
         // keyAssignに使っていたが対応表に無かったため合わせて追加(未対応判明、8key/14keyの
         // キーパターン追加データでも使用するため今回まとめて対応)。
         "Tab" => [Key.Tab],
+        // 2026-08-02要望対応: danoniplus本体のKeyCtrlCodeList(公式wiki)に載っている割当可能な
+        // キーを網羅する。CapsLock/Windows(Meta)/Unknown/JIS配列のBackquote(IME用)は本体側が
+        // 明示的に「割り当て不可」としているため対象外(意図的に未対応のまま)。
+        "Esc" => [Key.Escape],
+        "Backspace" => [Key.Back],
+        "Delete" => [Key.Delete],
+        "Insert" => [Key.Insert],
+        "Home" => [Key.Home],
+        "End" => [Key.End],
+        "PageUp" => [Key.PageUp],
+        "PageDown" => [Key.PageDown],
+        // Ctrl/Altは左右いずれでも反応する(Shiftと同じ方針)。ただしCtrlの本体側略称は"Control"の
+        // ためEngineKeyNames側で変換する(Alt/Shiftは略称自体が"Alt"/"Shift"のため変換不要)。
+        "Ctrl" => [Key.LeftCtrl, Key.RightCtrl],
+        "Alt" => [Key.LeftAlt, Key.RightAlt],
+        "-" => [Key.OemMinus],
+        "=" => [Key.OemPlus],
+        "/" => [Key.OemQuestion],
+        "\\" => [Key.OemPipe],
+        // "`"(US配列のBackquote)はWPF上"@"(Key.Oem3、JIS配列)と同一のKey値(OemTilde==Oem3)のため
+        // キャプチャボタンでは生成されない(常に"@"になる)が、自由入力欄からの手入力・既存テンプレート
+        // のJSONインポート等では引き続きこのラベルを受け付ける(EngineKeyNamesでBackquoteへ変換)。
+        "`" => [Key.OemTilde],
         // 2026-07-26e: F1〜F12(temp_12i.jsonのパターン0がkeyAssignにF1〜F12を使っているが、
         // 実は対応表に無く、これまでプレイテストでは12ikeyが一切キー入力できていなかった不具合。
         // 今回12ikeyのパターン追加データを検証していて発覚したため合わせて対応する)。
+        // 2026-08-02: 本体wikiはF15まで掲載しているため範囲をF12→F15へ拡張。
         _ when label.Length is 2 or 3 && label[0] == 'F'
-            && int.TryParse(label.AsSpan(1), out var fn) && fn is >= 1 and <= 12 =>
+            && int.TryParse(label.AsSpan(1), out var fn) && fn is >= 1 and <= 15 =>
             [(Key)((int)Key.F1 + (fn - 1))],
         // 2026-07-26: テンキー専用ラベル(メイン列の数字キーとは独立して指定したい場合用)。
         // 数字キー単体のラベル("5"等)は従来通りメイン列/テンキー両対応のままにし、
@@ -81,7 +105,25 @@ internal static class KeyLabelMapper
         Key.Enter => "Enter",
         Key.LeftShift or Key.RightShift => "Shift",
         Key.Tab => "Tab",
-        >= Key.F1 and <= Key.F12 => $"F{(int)(key - Key.F1) + 1}",
+        Key.Escape => "Esc",
+        Key.Back => "Backspace",
+        Key.Delete => "Delete",
+        Key.Insert => "Insert",
+        Key.Home => "Home",
+        Key.End => "End",
+        Key.PageUp => "PageUp",
+        Key.PageDown => "PageDown",
+        Key.LeftCtrl or Key.RightCtrl => "Ctrl",
+        Key.LeftAlt or Key.RightAlt => "Alt",
+        Key.OemMinus => "-",
+        Key.OemPlus => "=",
+        Key.OemQuestion => "/",
+        Key.OemPipe => "\\",
+        // 2026-08-02: "`"(Backquote、本体のcode=Backquote)は、WPFのKey列挙体ではKey.OemTilde/Key.Oem3が
+        // 同一の値(146)のため"@"(Key.Oem3、JIS配列)と区別できず、キャプチャボタンでは常に既存の
+        // "@"が優先される(JIS対応が既存仕様のため)。"`"はKeysForLabel側では引き続き受け付け、
+        // US配列テンプレートを手入力(自由入力欄)する場合のみ使える形とする。
+        >= Key.F1 and <= Key.F15 => $"F{(int)(key - Key.F1) + 1}",
         Key.Add => "Num+",
         Key.Subtract => "Num-",
         Key.Multiply => "Num*",

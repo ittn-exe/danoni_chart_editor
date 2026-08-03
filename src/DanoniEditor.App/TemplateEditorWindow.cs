@@ -28,6 +28,13 @@ internal sealed class TemplateEditorWindow : Window
     private readonly TextBox _keyTypeId = new() { Width = 180, HorizontalAlignment = HorizontalAlignment.Left, MaxLength = 10 };
     private readonly TextBox _keyTypeName = new() { Width = 180, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _comment = new() { Width = 180, HorizontalAlignment = HorizontalAlignment.Left };
+    // 2026-08-02要望対応: "@"/"["/"]"のようにJIS配列/US配列で対応する本体エンジンコードが食い違う
+    // 記号キーの解釈をテンプレート単位で明示するための選択欄(カスタムキーエクスポート時に参照される)。
+    private readonly ComboBox _keyboardLayout = new()
+    {
+        Width = 180, HorizontalAlignment = HorizontalAlignment.Left,
+        ItemsSource = new[] { KeyboardLayout.Us, KeyboardLayout.Jis }, SelectedIndex = 0,
+    };
     private readonly TextBox _blank = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _divideCnt = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _posMax = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
@@ -229,6 +236,8 @@ internal sealed class TemplateEditorWindow : Window
         p.Children.Add(_keyTypeName);
         p.Children.Add(Label("comment:"));
         p.Children.Add(_comment);
+        p.Children.Add(Label("キーボード配列(記号キー\"@\"/\"[\"/\"]\"のエクスポート先を決定):"));
+        p.Children.Add(_keyboardLayout);
 
         p.Children.Add(Label("キーパターン(以下の項目はパターンごとに独立)", section: true));
         p.Children.Add(_patternCombo);
@@ -383,7 +392,12 @@ internal sealed class TemplateEditorWindow : Window
         // Window_PreviewKeyDown_KeyCaptureがそのキーをラベルへ変換してこの欄へ追加する
         // (テンキーのキーも含め、KeyLabelMapper.LabelForKeyが対応するキーなら何でも拾える)。
         // 手入力での直接編集(「/」区切りで複数指定等)も従来通り可能。
-        void AddKeyCaptureTextRow(string label, string initial, Action<string> onChange)
+        // 2026-08-02要望対応: 以前はkeyboardInputKeys欄だけがこのキャプチャUIを持っていたが、
+        // 「keyAssignにテンキーを指定できるか」という質問への対応として、keyAssign欄にも
+        // 同じキャプチャUIを追加した(手入力で"Num5"等と直接打ち込む方法は元々可能だったが、
+        // 実キー押下だけで指定できた方が分かりやすいため)。呼び出し元でTextBoxをvmの
+        // UI参照フィールドへ保持できるよう、AddTextRowと同様にTextBoxを返す。
+        TextBox AddKeyCaptureTextRow(string label, string initial, Action<string> onChange)
         {
             grid.Children.Add(Label(label));
             var row = new StackPanel { Orientation = Orientation.Horizontal };
@@ -394,6 +408,7 @@ internal sealed class TemplateEditorWindow : Window
             row.Children.Add(box);
             row.Children.Add(captureButton);
             grid.Children.Add(row);
+            return box;
         }
 
         AddTextRow("laneId:", vm.LaneId, v => { vm.LaneId = v; tab.Header = HeaderText(vm); RefreshPreview(); });
@@ -402,7 +417,8 @@ internal sealed class TemplateEditorWindow : Window
         // 2026-07-26e: keyAssign以下6項目はキーパターンごとに独立するため、書き込み先を
         // ActiveFields(vm)経由(=現在選択中パターン)にする。パターン切替時はLoadPatternFieldsIntoUIが
         // 各コントロールの表示だけを差し替え、コントロール自体は使い回す(vmにUI参照を保持)。
-        vm.KeyAssignBox = AddTextRow("keyAssign(複数キーは/区切り、例 E/R。パターンごとに独立):",
+        vm.KeyAssignBox = AddKeyCaptureTextRow("keyAssign(複数キーは/区切り、例 E/R。テンキーは「入力開始」→" +
+            "テンキー押下でも指定可。パターンごとに独立):",
             ActiveFields(vm).KeyAssign, v => ActiveFields(vm).KeyAssign = v);
         AddKeyCaptureTextRow("keyboardInputKeys(空欄可、複数は/区切り。「入力開始」→実キー押下でも追加可):",
             vm.KeyboardInputKeys, v => vm.KeyboardInputKeys = v);
@@ -782,6 +798,7 @@ internal sealed class TemplateEditorWindow : Window
         _keyTypeId.Text = tpl.KeyTypeId;
         _keyTypeName.Text = tpl.KeyTypeName;
         _comment.Text = tpl.Comment ?? "";
+        _keyboardLayout.SelectedItem = tpl.KeyboardLayout;
 
         _basePattern.Blank = tpl.Blank.ToString(CultureInfo.InvariantCulture);
         _basePattern.DivideCnt = tpl.DivideCnt.ToString(CultureInfo.InvariantCulture);
@@ -959,6 +976,7 @@ internal sealed class TemplateEditorWindow : Window
             KeyTypeName = _keyTypeName.Text.Trim(),
             KeyCount = lanes.Count,
             Comment = string.IsNullOrWhiteSpace(_comment.Text) ? null : _comment.Text,
+            KeyboardLayout = _keyboardLayout.SelectedItem is KeyboardLayout kbl ? kbl : KeyboardLayout.Us,
             Blank = blank,
             DivideCnt = divideCnt,
             PosMax = posMax,

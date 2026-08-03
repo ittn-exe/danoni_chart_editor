@@ -3,6 +3,10 @@ using System.Text.Json.Serialization;
 
 namespace DanoniEditor.Core.Models;
 
+/// <summary>キー割当のキーボード配列(2026-08-02要望対応)。"@"/"["/"]"のようにJIS配列とUS配列で
+/// 物理キーの対応関係がずれる記号キーの解釈をテンプレート単位で明示するために使う。</summary>
+public enum KeyboardLayout { Jis, Us }
+
 /// <summary>
 /// キー種テンプレート(仕様書 4.2 / 4.2.1)。レーン構造の定義のみを持つ。
 /// ./template/temp_{keyTypeId}.json として保存される。
@@ -30,6 +34,12 @@ public sealed class KeyTemplate
     /// プレイテスト画面の見た目・キー入力にのみ影響し、エディタ本体の譜面ビューの列並び・データ名・
     /// FUJI互換番号・キーボードモード入力キーには一切影響しない(2026-07-26e考察の確定仕様)。</summary>
     public IReadOnlyList<KeyPattern> ExtraPatterns { get; init; } = [];
+
+    /// <summary>キー割当のキーボード配列(2026-08-02要望対応)。"@"/"["/"]"等、danoniplus本体側の
+    /// エンジンコード(KeyboardEvent.code)がJIS配列/US配列で食い違う記号キーの解釈に使う
+    /// (CustomKeyTemplateExporter参照)。未指定時はUs扱い(従来のエクスポート挙動を維持するための
+    /// 既定値、旧テンプレートとの後方互換)。</summary>
+    public KeyboardLayout KeyboardLayout { get; init; } = KeyboardLayout.Us;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

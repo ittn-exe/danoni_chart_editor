@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using DanoniEditor.Core.Timing;
 
@@ -49,6 +50,19 @@ public sealed class ChartProject
     /// null=未設定(エディタ既定値を使用、旧プロジェクトファイルとの後方互換)。</summary>
     public double? EditorZoomPxPerTick { get; set; }
     public double? EditorZoomScale { get; set; }
+
+    /// <summary>スナップ分解能(SnapService.Division、上部パネルのプルダウン)の保存値
+    /// (2026-08-02要望対応)。dos.txtには出力されないエディタ専用の編集設定だが、作業中に
+    /// 頻繁に切り替える値のため、プロジェクトごとに前回値を覚えておいてほしいという要望対応。
+    /// null=未設定(エディタ既定値16分を使用、旧プロジェクトファイルとの後方互換)。</summary>
+    public int? SnapDivision { get; set; }
+
+    /// <summary>目視テスト・プレイテストの再生音量(0.0〜1.0)の保存値(2026-08-02要望対応)。
+    /// 音源によって適正音量が異なるため、AppSettings.PlaybackVolume(エディタ全体の既定値・
+    /// 新規プロジェクト作成時のフォールバック用)とは別に、プロジェクトごとに個別の値を
+    /// 覚えておけるようにする。dos.txtには出力されないエディタ専用設定。
+    /// null=未設定(AppSettings.PlaybackVolumeを使用、旧プロジェクトファイルとの後方互換)。</summary>
+    public double? PlaybackVolume { get; set; }
 
     /// <summary>その他のヘッダーパラメータ(仕様書6.4.4)。「使用する」チェックONのもののみ格納。</summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = [];
@@ -106,13 +120,21 @@ public sealed class DifficultyTab
     public string KeyTypeId { get; set; } = "5";
     public double InitialSpeed { get; set; } = 3.5;
 
+    /// <summary>「dosロック」フラグ(2026-08-02要望対応)。trueの間、このタブはdosエクスポート時に
+    /// 完全に除外される(difData一覧・ノート/速度/色等のデータブロックのどちらからも出力されない。
+    /// DosExporter参照)。制作中で未公開にしたい譜面を、削除せずに一時的にエクスポート対象外へ
+    /// できるようにするための機能。タブ複製時は引き継ぐ(2026-08-02ユーザー確定仕様、Clone()参照)。</summary>
+    public bool ExcludeFromDosExport { get; set; } = false;
+
     /// <summary>難易度タブ見出し表示用の算出プロパティ(2026-07-21要望)。
     /// 「キー種k - 難易度名」形式(例: "5k - Normal"、"11Lk - Hard")。
     /// 難易度名が未設定(空白含む)の場合は"(newdiff)"を表示する。
+    /// ExcludeFromDosExportがtrueの場合は先頭に"[×]"を付ける(2026-08-02要望対応、dosロック中の
+    /// タブをタブ一覧上で一目で見分けられるようにするための表示)。
     /// プロジェクトファイルには永続化しない(タブ見出し表示専用の派生値のため[JsonIgnore])。</summary>
     [JsonIgnore]
     public string DisplayLabel =>
-        $"{KeyTypeId}k - {(string.IsNullOrWhiteSpace(DifficultyName) ? "(newdiff)" : DifficultyName)}";
+        $"{(ExcludeFromDosExport ? "[×] " : "")}{KeyTypeId}k - {(string.IsNullOrWhiteSpace(DifficultyName) ? "(newdiff)" : DifficultyName)}";
 
     /// <summary>difDataの4フィールド目以降(ゲージ設定等)をそのまま保持(例: "0,2,25,50")</summary>
     public string? DifDataExtra { get; set; }
@@ -187,6 +209,7 @@ public sealed class DifficultyTab
             DifficultyName = DifficultyName,
             KeyTypeId = KeyTypeId,
             InitialSpeed = InitialSpeed,
+            ExcludeFromDosExport = ExcludeFromDosExport,
             DifDataExtra = DifDataExtra,
             SpeedEvents = new List<ValueEvent>(SpeedEvents),
             BoostEvents = new List<ValueEvent>(BoostEvents),
@@ -310,7 +333,40 @@ public sealed record GaugeListEntry(string Name, bool IsVariable, string? Displa
 /// ヘッダーやcustomGauge{N}のリストが参照するキー)と、宣言時に設定できる既定表示名の組。
 /// DisplayNameは各タブのGaugeListEntry.DisplayNameが空の場合のフォールバックとして使われるのみで、
 /// タブ側で個別に上書きもできる。</summary>
+[JsonConverter(typeof(GaugeNameDefConverter))]
 public sealed record GaugeNameDef(string Name, string? DisplayName = null);
+
+/// <summary>GaugeNameDefの「文字列 or オブジェクト」両対応コンバータ(2026-08-02不具合修正)。
+/// 2026-07-30再設計でGaugeNamesがList&lt;string&gt;からList&lt;GaugeNameDef&gt;へ変更された際、
+/// ProjectSerializerのSchemaVersionが据え置きのままだったため、その間(schemaVersion=3のまま
+/// GaugeNamesがまだ文字列配列だった時期)に保存されたプロジェクトファイルが読み込めなくなっていた
+/// (KeyAssignConverterと同じ「文字列1つなら簡易形」パターンを踏襲し、スキーマバージョンに関係なく
+/// どちらの形式でも読めるようにする)。書き戻しは常に新形式(オブジェクト)で行う。</summary>
+public sealed class GaugeNameDefConverter : JsonConverter<GaugeNameDef>
+{
+    public override GaugeNameDef Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+            return new GaugeNameDef(reader.GetString()!);
+        if (reader.TokenType == JsonTokenType.StartObject)
+            return JsonSerializer.Deserialize<GaugeNameDef>(ref reader, RawOptions(options))
+                ?? throw new JsonException("gaugeNamesの要素を読み込めませんでした");
+        throw new JsonException("gaugeNamesの要素は文字列またはオブジェクトで指定してください");
+    }
+
+    public override void Write(Utf8JsonWriter writer, GaugeNameDef value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, RawOptions(options));
+
+    // 自分自身(このコンバータ)を除いたoptionsで再帰デシリアライズ/シリアライズする
+    // (options内に自分が登録されたままだとGaugeNameDef自体の再帰呼び出しで無限ループになるため)。
+    private static JsonSerializerOptions RawOptions(JsonSerializerOptions options)
+    {
+        var clone = new JsonSerializerOptions(options);
+        for (int i = clone.Converters.Count - 1; i >= 0; i--)
+            if (clone.Converters[i] is GaugeNameDefConverter) clone.Converters.RemoveAt(i);
+        return clone;
+    }
+}
 
 // =====================================================================
 // 歌詞表示(word_data、仕様dos-e0003-wordData、2026-07-23、TBD 4)

@@ -282,6 +282,13 @@ public sealed class ChartLayout
                         if (e.Tick >= tMin && e.Tick <= tMax && e.Tick != 0)
                             yield return new ObjectRef(ObjectKind.Bpm, -1, e.Tick);
                     break;
+                // 2026-08-02要望対応: マーカーが範囲選択(矩形ドラッグ)の対象から漏れていた不具合修正。
+                // speed/boost/BPM等と同じ「他オブジェクトと基準を統一」の一環(HitTestのMarkerケースと
+                // 同様、Marker自体はレーン非依存のためlaneIndexは-1で統一)。
+                case ColumnKind.Marker:
+                    foreach (var m in project.Markers)
+                        if (m.Tick >= tMin && m.Tick <= tMax) yield return new ObjectRef(ObjectKind.Marker, -1, m.Tick);
+                    break;
                 case ColumnKind.Word:
                     foreach (var w in tab.WordLanes[col.NoteLaneIndex].Entries)
                         if (w.Tick >= tMin && w.Tick <= tMax)

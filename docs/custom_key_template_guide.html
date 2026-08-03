@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>オリジナルキー種テンプレートの作り方 - ダンおに譜面エディタ</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --panel: #ffffff;
+    --accent: #b3557a;
+    --accent-light: #f3e3ea;
+    --text: #333333;
+    --muted: #777777;
+    --border: #e6d9d0;
+    --code-bg: #f5f0ea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Yu Gothic", "Hiragino Sans", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+  }
+  header {
+    background: linear-gradient(120deg, var(--accent), #d98aa8);
+    color: #fff;
+    padding: 40px 24px 32px;
+    text-align: center;
+  }
+  header h1 { margin: 0 0 8px; font-size: 1.7em; letter-spacing: 0.03em; }
+  header p { margin: 0; opacity: 0.92; font-size: 0.95em; }
+  .layout { display: flex; max-width: 1180px; margin: 0 auto; align-items: flex-start; }
+  nav {
+    position: sticky;
+    top: 0;
+    width: 250px;
+    flex-shrink: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 24px 16px;
+    font-size: 0.88em;
+  }
+  nav a {
+    display: block;
+    color: var(--text);
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin-bottom: 2px;
+  }
+  nav a:hover { background: var(--accent-light); color: var(--accent); }
+  main { flex: 1; padding: 24px 32px 80px; min-width: 0; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 28px;
+    margin-bottom: 22px;
+  }
+  h2 {
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent-light);
+    padding-bottom: 8px;
+    margin-top: 0;
+    font-size: 1.3em;
+  }
+  h3 { color: #a3456a; font-size: 1.05em; margin-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92em; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--accent-light); color: #8a3a58; }
+  tr:nth-child(even) td { background: #fcfaf7; }
+  code, kbd {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    font-size: 0.88em;
+  }
+  pre code { border: none; padding: 0; background: none; white-space: pre; }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 4px; }
+  .note {
+    background: #fff8ec;
+    border: 1px solid #eddcb0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9em;
+    color: #7a6633;
+    margin-top: 10px;
+  }
+  footer { text-align: center; color: var(--muted); font-size: 0.85em; padding: 20px; }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    nav { position: static; width: auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>オリジナルキー種テンプレートの作り方</h1>
+  <p>テンプレートエディタで独自のキー種を作り、danoniplus本体でも遊べるようにするまでの手順</p>
+</header>
+
+<div class="layout">
+<nav>
+  <a href="#what-is">1. キー種テンプレートとは</a>
+  <a href="#relation">2. 本体の「カスタムキー」との関係</a>
+  <a href="#open">3. テンプレートエディタを開く</a>
+  <a href="#global">4. 全体設定を入力する</a>
+  <a href="#lanes">5. レーンを追加する</a>
+  <a href="#patterns">6. キーパターン(応用)</a>
+  <a href="#save">7. 保存する</a>
+  <a href="#export">8. 本体で使えるようにする</a>
+  <a href="#tutorial">9. 実践: ゼロから4keyを作る</a>
+  <a href="#checklist">10. チェックリスト</a>
+  <a href="#reference">参考: JSON形式の詳細</a>
+</nav>
+
+<main>
+
+<section id="what-is">
+<h2>1. そもそも「キー種テンプレート」とは何か</h2>
+<p>当エディタは、5key・7key・9key・23keyのような「キー種」ごとに、レーンの数・配置・見た目を定義した設定ファイル(<code>template/temp_{キー種ID}.json</code>)を持っています。これを「キー種テンプレート」と呼びます。譜面ビューの列構成、プレイテストの見た目、dos.txt出力時のデータ名などは、すべてこのテンプレートに基づいて決まります。</p>
+<p>自分だけのオリジナルキー種を作るというのは、要するに「この設定ファイルを新しく1つ作る」という作業です。手でJSONファイルを書くこともできますが(<a href="template_format.md">docs/template_format.md</a>にJSON形式そのものの仕様があります)、通常は「環境設定 &gt; テンプレート」から開ける<b>テンプレートエディタ</b>というGUI画面で作成・編集します。このドキュメントはテンプレートエディタでの作成手順を説明します。</p>
+</section>
+
+<section id="relation">
+<h2>2. danoniplus本体の「カスタムキー」との関係</h2>
+<p>当エディタのキー種テンプレートは、あくまで<b>エディタの中だけで通用する設定</b>です。これだけでは、実際にdanoniplus本体(ブラウザで遊ぶゲーム側)で新しいキー種として遊べるようにはなりません。</p>
+<p>danoniplus本体側にも、独自のキー種を追加できる「カスタムキー」という仕組みが別途あります。こちらはdos.txtのヘッダー、またはdanoni_settings.js等の共通設定ファイルに、<code>|keyCtrl9j=...|</code>のような専用のパラメータ行を書き足すことで実現されています。</p>
+<p>つまり、オリジナルキー種を実際に本体で遊べるようにするには、次の2段階の作業が必要になります。</p>
+<ol>
+  <li><b>当エディタのテンプレートエディタ</b>で、譜面を作るためのテンプレートを作成する(このドキュメントの本題)</li>
+  <li>作成したテンプレートを、<b>「カスタムキー定義へエクスポート」機能</b>で本体互換の設定テキストへ変換し、本体側の設定ファイルへ貼り付ける</li>
+</ol>
+<div class="note">当エディタのテンプレートの各項目は、本体側のカスタムキー定義とほぼ1対1で対応するように設計されています。エクスポート機能を使えば、この変換作業はほぼ自動で行われます。</div>
+</section>
+
+<section id="open">
+<h2>3. テンプレートエディタを開く</h2>
+<p>メインウィンドウの「環境設定」を開き、左側のカテゴリ一覧から「テンプレート」を選びます。既存のテンプレート一覧が表示されるので、「新規作成」ボタンを押すとテンプレートエディタが開きます(既存のテンプレートを選んで「編集」を押せば、そのテンプレートを元に編集することもできます)。</p>
+<p>テンプレートエディタの画面構成は次の通りです。</p>
+<ul>
+  <li><b>左パネル</b>: テンプレート全体の設定(キー種ID・表示名・レーン間隔など)</li>
+  <li><b>中央</b>: レーン(キー1つ分)ごとのタブ。タブをドラッグ&amp;ドロップで並び替えると、その並び順がそのままレーンの表示順になります</li>
+  <li><b>上部</b>: 現在のレーン並びでノート画像を並べたプレビュー</li>
+</ul>
+</section>
+
+<section id="global">
+<h2>4. 全体設定を入力する</h2>
+<p>左パネルの「全体設定」で、以下の項目を入力します。</p>
+<table>
+<tr><th>項目</th><th>意味</th></tr>
+<tr><td><code>keyTypeId</code></td><td>キー種の識別子。半角英数字1〜10文字。保存時のファイル名(<code>temp_{keyTypeId}.json</code>)にもなります。他のキー種と重複しない値にしてください(例: <code>myKey</code>, <code>10x</code>)</td></tr>
+<tr><td><code>keyTypeName</code></td><td>一覧等に表示される名前(例: <code>オリジナル10key</code>)</td></tr>
+<tr><td><code>comment</code></td><td>自由記述欄。何のためのキー種かメモしておくと後で分かりやすいです</td></tr>
+<tr><td><code>blank</code>(px)</td><td>隣り合うレーン同士のステップゾーンの間隔。大きくすると横に広がります</td></tr>
+<tr><td><code>divideCnt</code></td><td>横一列に並べるだけの場合は<code>レーン数-1</code>を指定してください(下記「中央揃え」参照)。上下2段に折り返す配置をする場合は折返し位置を指定します</td></tr>
+<tr><td><code>posMax</code></td><td>横一列に並べるだけの場合は<code>レーン数</code>を指定してください。折り返し配置の場合は折り返し後グループの基準値</td></tr>
+</table>
+<p><code>keyCount</code>(レーン数)は自動計算されるため、直接入力する項目はありません。レーンタブを追加した数がそのままレーン数になります。</p>
+
+<h3>レーンの横並び順(posIndex)の考え方</h3>
+<p>各レーンには <code>posIndex</code> という「横位置の順番」を表す数値があります(レーンタブ側で設定、次章参照)。単純にレーンを横一列に並べるだけなら、<code>posIndex</code> に <code>0, 1, 2, 3...</code> と左から順に整数を振っていくだけで十分です。</p>
+<p>もし「上段と下段に分けて配置したい」「特定のレーンだけ間隔を空けたい」といった複雑な配置をしたい場合は、<code>divideCnt</code>(この値を超えたposIndexのレーンは「折り返し後」として扱われる)と <code>posMax</code>(折り返し後グループの基準値、通常はposIndexの最大値と同じにする)を使います。この仕組みは、danoniplus本体側の <code>div</code>/<code>divMax</code> パラメータにそのまま対応しています。</p>
+<p>具体的な計算式は次の通りです(プレイテスト画面のX座標もこの式で決まります)。</p>
+<pre><code>stdPos = posIndex - ((posIndex &gt; divideCnt ? posMax : 0) + divideCnt) / 2
+stepX  = blank * stdPos + (プレイ画面の幅 - 50) / 2</code></pre>
+<div class="note"><strong>重要:</strong> 横一列に並べるだけの場合でも <code>divideCnt</code>/<code>posMax</code> を <code>0</code> のままにしないでください。<code>divideCnt=0</code>・<code>posMax=0</code>のままだと、上の式は常にoffset=0になり、<code>posIndex=0</code>のレーンが画面中央に固定され、残りのレーンがそこから右へ一方向に並ぶ(中央揃えにならない)不具合が発生します。横一列・中央揃えにしたい場合は、<code>divideCnt</code>に<code>レーン数-1</code>、<code>posMax</code>に<code>レーン数</code>を指定してください(例: 9レーンなら<code>divideCnt=8</code>・<code>posMax=9</code>)。こうすると<code>posIndex</code>の値に関わらず必ず<code>(0+divideCnt)/2</code>のoffsetが使われ、<code>stdPos</code>が<code>-(レーン数-1)/2</code>〜<code>+(レーン数-1)/2</code>の範囲で0を中心に対称になります(5key標準テンプレートの<code>divideCnt=4</code>・<code>posMax=5</code>と同じ考え方)。折り返し配置が必要になったら、既存の折り返し系キー種(23key等)のテンプレートを開いて数値の参考にするとよいでしょう。</div>
+</section>
+
+<section id="lanes">
+<h2>5. レーンを追加する</h2>
+<p>中央パネル上部の「レーン追加」ボタンを押すと、新しいレーンのタブが1つ追加されます。追加したいレーン数だけこのボタンを押してください。各レーンタブでは、以下の項目を設定します。</p>
+<table>
+<tr><th>項目</th><th>意味</th></tr>
+<tr><td><code>laneId</code></td><td>エディタ内部だけで使う識別子。dos.txt出力には出てきません(例: <code>left</code>, <code>key1</code>)</td></tr>
+<tr><td><code>dataName</code></td><td>dos.txt出力時のベース名になります(例: <code>left</code> → <code>left_data</code>)。基本的に <code>laneId</code> と同じで問題ありません</td></tr>
+<tr><td><code>frzDataNameOverride</code></td><td>フリーズのデータ名が「<code>frz</code> + <code>dataName</code>」という規則から外れる場合だけ指定します。通常は空欄のままで構いません</td></tr>
+<tr><td><code>keyAssign</code></td><td>実際のプレイキー割当(表示ラベル)。矢印キーなら <code>←</code>、文字キーなら <code>S</code> のように入力します。同じレーンに複数キーを割り当てたい場合は <code>/</code> で区切ります(例: <code>E/R</code>)</td></tr>
+<tr><td><code>keyboardInputKeys</code></td><td>キーボードモード(エディタ内のSKB風キーボード入力)専用の入力キー。<code>keyAssign</code>とは別物です。「入力開始」ボタンを押してから実際にキーを押すと自動入力されます。矢印キー・Space・BackSpaceはエディタのカーソル移動に予約済みのため、ここには割り当てられません</td></tr>
+<tr><td><code>colorGroup</code></td><td>色グループ番号(整数)。同じ色にしたいレーン同士に同じ番号を振ります</td></tr>
+<tr><td><code>posIndex</code></td><td>横位置の順番(4章参照)。左から <code>0, 1, 2, 3...</code> のように振るのが基本です</td></tr>
+<tr><td><code>scrollDirection</code></td><td><code>down</code>(標準: ステップゾーンが下、ノーツは上から下へスクロール)か <code>up</code>(ステップゾーンが上、ノーツは下から上へスクロール)</td></tr>
+<tr><td><code>noteGraphic</code></td><td>ノート画像の種類。<code>arrow</code>(矢印)・<code>onigiri</code>(おにぎり)等から選びます</td></tr>
+<tr><td><code>rotationAngle</code></td><td>矢印画像を使う場合の回転角(度)。左向き <code>0</code>、下向き <code>-90</code>、上向き <code>90</code>、右向き <code>180</code> が目安です(<code>noteGraphic</code> が <code>arrow</code> 以外のレーンでは使われません)</td></tr>
+<tr><td><code>engineLaneNum</code></td><td>danoniplus本体側の内部レーン番号(整数、0始まり)。<b>キー種内で重複させないこと</b>。色指定(ncolor_data)がこの番号でレーンを識別するため、重複するとレーンを取り違えます</td></tr>
+</table>
+<p>不要になったレーンは、タブを選択した状態で「レーン削除」ボタンを押せば削除できます。</p>
+</section>
+
+<section id="patterns">
+<h2>6. キーパターン(応用、任意)</h2>
+<p>danoniplus本体には、同じキー種に対して複数の物理キー配置(例: 矢印キー中心の配置と、DFJK等のキーボード中心の配置)を用意できる「キーパターン」という概念があります。左パネルの「キーパターン」セクションで「パターン追加」を押すと、<code>keyAssign</code>・<code>colorGroup</code>・<code>posIndex</code>・<code>scrollDirection</code>・<code>noteGraphic</code>・<code>rotationAngle</code>・<code>blank</code>・<code>divideCnt</code>・<code>posMax</code> の組を、パターンごとに別々の値として持たせることができます。</p>
+<div class="note">最初のうちはパターンを追加せず、既定パターン(パターン0)だけで作成することをおすすめします。慣れてから、必要に応じて追加してください。</div>
+<p>追加したパターンは、8章の「カスタムキー定義へエクスポート」でそのまま出力されます(本体側の<code>$</code>区切り複数パターン記法に変換されます)。<code>chara</code>(読み込み変数名)だけはエディタ側でパターンごとに変えられないため、全パターンで同じ値が出力されます。</p>
+</section>
+
+<section id="save">
+<h2>7. 保存する</h2>
+<p>すべての項目を入力したら、右下の「保存」ボタンを押します。<code>template/temp_{keyTypeId}.json</code> として保存され、以後プロジェクト作成時の「キー種」選択肢に表示されるようになります。</p>
+<p>保存後は、実際に新規プロジェクトを作成してこのキー種を選び、以下を一通り確認することを強くおすすめします(入力値のチェックは行われないため、間違いがあってもエラーは出ず、見た目やプレイテストがおかしくなる形で症状が出ます)。</p>
+<ul>
+  <li>譜面ビューでレーンが意図した順番・間隔で並んでいるか</li>
+  <li>プレイテストでノートが正しい向き・位置に表示されるか</li>
+  <li>レーンをクリックしてノートを置き、正しいレーンにノートが入るか</li>
+</ul>
+</section>
+
+<section id="export">
+<h2>8. 本体で使えるようにする(カスタムキー定義へエクスポート)</h2>
+<p>テンプレートが完成したら、「環境設定 &gt; テンプレート」の一覧で該当のテンプレートを選び、「カスタムキー定義へエクスポート」ボタンを押します。開いたウィンドウで、必要であれば説明文(<code>keyHelpJa</code>/<code>keyHelpEn</code>、省略可)を入力すると、下のプレビュー欄に本体互換の設定テキストが表示されます。</p>
+<p>「書き出し」ボタンを押すと、<code>template/カスタムキー定義_{keyTypeId}.txt</code> というテキストファイルとして保存されます。このファイルの中身をそのまま、dos.txtのヘッダー部、またはdanoni_settings.js等の共通設定ファイルへコピー&amp;ペーストしてください(貼り付け先による書式の違いはありません)。</p>
+
+<h3>このエクスポート機能が対応していない項目</h3>
+<p>以下の項目は、当エディタのテンプレートに対応する情報が無い、または本体側の書式に確証が持てなかったため、現バージョンのエクスポートでは出力されません(本体側の初期値・自動生成に任せる形になります)。</p>
+<ul>
+  <li><code>keyGroup</code>/<code>keyGroupOrder</code>(キーのグループ分け)</li>
+  <li>色・スクロール方向の名前付きパターンセット(<code>Cross</code>/<code>Split</code>等)。常に無名の1パターンのみ出力します</li>
+  <li>既存キーへのパターン追加(<code>appendX</code>)・別キーモード(<code>transKeyX</code>)。エクスポート機能は常に「新規カスタムキーを1から定義する」形で書き出します</li>
+</ul>
+<p>これらが必要になった場合は、書き出したテキストファイルを直接手で書き足してご利用ください。</p>
+</section>
+
+<section id="tutorial">
+<h2>9. 実践: ゼロから4keyを作ってみる</h2>
+<p>具体例として、矢印なしの4つの文字キー(<code>D</code>, <code>F</code>, <code>J</code>, <code>K</code>)を横一列に並べただけの、シンプルな4keyオリジナルキー種を作ってみます。</p>
+<ol>
+  <li>「環境設定 &gt; テンプレート &gt; 新規作成」でテンプレートエディタを開く</li>
+  <li>全体設定: <code>keyTypeId=myDFJK</code>、<code>keyTypeName=オリジナル4key</code>、<code>blank=57.5</code>、<code>divideCnt=3</code>(レーン数4-1)、<code>posMax=4</code>(レーン数)</li>
+  <li>「レーン追加」を4回押し、4つのレーンタブを作る</li>
+  <li>1つ目のレーン: <code>laneId=d</code>、<code>dataName=d</code>、<code>keyAssign=D</code>、<code>colorGroup=0</code>、<code>posIndex=0</code>、<code>scrollDirection=down</code>、<code>noteGraphic=arrow</code>、<code>rotationAngle=0</code>、<code>engineLaneNum=0</code></li>
+  <li>2つ目のレーン: <code>laneId=f</code>、<code>keyAssign=F</code>、<code>posIndex=1</code>、<code>engineLaneNum=1</code>(その他は1つ目と同じ)</li>
+  <li>3つ目のレーン: <code>laneId=j</code>、<code>keyAssign=J</code>、<code>posIndex=2</code>、<code>engineLaneNum=2</code></li>
+  <li>4つ目のレーン: <code>laneId=k</code>、<code>keyAssign=K</code>、<code>posIndex=3</code>、<code>engineLaneNum=3</code></li>
+  <li>「保存」を押す</li>
+  <li>「環境設定 &gt; テンプレート」の一覧から<code>myDFJK</code>を選び、「カスタムキー定義へエクスポート」でテキストを書き出す</li>
+</ol>
+<p>これで、譜面ビュー上は左から D/F/J/K の4レーンが並んだシンプルなキー種の出来上がりです。矢印を使わない代わりに <code>noteGraphic</code> を全レーン <code>arrow</code> のままにしていますが、見た目にこだわりたい場合は <code>rotationAngle</code> を変えたり、<code>onigiri</code> 等の別画像に差し替えても構いません。</p>
+</section>
+
+<section id="checklist">
+<h2>10. うまく動かないときのチェックリスト</h2>
+<ul>
+  <li><code>keyTypeId</code> が他のキー種と重複していないか</li>
+  <li><code>engineLaneNum</code> がレーン間で重複していないか(重複すると色指定がレーンを取り違えます)</li>
+  <li><code>posIndex</code> が意図した横並び順になっているか(小さい方から左に並びます)</li>
+  <li><code>keyboardInputKeys</code> に矢印・Space・BackSpace等の予約キーを入れていないか</li>
+  <li><code>noteGraphic</code> に存在しない画像名を指定していないか(<code>./img/</code> 配下のファイル名と一致させる)</li>
+  <li>エクスポートしたテキストを本体側へ貼り付けた際、<code>keyCtrl</code>(キー割当)の値が意図通りか(矢印記号は <code>Left</code>/<code>Down</code>/<code>Up</code>/<code>Right</code>、テンキーは <code>Numpad0</code>〜<code>Numpad9</code>等へ自動変換されますが、それ以外の特殊な入力を使っている場合はプレビューで必ず確認してください)</li>
+</ul>
+</section>
+
+<section id="reference">
+<h2>参考: JSON形式そのものの詳細仕様</h2>
+<p>テンプレートエディタを使わず、<code>temp_*.json</code> を直接手編集したい場合の完全なフィールド一覧・サンプルは <a href="template_format.md">docs/template_format.md</a> を参照してください。</p>
+</section>
+
+</main>
+</div>
+
+<footer>ダンおに譜面エディタ (IDE / ITTN-DANONI-EDITOR)</footer>
+
+</body>
+</html>

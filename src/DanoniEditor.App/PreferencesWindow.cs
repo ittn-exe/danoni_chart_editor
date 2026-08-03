@@ -28,6 +28,7 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _showImages = new() { Content = "ノート画像を表示する" };
     private readonly CheckBox _showGrid = new() { Content = "強調グリッド(横棒)を表示する" };
     private readonly CheckBox _excludeFreezeEndHighlight = new() { Content = "フリーズアロー終点を強調グリッドの対象から除外する" };
+    private readonly CheckBox _useNoteColorForHighlight = new() { Content = "強調表示の色をノートの色にする" };
     private readonly TextBox _gridWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _gridColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _gridPreview = MakePreview();
@@ -167,7 +168,10 @@ internal sealed class PreferencesWindow : Window
     // --- テンプレート(temp_*.json、2026-07-26) ---
     private readonly ListBox _templateList = new() { Margin = new Thickness(0, 0, 0, 8), Height = 260 };
     private readonly Button _templateEditButton = new() { Content = "編集", Width = 90, Margin = new Thickness(0, 0, 8, 0), IsEnabled = false };
-    private readonly Button _templateNewButton = new() { Content = "新規作成", Width = 90 };
+    private readonly Button _templateNewButton = new() { Content = "新規作成", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+    /// <summary>2026-08-02要望対応: 選択中テンプレートを本体互換のカスタムキー定義テキストへ
+    /// エクスポートするウィンドウを開くボタン。</summary>
+    private readonly Button _templateExportButton = new() { Content = "カスタムキー定義へエクスポート", Width = 190, IsEnabled = false };
     private readonly TemplateRepository? _templates;
 
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
@@ -511,9 +515,11 @@ internal sealed class PreferencesWindow : Window
         _showImages.Margin = new Thickness(0, 0, 0, 4);
         _showGrid.Margin = new Thickness(0, 0, 0, 4);
         _excludeFreezeEndHighlight.Margin = new Thickness(16, 0, 0, 4); // 強調グリッドの子項目として少し字下げ
+        _useNoteColorForHighlight.Margin = new Thickness(16, 0, 0, 4); // 同上
         p.Children.Add(_showImages);
         p.Children.Add(_showGrid);
         p.Children.Add(_excludeFreezeEndHighlight);
+        p.Children.Add(_useNoteColorForHighlight);
         p.Children.Add(Label("強調グリッドの太さ(px):"));
         p.Children.Add(_gridWidth);
         p.Children.Add(Label("強調グリッドの色(#RRGGBB):"));
@@ -881,7 +887,12 @@ internal sealed class PreferencesWindow : Window
         var p = new StackPanel { Margin = new Thickness(4) };
         p.Children.Add(Label("キー種テンプレート(temp_*.json)", section: true));
         p.Children.Add(_templateList);
-        _templateList.SelectionChanged += (_, _) => _templateEditButton.IsEnabled = _templateList.SelectedItem is not null;
+        _templateList.SelectionChanged += (_, _) =>
+        {
+            bool hasSelection = _templateList.SelectedItem is not null;
+            _templateEditButton.IsEnabled = hasSelection;
+            _templateExportButton.IsEnabled = hasSelection;
+        };
         _templateList.MouseDoubleClick += (_, _) =>
         {
             if (_templateList.SelectedItem is TemplateListEntry entry) OpenTemplateEditor(entry.Path);
@@ -893,8 +904,19 @@ internal sealed class PreferencesWindow : Window
             if (_templateList.SelectedItem is TemplateListEntry entry) OpenTemplateEditor(entry.Path);
         };
         _templateNewButton.Click += (_, _) => OpenTemplateEditor(null);
+        _templateExportButton.Click += (_, _) =>
+        {
+            if (_templateList.SelectedItem is not TemplateListEntry entry) return;
+            var dir = AppPaths.FindAssetDir("template");
+            if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+            KeyTemplate template;
+            try { template = KeyTemplate.Load(entry.Path); }
+            catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗いたしましたの: {ex.Message}"; return; }
+            new CustomKeyExportWindow(template, dir) { Owner = this }.ShowDialog();
+        };
         row.Children.Add(_templateEditButton);
         row.Children.Add(_templateNewButton);
+        row.Children.Add(_templateExportButton);
         p.Children.Add(row);
 
         RefreshTemplateList();
@@ -1109,6 +1131,7 @@ internal sealed class PreferencesWindow : Window
         _showImages.IsChecked = s.ShowNoteImages;
         _showGrid.IsChecked = s.ShowHighlightGrid;
         _excludeFreezeEndHighlight.IsChecked = s.ExcludeFreezeEndFromHighlight;
+        _useNoteColorForHighlight.IsChecked = s.UseNoteColorForHighlight;
         _gridWidth.Text = s.HighlightLineWidth.ToString(CultureInfo.InvariantCulture);
         _gridColor.Text = s.HighlightLineColorHex;
         _gridPreview.Background = SafeBrush(s.HighlightLineColorHex);
@@ -1279,6 +1302,7 @@ internal sealed class PreferencesWindow : Window
         _work.ShowNoteImages = _showImages.IsChecked == true;
         _work.ShowHighlightGrid = _showGrid.IsChecked == true;
         _work.ExcludeFreezeEndFromHighlight = _excludeFreezeEndHighlight.IsChecked == true;
+        _work.UseNoteColorForHighlight = _useNoteColorForHighlight.IsChecked == true;
         _work.HighlightLineWidth = gw;
         _work.HighlightLineColorHex = _gridColor.Text;
         _work.PlaybackStartLineWidth = sw;

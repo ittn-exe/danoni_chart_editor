@@ -34,6 +34,11 @@ public sealed class AppSettings
     /// 既定OFF(従来通り始点・終点の両方に描画)。環境設定「表示」カテゴリからのみ変更可能。</summary>
     public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
 
+    /// <summary>強調グリッドの色をHighlightLineColorHexの固定色ではなく、そのノート自身の色
+    /// (setColor/ncolor_data由来、レーンのブラシと同じ色)にするか(2026-08-02要望対応)。
+    /// 既定OFF(従来通りHighlightLineColorHexの単色)。環境設定「表示」カテゴリからのみ変更可能。</summary>
+    public bool UseNoteColorForHighlight { get; set; } = false;
+
     /// <summary>目視テスト中の再生位置ライン追従方式(2026-07-17f、未解決事項§2-1)。
     /// "page"=(A)ページ送り: ラインが画面外へ出た瞬間に次の1画面分へ切り替える。
     /// "smooth"=(B)スムーズスクロール: ラインを画面上の固定位置に据えて譜面側を流す。</summary>
@@ -238,6 +243,12 @@ public sealed class AppSettings
     /// マウスモード中はラベルの次の行に表示し、キーボードモード中(既に2行使用中)は
     /// 1行目(実キー表示)をノート数表示に置き換える(ChartCanvas.DrawLaneLabels参照)。</summary>
     public bool ShowLaneNoteCount { get; set; } = false;
+
+    /// <summary>レーンラベル欄の1行目表示切替(2026-08-02要望対応)。既定false=キー表示
+    /// (KeyAssignLabel、例"S"、"E/R")。true=レーン名表示(LaneDef.LaneId、例"left"、"sleft")。
+    /// 同じレーンに複数キーをアサインした際、キー表示だと文字が長くなり隣接レーンと重なって
+    /// 読みづらいとの要望対応(ChartCanvas.DrawLaneLabels参照)。</summary>
+    public bool ShowLaneNameLabel { get; set; } = false;
 
     /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)。0.1〜2.0、0.1刻み。
     /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>

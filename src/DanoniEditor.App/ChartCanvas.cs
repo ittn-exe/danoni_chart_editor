@@ -237,16 +237,24 @@ public sealed class ChartCanvas : FrameworkElement
     /// ONの場合、フリーズの終点位置には強調グリッド(横棒)を描かない(始点は従来通り描く)。</summary>
     public bool ExcludeFreezeEndFromHighlight { get; set; } = false;
 
+    /// <summary>強調グリッドの色をHighlightLineColorの固定色ではなく、そのノート自身の色
+    /// (setColor/ncolor_data由来、レーンのブラシと同じ色)にするか(2026-08-02要望対応、既定OFF)。
+    /// ONの場合、DrawNotesAndFreezesが各ノート/フリーズの描画に使った色をそのまま強調グリッドにも
+    /// 使う(HighlightLineColorは無視される)。</summary>
+    public bool UseNoteColorForHighlight { get; set; } = false;
+
     /// <summary>
     /// 表示設定(AppSettings由来)をまとめて適用し、再描画する。MainWindowが起動時・設定変更時に呼ぶ。
     /// </summary>
-    public void ApplyDisplaySettings(bool showNoteImages, bool showHighlightGrid, double highlightLineWidth, Color highlightLineColor, bool excludeFreezeEndFromHighlight = false)
+    public void ApplyDisplaySettings(bool showNoteImages, bool showHighlightGrid, double highlightLineWidth, Color highlightLineColor,
+        bool excludeFreezeEndFromHighlight = false, bool useNoteColorForHighlight = false)
     {
         ShowNoteImages = showNoteImages;
         ShowHighlightGrid = showHighlightGrid;
         HighlightLineWidth = highlightLineWidth;
         HighlightLineColor = highlightLineColor;
         ExcludeFreezeEndFromHighlight = excludeFreezeEndFromHighlight;
+        UseNoteColorForHighlight = useNoteColorForHighlight;
         InvalidateVisual();
     }
 
@@ -866,6 +874,12 @@ public sealed class ChartCanvas : FrameworkElement
         DrawColumnBackgrounds(dc, layout, yTop, yBottom);
         DrawColumnSeparators(dc, layout, yTop, yBottom);
         DrawGridAndMeasureLines(dc, layout, engine, Document.Snap, tickMin, tickMax);
+        // 2026-08-02要望対応: 再生開始ラインをノート(画像)・強調表示の裏へ回す(グリッド > 再生開始
+        // ライン > ノート画像 > 強調表示、の順)。従来はノート・強調表示より後(最前面寄り)に描画しており、
+        // 密集した譜面で再生開始ラインがノートを覆い隠して見えづらいとの指摘対応。DrawNotesAndFreezes内で
+        // ノート画像→強調表示の順に描く(ヒットフラッシュと同様、同一ノートの中で画像→強調表示の重ね順は
+        // 元々維持されている)ため、ここではDrawPlaybackStartLine自体をDrawNotesAndFreezesより前へ移すだけでよい。
+        DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
         DrawLinkedBackgroundNotes(dc, layout, tab, tickMin, tickMax); // 2026-07-26: タブリンクの背景ノート(本体より奥)
         DrawNotesAndFreezes(dc, layout, tab, project, tickMin, tickMax);
         DrawValueEvents(dc, layout, tab, project, tickMin, tickMax);
@@ -876,7 +890,6 @@ public sealed class ChartCanvas : FrameworkElement
         DrawSelectionHighlights(dc, layout, Document, tickMin, tickMax);
         DrawDragPreview(dc, layout, tab, project);
         DrawPlaybackLine(dc, layout, tickMin, tickMax);
-        DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
         DrawTimeRangeSelectionHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-27: 時間情報レーンの時間範囲選択
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
@@ -918,6 +931,13 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-07-26、要望対応、既定OFF)。
     /// AppSettings.ShowLaneNoteCountから反映される(MainWindow.ApplyDisplaySettingsToCanvas参照)。</summary>
     public bool ShowLaneNoteCount { get; set; }
+
+    /// <summary>レーンラベル欄の1行目表示切替(2026-08-02要望対応、既定false=キー表示)。
+    /// false: 従来通りKeyAssignLabel(実キー、例"S"、"E/R")を表示。
+    /// true: LaneDef.LaneId(レーン名、例"left"、"sleft")を表示。同じレーンに複数キーを
+    /// アサインした際にKeyAssignLabelが長くなり読みづらいとの要望対応。
+    /// AppSettings.ShowLaneNameLabelから反映される(MainWindow.ApplyDisplaySettingsToCanvas参照)。</summary>
+    public bool ShowLaneNameLabel { get; set; }
 
     private static readonly Brush WaveformBrush = MakeFrozen(new SolidColorBrush(Color.FromArgb(0x55, 0x4F, 0xC3, 0xF7)));
     private static readonly Pen GuidePen = MakeFrozenPen(new Pen(new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x00)), 2) { DashStyle = new DashStyle([6, 3], 0) });
@@ -1388,9 +1408,12 @@ public sealed class ChartCanvas : FrameworkElement
                     // 強調グリッド: 始点・終点それぞれの位置に横棒を描く(2026-07-16h、2026-07-16jで独立トグル化)。
                     // 2026-07-26: 終点は密集時に非常に見づらいとの指摘対応で、設定でON/OFFできるようにした
                     // (既定は従来通り描画する=OFF)。
-                    dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y1 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
+                    // 2026-08-02要望対応: UseNoteColorForHighlightがONの間、固定色(highlightBrush)の代わりに
+                    // このフリーズの表示色(edgeColor、frzColor/ncolor_data由来)をそのまま使う。
+                    var freezeHighlightBrush = UseNoteColorForHighlight ? Freeze(new SolidColorBrush(edgeColor)) : highlightBrush;
+                    dc.DrawRectangle(freezeHighlightBrush, null, new Rect(col.X, y1 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                     if (!ExcludeFreezeEndFromHighlight)
-                        dc.DrawRectangle(highlightBrush, null, new Rect(col.X, y2 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
+                        dc.DrawRectangle(freezeHighlightBrush, null, new Rect(col.X, y2 - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                 }
 
                 // 2026-07-26: 警告フラグON(StartTickで同定)のフリーズは始点側へ警告アイコンを重ねる
@@ -1436,7 +1459,10 @@ public sealed class ChartCanvas : FrameworkElement
                     // (2026-07-16b: 「ノート画像だけだとレーン上の位置がわかりづらい」対応
                     //  2026-07-16j: ノート画像ONでも併用できるよう独立トグル化)。
                     // HitTest/選択/EditActionsは既存のNote判定(座標ベース)をそのまま使うため無変更。
-                    dc.DrawRectangle(highlightBrush, null,
+                    // 2026-08-02要望対応: UseNoteColorForHighlightがONの間、固定色(highlightBrush)の代わりに
+                    // このノートの表示色(noteColor、setColor/ncolor_data由来)をそのまま使う。
+                    var noteHighlightBrush = UseNoteColorForHighlight ? Freeze(new SolidColorBrush(noteColor)) : highlightBrush;
+                    dc.DrawRectangle(noteHighlightBrush, null,
                         new Rect(col.X, y - HighlightLineWidth / 2, col.Width, HighlightLineWidth));
                 }
 
@@ -1829,7 +1855,9 @@ public sealed class ChartCanvas : FrameworkElement
                 ColumnKind.Speed => "speed",
                 ColumnKind.Boost => "boost",
                 ColumnKind.Bpm => "BPM",
-                ColumnKind.Note => (KeyboardModeActive && ShowLaneNoteCount) ? noteCountText : template.Lanes[col.NoteLaneIndex].KeyAssignLabel,
+                ColumnKind.Note => (KeyboardModeActive && ShowLaneNoteCount) ? noteCountText
+                    : ShowLaneNameLabel ? template.Lanes[col.NoteLaneIndex].LaneId
+                    : template.Lanes[col.NoteLaneIndex].KeyAssignLabel,
                 ColumnKind.Word => WordLaneLabel(tab.WordLanes[col.NoteLaneIndex]),
                 _ => null,
             };
@@ -1839,13 +1867,13 @@ public sealed class ChartCanvas : FrameworkElement
             if (line1IsNoteCount)
                 DrawNoteCountText(dc, col.CenterX, barTop + 3, normalCount, freezeCount, fontSize);
             else
-                DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, Brushes.White);
+                DrawLaneLabelText(dc, col.CenterX, barTop + 3, line1, fontSize, Brushes.White, col.Width);
 
             if (col.Kind == ColumnKind.Note && KeyboardModeActive)
             {
                 var line2 = template.Lanes[col.NoteLaneIndex].KeyboardInputKeysLabel;
                 if (!string.IsNullOrEmpty(line2))
-                    DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, line2, fontSize, KeyboardInputKeyBrush);
+                    DrawLaneLabelText(dc, col.CenterX, barTop + 3 + lineH, line2, fontSize, KeyboardInputKeyBrush, col.Width);
             }
             else if (col.Kind == ColumnKind.Note && ShowLaneNoteCount && noteCountText is not null)
             {
@@ -1854,10 +1882,21 @@ public sealed class ChartCanvas : FrameworkElement
         }
     }
 
-    private static void DrawLaneLabelText(DrawingContext dc, double centerX, double top, string text, double fontSize, Brush brush)
+    /// <summary>maxWidth省略時は従来通り縮小なしで描画する。指定時、ラベル幅がmaxWidthを超えると
+    /// フォントサイズを縮小して収める(2026-08-02要望対応: 同じレーンに複数キーをアサインした場合
+    /// ("E/R"等)にラベルが隣接レーンへはみ出して重なり、読みづらいとの指摘への対応)。
+    /// 文字幅はフォントサイズにほぼ比例するため、比率から縮小後サイズを一発で計算し直す
+    /// (反復ループは行わない、最小6ptまで)。</summary>
+    private static void DrawLaneLabelText(DrawingContext dc, double centerX, double top, string text, double fontSize, Brush brush, double? maxWidth = null)
     {
         var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight, Typeface, fontSize, brush, 1.0);
+        if (maxWidth is { } w && ft.Width > w)
+        {
+            double shrunkSize = Math.Max(6, fontSize * (w / ft.Width));
+            ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, Typeface, shrunkSize, brush, 1.0);
+        }
         dc.DrawText(ft, new Point(centerX - ft.Width / 2, top));
     }
 

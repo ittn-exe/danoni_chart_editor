@@ -158,6 +158,16 @@ internal sealed class PlaytestWindow : Window
     /// 判定確定時のノート位置(YOf相当)を保存し、フラッシュ表示中はその座標に固定する。</summary>
     private readonly double[] _stepHitY;
 
+    // 2026-08-02要望対応: 「空押し」ステップゾーン点灯(danoniplus本体danoni_main.js、
+    // stepDiv要素(main_stepKeyDownクラス)を参考に移植)。本家は判定対象ノートの有無に関わらず、
+    // キーを押している間だけステップゾーンを点灯させ(離すと即消灯)、入力がきちんと拾われている
+    // ことをプレイヤーへ視覚的にフィードバックする。ヒットフラッシュ(_stepHitJudge等、判定成功時のみ
+    // 数フレームだけ判定色で光る)とは別系統の演出で、両方同時に表示され得る(本家も同様に
+    // stepDiv/stepHitを別レイヤーとして重ねて描画している)。同一レーン複数キーの同時押しは
+    // OnKeyDownInput/OnKeyUpInputの_pressedKeys遷移(0→1/1→0)に合わせて1回だけON/OFFする。
+    private readonly bool[] _stepKeyDown;
+    private const double StepKeyDownOpacity = 0.6;
+
     private readonly PlaySurface _surface;
 
     public PlaytestWindow(EditorDocument doc, bool reverse, double hiSpeed, double offsetFrames, double startFrame, double windowScale = 1.0, bool autoPlay = false,
@@ -249,6 +259,7 @@ internal sealed class PlaytestWindow : Window
         _stepHitJudge = new PlayJudge?[_template.Lanes.Count];
         _stepHitFramesRemaining = new int[_template.Lanes.Count];
         _stepHitY = new double[_template.Lanes.Count];
+        _stepKeyDown = new bool[_template.Lanes.Count];
         BuildKeyMap();
 
         Title = $"プレイテスト - {doc.Project.ProjectName} [{doc.CurrentTab.DifficultyName}]";
@@ -429,6 +440,7 @@ internal sealed class PlaytestWindow : Window
             Array.Clear(_autoPlayFreezeCursor);
             Array.Clear(_stepHitJudge);
             Array.Clear(_stepHitFramesRemaining);
+            Array.Clear(_stepKeyDown);
             foreach (var s in _pressedKeys) s.Clear();
             _judgeText = "";
             _comboText = "";
@@ -541,7 +553,13 @@ internal sealed class PlaytestWindow : Window
 
         bool laneWasPressed = _pressedKeys[lane].Count > 0;
         _pressedKeys[lane].Add(e.Key);
-        if (!laneWasPressed) _engine.KeyDown(lane, _currentFrame); // 同一レーン複数キーの同時押しは1押下扱い
+        if (!laneWasPressed)
+        {
+            _engine.KeyDown(lane, _currentFrame); // 同一レーン複数キーの同時押しは1押下扱い
+            // 2026-08-02要望対応: 「空押し」ステップゾーン点灯。判定対象ノートの有無に関わらず、
+            // キーが押されている間はステップゾーンを点灯させる(本家main_stepKeyDown相当)。
+            _stepKeyDown[lane] = true;
+        }
         e.Handled = true;
     }
 
@@ -550,7 +568,11 @@ internal sealed class PlaytestWindow : Window
         if (_autoPlay) return; // 2026-07-20
         if (!_keyToLane.TryGetValue(e.Key, out int lane)) return;
         _pressedKeys[lane].Remove(e.Key);
-        if (_pressedKeys[lane].Count == 0) _engine.KeyUp(lane, _currentFrame);
+        if (_pressedKeys[lane].Count == 0)
+        {
+            _engine.KeyUp(lane, _currentFrame);
+            _stepKeyDown[lane] = false; // 2026-08-02要望対応: 最後の1キーを離した瞬間に消灯
+        }
         e.Handled = true;
     }
 
@@ -673,6 +695,16 @@ internal sealed class PlaytestWindow : Window
 
                 // ステップゾーン(2026-07-20: レーンの画像・回転角を使用。色は従来通りDimGrayのtint)
                 DrawNote(dc, image, laneDef, cx, stepY, Colors.DimGray);
+
+                // 2026-08-02要望対応: 「空押し」ステップゾーン点灯(本家stepDiv/main_stepKeyDown移植)。
+                // 判定対象ノートの有無に関わらず、キーを押している間は白く点灯させる(離すと即消灯、
+                // フェード無し)。ヒットフラッシュ(下記)とは別レイヤーで、両方同時に表示され得る。
+                if (o._stepKeyDown[i])
+                {
+                    dc.PushOpacity(StepKeyDownOpacity);
+                    DrawNote(dc, image, laneDef, cx, stepY, Colors.White);
+                    dc.Pop();
+                }
 
                 // 2026-07-26: ステップゾーンヒットフラッシュ(本家stepHitTargetArrow移植、2026-07-26要望対応で
                 // 表示座標を「実際に消去された座標」(OnJudged側で算出したo._stepHitY)へ変更)。
