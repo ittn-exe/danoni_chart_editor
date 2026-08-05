@@ -14,7 +14,7 @@ public class KeyboardModeControllerTests
     private static long CursorTick(EditorDocument doc)
     {
         var engine = doc.Project.CreateTimingEngine();
-        return (long)Math.Round(engine.FrameToTick(doc.Project.PlaybackStartFrame!.Value));
+        return (long)Math.Round(engine.FrameToTick(doc.CurrentTab.PlaybackStartFrame!.Value));
     }
 
     // --- EnterMode ---
@@ -23,11 +23,11 @@ public class KeyboardModeControllerTests
     public void EnterMode_InitializesPlaybackStartFrame_WhenNull()
     {
         var (doc, kbd) = NewScene();
-        Assert.Null(doc.Project.PlaybackStartFrame);
+        Assert.Null(doc.CurrentTab.PlaybackStartFrame);
 
         kbd.EnterMode();
 
-        Assert.NotNull(doc.Project.PlaybackStartFrame);
+        Assert.NotNull(doc.CurrentTab.PlaybackStartFrame);
         Assert.Equal(0, CursorTick(doc));
     }
 
@@ -36,7 +36,7 @@ public class KeyboardModeControllerTests
     {
         var (doc, kbd) = NewScene();
         var engine = doc.Project.CreateTimingEngine();
-        doc.Project.PlaybackStartFrame = engine.TickToFrame(500);
+        doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(500);
 
         kbd.EnterMode();
 
@@ -136,7 +136,7 @@ public class KeyboardModeControllerTests
         // 小節2から3/4拍子(1小節=3*1680=5040tick)に変更。小節0-1は4/4(6720tick)のまま。
         doc.Project.TimeSignatures.Add(new DanoniEditor.Core.Timing.TimeSignatureEvent(2, 3, 4));
         var engine = doc.Project.CreateTimingEngine();
-        doc.Project.PlaybackStartFrame = engine.TickToFrame(6720 * 2); // 小節2の頭(拍子変化点)から開始
+        doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(6720 * 2); // 小節2の頭(拍子変化点)から開始
         kbd.EnterMode(); // 既にPlaybackStartFrame設定済みなので上書きされない
 
         kbd.MoveCursorByMeasure(1); // 小節3の頭 = 小節2の頭 + 3/4拍子1小節分(5040tick)

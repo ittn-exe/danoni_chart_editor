@@ -39,9 +39,14 @@ public sealed class ChartProject
     /// <summary>マーカー(dos.txtには出力されないエディタ専用オブジェクト、仕様書7.4)</summary>
     public List<Marker> Markers { get; set; } = [];
 
-    /// <summary>目視テスト/プレイテストの再生開始フレーム(2026-07-17f、未解決事項§2-2)。
-    /// null=未設定(曲頭から再生)。マーカーレーンのダブルクリックで設定、BackSpaceキーでリセット。
-    /// dos.txtには出力されないエディタ専用の再生設定だが、プロジェクトファイルには永続化する。</summary>
+    /// <summary>【旧・互換用】目視テスト/プレイテストの再生開始フレーム(2026-07-17f、未解決事項§2-2)。
+    /// 2026-08-04不具合修正: 複数の難易度タブが同一プロジェクト内で本値を共有していたため、
+    /// タブを切り替えても再生開始位置がリセットされず、意図しない位置に開始ラインが残る不具合が
+    /// あった(第三者からの報告)。以後は<see cref="DifficultyTab.PlaybackStartFrame"/>がタブごとに
+    /// 独立した値を持つ形へ移行し、本プロパティは旧形式プロジェクトファイルの読み込み専用の
+    /// 互換フィールドとして残す。旧ファイルを開いた直後はこの値が入っており、EditorDocument側が
+    /// 保存タイミングで各タブへ振り分けたうえで本プロパティをnullへクリアする(移行処理完了後は
+    /// 常にnull)。新規プロジェクトでは一切使用しない。</summary>
     public double? PlaybackStartFrame { get; set; }
 
     /// <summary>譜面ビューの縦方向ズーム(ChartLayout.PxPerTick、Shift+ホイール)・横方向ズーム
@@ -182,6 +187,16 @@ public sealed class DifficultyTab
     /// <summary>TimeRangeSelectionStartTick参照。範囲の終点(tick単位、旧名: MacroRangeEndTick)。</summary>
     public long? TimeRangeSelectionEndTick { get; set; }
 
+    /// <summary>目視テスト/プレイテストの再生開始フレーム(タブごとに独立、2026-08-04不具合修正)。
+    /// null=未設定(曲頭から再生)。マーカー/時間情報レーンのダブルクリックで設定、BackSpaceキーで
+    /// リセット。dos.txtには出力されないエディタ専用の再生設定だが、プロジェクトファイルには
+    /// 永続化する。旧形式(<see cref="ChartProject.PlaybackStartFrame"/>がプロジェクト全体で1つだった
+    /// 頃)のプロジェクトファイルを開いた場合、本値は保存時まで未設定のままで構わない
+    /// (EditorDocumentが保存直前に旧値を振り分ける、詳細はChartProject.PlaybackStartFrameのコメント参照)。
+    /// タブ複製時に引き継ぐかどうかはAppSettings.CarryOverPlaybackStartOnTabDuplicateによる
+    /// (2026-08-04要望対応、既定は引き継がない)。</summary>
+    public double? PlaybackStartFrame { get; set; }
+
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
     {
@@ -198,8 +213,11 @@ public sealed class DifficultyTab
     /// <summary>このタブの完全な複製を作る(2026-07-26、タブ複製機能)。ネストしたList/Dictionaryを
     /// 参照共有すると複製後どちらかを編集した際に相方も壊れるため、値の入れ物は全て新規に作り直す
     /// (中身のレコード型(ValueEvent/FreezeNote/NColorEntry等)自体はイミュータブルなため使い回してよい)。
-    /// DifficultyNameは呼び出し側で設定する(複製直後は既定で変更するため、ここでは元の値のまま返す)。</summary>
-    public DifficultyTab Clone()
+    /// DifficultyNameは呼び出し側で設定する(複製直後は既定で変更するため、ここでは元の値のまま返す)。
+    /// carryOverPlaybackStart(2026-08-04要望対応、AppSettings.CarryOverPlaybackStartOnTabDuplicateに連動):
+    /// trueの場合のみPlaybackStartFrameを複製先へ引き継ぐ。既定false(複製先は未設定=曲頭から再生。
+    /// 再生開始ラインをタブごとに独立させた趣旨に合わせ、既定では引き継がない)。</summary>
+    public DifficultyTab Clone(bool carryOverPlaybackStart = false)
     {
         var clone = new DifficultyTab
         {
@@ -223,6 +241,7 @@ public sealed class DifficultyTab
             GaugeParams = GaugeParams is null ? null : new Dictionary<string, string>(GaugeParams),
             TimeRangeSelectionStartTick = TimeRangeSelectionStartTick,
             TimeRangeSelectionEndTick = TimeRangeSelectionEndTick,
+            PlaybackStartFrame = carryOverPlaybackStart ? PlaybackStartFrame : null,
         };
         foreach (var lane in Lanes)
         {

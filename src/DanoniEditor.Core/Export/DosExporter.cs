@@ -73,14 +73,15 @@ public sealed class DosExporter
         AppendParam(sb, "difData", difData);
 
         // 色設定: 先頭タブが共通値の実体(仕様書6.4.2)。上書きはsetColor2等で追記
-        // 2026-07-16l: defaultFrzColorUse(dos-h0063)がtrueの間は、frzColorの指定自体を出力しない
-        // (本体側の既定フリーズアロー色セットが優先され、frzColorの値が無視される仕様のため。
-        // UI側でも入力を無効化・FrzColorOverrideをクリアしているが、念のためexport側でも二重に抑止する)。
-        bool defaultFrzColorUse = project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
+        // 2026-08-05不具合修正: defaultFrzColorUse(dos-h0063)がtrueの間でも、frzColorの出力自体は
+        // 抑止しない。本体側の既定フリーズアロー色セットが優先され無視されるのは[0]通常端点/[1]通常帯の
+        // みで、[2]判定中端点/[3]判定中帯(Hit)は宣言に関わらず引き続き有効なため、出力しないと
+        // 判定中の色を指定する手段が失われてしまう(以前はdefaultFrzColorUse=trueの間frzColor自体を
+        // 丸ごと出力抑止していた不具合)。[0]/[1]が空欄でもCSVの空フィールドとしてそのまま出力される。
         var firstTab = tabs[0];
         if (firstTab.SetColorOverride is { Count: > 0 } sc)
             AppendParam(sb, "setColor", string.Join(",", sc));
-        if (!defaultFrzColorUse && firstTab.FrzColorOverride is { Count: > 0 } fc)
+        if (firstTab.FrzColorOverride is { Count: > 0 } fc)
             AppendParam(sb, "frzColor", string.Join(",", fc));
         for (int i = 1; i < tabs.Count; i++)
         {
@@ -88,7 +89,7 @@ public sealed class DosExporter
             var suffix = (i + 1).ToString();
             if (t.SetColorOverride is { Count: > 0 } sco)
                 AppendParam(sb, $"setColor{suffix}", string.Join(",", sco));
-            if (!defaultFrzColorUse && t.FrzColorOverride is { Count: > 0 } fco)
+            if (t.FrzColorOverride is { Count: > 0 } fco)
                 AppendParam(sb, $"frzColor{suffix}", string.Join(",", fco));
         }
 

@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
+using DanoniEditor.Core.Import;
 using DanoniEditor.Core.Models;
 
 namespace DanoniEditor.App;
@@ -23,6 +24,16 @@ internal sealed class TemplateEditorWindow : Window
     private readonly string _templateDir;
     private readonly string? _originalPath; // null = 新規作成
     private readonly List<string> _noteGraphicOptions;
+
+    // --- 取り込み時の未確定項目ハイライト(2026-08-03要望対応) ---
+    // カスタムキー定義インポート直後にこのウィンドウを開く場合のみ渡される。値そのものは
+    // LoadFromで各VMのUnresolvedFieldsへ展開し、以降はこのフィールドを直接参照しない。
+    private readonly ImportFieldStatus? _pendingIssues;
+    /// <summary>プログラム側でコントロールのText/SelectedItemを書き戻している間はtrueにし、
+    /// TextChanged等のハンドラが「ユーザーが入力した」と誤認してUnresolvedFieldsを
+    /// クリアしてしまわないようにする(パターン切替時の表示同期用)。</summary>
+    private bool _suppressFieldChangeTracking;
+    private static readonly Brush UnresolvedHighlightBrush = new SolidColorBrush(Color.FromRgb(0x66, 0x44, 0x00));
 
     // --- 全体設定(左パネル) ---
     private readonly TextBox _keyTypeId = new() { Width = 180, HorizontalAlignment = HorizontalAlignment.Left, MaxLength = 10 };
@@ -75,10 +86,11 @@ internal sealed class TemplateEditorWindow : Window
     /// <summary>編集開始時点のkeyTypeId(新規作成時はnull)</summary>
     public string? OriginalKeyTypeId { get; }
 
-    public TemplateEditorWindow(string templateDir, string? existingPath)
+    public TemplateEditorWindow(string templateDir, string? existingPath, ImportFieldStatus? pendingIssues = null)
     {
         _templateDir = templateDir;
         _originalPath = existingPath;
+        _pendingIssues = pendingIssues;
         _noteGraphicOptions = LoadNoteGraphicOptions();
 
         Title = existingPath is null ? "テンプレート新規作成" : $"テンプレート編集 - {Path.GetFileName(existingPath)}";
@@ -114,9 +126,27 @@ internal sealed class TemplateEditorWindow : Window
         // 2026-07-26e: blank/divideCnt/posMaxはパターンごとに独立するため、入力の都度
         // 選択中パターン(ActivePattern)へ即座に書き込む(パターン切替時はLoadPatternFieldsIntoUIで
         // 表示側を差し替えるだけで、書き込み先は常に「その時点のActivePattern」なので同期漏れが無い)。
-        _blank.TextChanged += (_, _) => ActivePattern.Blank = _blank.Text;
-        _divideCnt.TextChanged += (_, _) => ActivePattern.DivideCnt = _divideCnt.Text;
-        _posMax.TextChanged += (_, _) => ActivePattern.PosMax = _posMax.Text;
+        _blank.TextChanged += (_, _) =>
+        {
+            ActivePattern.Blank = _blank.Text;
+            if (_suppressFieldChangeTracking) return;
+            ActivePattern.UnresolvedFields.Remove("blank");
+            SetHighlight(_blank, false);
+        };
+        _divideCnt.TextChanged += (_, _) =>
+        {
+            ActivePattern.DivideCnt = _divideCnt.Text;
+            if (_suppressFieldChangeTracking) return;
+            ActivePattern.UnresolvedFields.Remove("divideCnt");
+            SetHighlight(_divideCnt, false);
+        };
+        _posMax.TextChanged += (_, _) =>
+        {
+            ActivePattern.PosMax = _posMax.Text;
+            if (_suppressFieldChangeTracking) return;
+            ActivePattern.UnresolvedFields.Remove("posMax");
+            SetHighlight(_posMax, false);
+        };
 
         _patternCombo.SelectionChanged += (_, _) =>
         {
@@ -258,6 +288,15 @@ internal sealed class TemplateEditorWindow : Window
         return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
+    /// <summary>2026-08-03要望対応: 取り込みで確定できなかった項目のコントロールを目立つ背景色で
+    /// ハイライトする(解除時はコントロールの既定スタイルへ戻す)。</summary>
+    private static void SetHighlight(Control? control, bool unresolved)
+    {
+        if (control is null) return;
+        if (unresolved) control.Background = UnresolvedHighlightBrush;
+        else control.ClearValue(Control.BackgroundProperty);
+    }
+
     private static TextBlock Label(string text, bool section = false) => new()
     {
         Text = text,
@@ -308,6 +347,11 @@ internal sealed class TemplateEditorWindow : Window
         public string ScrollDirection = "down";
         public string NoteGraphic = "arrow";
         public string RotationAngle = "0";
+
+        /// <summary>2026-08-03要望対応: カスタムキー定義の取り込みで確定できず仮の値を入れた項目名
+        /// ("colorGroup"/"posIndex"/"scrollDirection"/"noteGraphic"/"rotationAngle")の集合。
+        /// ハイライト表示・保存時の入力必須チェックに使う。ユーザーが該当欄を編集すると除去される。</summary>
+        public HashSet<string> UnresolvedFields { get; } = [];
     }
 
     /// <summary>キーパターン1件分のテンプレートレベル設定(2026-07-26e)。blank/divideCnt/posMaxは
@@ -318,6 +362,10 @@ internal sealed class TemplateEditorWindow : Window
         public string Blank = "50";
         public string DivideCnt = "0";
         public string PosMax = "0";
+
+        /// <summary>2026-08-03要望対応: 取り込みで確定できず仮の値を入れた項目名
+        /// ("blank"/"divideCnt"/"posMax")の集合。</summary>
+        public HashSet<string> UnresolvedFields { get; } = [];
     }
 
     private static LaneEditVM FromLaneDef(LaneDef d) => new()
@@ -423,16 +471,29 @@ internal sealed class TemplateEditorWindow : Window
         AddKeyCaptureTextRow("keyboardInputKeys(空欄可、複数は/区切り。「入力開始」→実キー押下でも追加可):",
             vm.KeyboardInputKeys, v => vm.KeyboardInputKeys = v);
         vm.ColorGroupBox = AddTextRow("colorGroup(整数、パターンごとに独立):",
-            ActiveFields(vm).ColorGroup, v => { ActiveFields(vm).ColorGroup = v; RefreshPreview(); });
+            ActiveFields(vm).ColorGroup, v =>
+            {
+                ActiveFields(vm).ColorGroup = v;
+                if (!_suppressFieldChangeTracking) { ActiveFields(vm).UnresolvedFields.Remove("colorGroup"); SetHighlight(vm.ColorGroupBox, false); }
+                RefreshPreview();
+            });
         vm.PosIndexBox = AddTextRow("posIndex(数値、小数可、パターンごとに独立):",
-            ActiveFields(vm).PosIndex, v => ActiveFields(vm).PosIndex = v);
+            ActiveFields(vm).PosIndex, v =>
+            {
+                ActiveFields(vm).PosIndex = v;
+                if (!_suppressFieldChangeTracking) { ActiveFields(vm).UnresolvedFields.Remove("posIndex"); SetHighlight(vm.PosIndexBox, false); }
+            });
 
         grid.Children.Add(Label("scrollDirection(パターンごとに独立):"));
         var scrollCombo = new ComboBox { Width = 120, HorizontalAlignment = HorizontalAlignment.Left };
         scrollCombo.Items.Add("up");
         scrollCombo.Items.Add("down");
         scrollCombo.SelectedItem = ActiveFields(vm).ScrollDirection is "up" or "down" ? ActiveFields(vm).ScrollDirection : "down";
-        scrollCombo.SelectionChanged += (_, _) => ActiveFields(vm).ScrollDirection = scrollCombo.SelectedItem as string ?? "down";
+        scrollCombo.SelectionChanged += (_, _) =>
+        {
+            ActiveFields(vm).ScrollDirection = scrollCombo.SelectedItem as string ?? "down";
+            if (!_suppressFieldChangeTracking) { ActiveFields(vm).UnresolvedFields.Remove("scrollDirection"); SetHighlight(scrollCombo, false); }
+        };
         grid.Children.Add(scrollCombo);
         vm.ScrollDirCombo = scrollCombo;
 
@@ -444,13 +505,19 @@ internal sealed class TemplateEditorWindow : Window
         graphicCombo.SelectionChanged += (_, _) =>
         {
             ActiveFields(vm).NoteGraphic = graphicCombo.SelectedItem as string ?? ActiveFields(vm).NoteGraphic;
+            if (!_suppressFieldChangeTracking) { ActiveFields(vm).UnresolvedFields.Remove("noteGraphic"); SetHighlight(graphicCombo, false); }
             RefreshPreview();
         };
         grid.Children.Add(graphicCombo);
         vm.NoteGraphicCombo = graphicCombo;
 
         vm.RotationAngleBox = AddTextRow("rotationAngle(度、パターンごとに独立):",
-            ActiveFields(vm).RotationAngle, v => { ActiveFields(vm).RotationAngle = v; RefreshPreview(); });
+            ActiveFields(vm).RotationAngle, v =>
+            {
+                ActiveFields(vm).RotationAngle = v;
+                if (!_suppressFieldChangeTracking) { ActiveFields(vm).UnresolvedFields.Remove("rotationAngle"); SetHighlight(vm.RotationAngleBox, false); }
+                RefreshPreview();
+            });
         AddTextRow("engineLaneNum(整数、本体エンジンの内部レーン番号):", vm.EngineLaneNum, v => vm.EngineLaneNum = v);
 
         tab.Content = new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -501,27 +568,33 @@ internal sealed class TemplateEditorWindow : Window
     /// 実害は無い(2026-07-26e)。</summary>
     private void LoadPatternFieldsIntoUI()
     {
+        _suppressFieldChangeTracking = true;
         var tp = ActivePattern;
         _blank.Text = tp.Blank;
+        SetHighlight(_blank, tp.UnresolvedFields.Contains("blank"));
         _divideCnt.Text = tp.DivideCnt;
+        SetHighlight(_divideCnt, tp.UnresolvedFields.Contains("divideCnt"));
         _posMax.Text = tp.PosMax;
+        SetHighlight(_posMax, tp.UnresolvedFields.Contains("posMax"));
 
         foreach (TabItem item in _laneTabs.Items)
         {
             var vm = (LaneEditVM)item.Tag!;
             var f = ActiveFields(vm);
             if (vm.KeyAssignBox is not null) vm.KeyAssignBox.Text = f.KeyAssign;
-            if (vm.ColorGroupBox is not null) vm.ColorGroupBox.Text = f.ColorGroup;
-            if (vm.PosIndexBox is not null) vm.PosIndexBox.Text = f.PosIndex;
-            if (vm.ScrollDirCombo is not null) vm.ScrollDirCombo.SelectedItem = f.ScrollDirection;
+            if (vm.ColorGroupBox is not null) { vm.ColorGroupBox.Text = f.ColorGroup; SetHighlight(vm.ColorGroupBox, f.UnresolvedFields.Contains("colorGroup")); }
+            if (vm.PosIndexBox is not null) { vm.PosIndexBox.Text = f.PosIndex; SetHighlight(vm.PosIndexBox, f.UnresolvedFields.Contains("posIndex")); }
+            if (vm.ScrollDirCombo is not null) { vm.ScrollDirCombo.SelectedItem = f.ScrollDirection; SetHighlight(vm.ScrollDirCombo, f.UnresolvedFields.Contains("scrollDirection")); }
             if (vm.NoteGraphicCombo is not null)
             {
                 EnsureGraphicOption(vm.NoteGraphicCombo, f.NoteGraphic);
                 vm.NoteGraphicCombo.SelectedItem = f.NoteGraphic;
+                SetHighlight(vm.NoteGraphicCombo, f.UnresolvedFields.Contains("noteGraphic"));
             }
-            if (vm.RotationAngleBox is not null) vm.RotationAngleBox.Text = f.RotationAngle;
+            if (vm.RotationAngleBox is not null) { vm.RotationAngleBox.Text = f.RotationAngle; SetHighlight(vm.RotationAngleBox, f.UnresolvedFields.Contains("rotationAngle")); }
         }
         RefreshPreview();
+        _suppressFieldChangeTracking = false;
     }
 
     /// <summary>現在選択中パターンの値をコピーして新規パターンを追加し、そちらへ切り替える
@@ -793,6 +866,9 @@ internal sealed class TemplateEditorWindow : Window
     // 読み込み・保存
     // =====================================================================
 
+    private static readonly string[] LaneUnresolvedFieldNames = ["colorGroup", "posIndex", "scrollDirection", "noteGraphic", "rotationAngle"];
+    private static readonly string[] PatternUnresolvedFieldNames = ["blank", "divideCnt", "posMax"];
+
     private void LoadFrom(KeyTemplate tpl)
     {
         _keyTypeId.Text = tpl.KeyTypeId;
@@ -800,31 +876,63 @@ internal sealed class TemplateEditorWindow : Window
         _comment.Text = tpl.Comment ?? "";
         _keyboardLayout.SelectedItem = tpl.KeyboardLayout;
 
+        _suppressFieldChangeTracking = true;
         _basePattern.Blank = tpl.Blank.ToString(CultureInfo.InvariantCulture);
         _basePattern.DivideCnt = tpl.DivideCnt.ToString(CultureInfo.InvariantCulture);
         _basePattern.PosMax = tpl.PosMax.ToString(CultureInfo.InvariantCulture);
+        // 2026-08-03要望対応: カスタムキー定義の取り込み直後に開かれた場合、確定できなかった
+        // 項目(パターン0=既定パターン分)をここで反映する。ハイライトの実際の表示はこの後の
+        // RefreshPatternCombo→LoadPatternFieldsIntoUIが行う。
+        if (_pendingIssues is not null)
+            foreach (var fn in PatternUnresolvedFieldNames)
+                if (_pendingIssues.UnresolvedPatternFields.Contains((0, fn))) _basePattern.UnresolvedFields.Add(fn);
         _blank.Text = _basePattern.Blank;
         _divideCnt.Text = _basePattern.DivideCnt;
         _posMax.Text = _basePattern.PosMax;
+        _suppressFieldChangeTracking = false;
 
         // 2026-07-26e: 追加パターン(ExtraPatterns)を読み込む。tpl.Lanesは保存時にタブ順=displayOrder順で
         // 書き出されているため、DisplayOrder順に並べ直せば各パターンのLaneOverridesと同じインデックスで
         // 対応が取れる(KeyTemplate.WithPatternと同じ前提)。
         _extraPatterns.Clear();
-        foreach (var p in tpl.ExtraPatterns)
-            _extraPatterns.Add(new PatternVM
+        for (int pi = 0; pi < tpl.ExtraPatterns.Count; pi++)
+        {
+            var p = tpl.ExtraPatterns[pi];
+            var pvm = new PatternVM
             {
                 Name = p.Name ?? "",
                 Blank = p.Blank.ToString(CultureInfo.InvariantCulture),
                 DivideCnt = p.DivideCnt.ToString(CultureInfo.InvariantCulture),
                 PosMax = p.PosMax.ToString(CultureInfo.InvariantCulture),
-            });
+            };
+            if (_pendingIssues is not null)
+            {
+                int patternNumber = pi + 1;
+                foreach (var fn in PatternUnresolvedFieldNames)
+                    if (_pendingIssues.UnresolvedPatternFields.Contains((patternNumber, fn))) pvm.UnresolvedFields.Add(fn);
+            }
+            _extraPatterns.Add(pvm);
+        }
 
         var orderedLanes = tpl.Lanes.OrderBy(l => l.DisplayOrder).ToList();
         for (int i = 0; i < orderedLanes.Count; i++)
         {
             var vm = FromLaneDef(orderedLanes[i]);
-            foreach (var p in tpl.ExtraPatterns) vm.PatternOverrides.Add(FromOverride(p.LaneOverrides[i]));
+            if (_pendingIssues is not null)
+                foreach (var fn in LaneUnresolvedFieldNames)
+                    if (_pendingIssues.UnresolvedLaneFields.Contains((0, i, fn))) vm.Base.UnresolvedFields.Add(fn);
+
+            for (int pi = 0; pi < tpl.ExtraPatterns.Count; pi++)
+            {
+                var ov = FromOverride(tpl.ExtraPatterns[pi].LaneOverrides[i]);
+                if (_pendingIssues is not null)
+                {
+                    int patternNumber = pi + 1;
+                    foreach (var fn in LaneUnresolvedFieldNames)
+                        if (_pendingIssues.UnresolvedLaneFields.Contains((patternNumber, i, fn))) ov.UnresolvedFields.Add(fn);
+                }
+                vm.PatternOverrides.Add(ov);
+            }
             AddLaneTab(vm);
         }
     }
@@ -904,9 +1012,63 @@ internal sealed class TemplateEditorWindow : Window
         return true;
     }
 
+    /// <summary>2026-08-03要望対応: 取り込みで確定できなかった項目(プレイテスト・プレビューの
+    /// 画面構成に関わる項目のみ)を、パターン0→追加パターンの順、各パターン内はグローバル設定→
+    /// タブ順のレーンの順で列挙する。保存ブロック時のメッセージ・切替先の決定に使う。</summary>
+    private List<(int PatternIndex, TabItem? LaneItem, string FieldName)> CollectUnresolvedFields()
+    {
+        var result = new List<(int, TabItem?, string)>();
+
+        void AddPatternFields(int patternIndex, HashSet<string> set)
+        {
+            foreach (var fn in PatternUnresolvedFieldNames)
+                if (set.Contains(fn)) result.Add((patternIndex, null, fn));
+        }
+        void AddLaneFields(int patternIndex, TabItem item, HashSet<string> set)
+        {
+            foreach (var fn in LaneUnresolvedFieldNames)
+                if (set.Contains(fn)) result.Add((patternIndex, item, fn));
+        }
+
+        AddPatternFields(0, _basePattern.UnresolvedFields);
+        foreach (TabItem item in _laneTabs.Items)
+            AddLaneFields(0, item, ((LaneEditVM)item.Tag!).Base.UnresolvedFields);
+
+        for (int pi = 0; pi < _extraPatterns.Count; pi++)
+        {
+            int patternNumber = pi + 1;
+            AddPatternFields(patternNumber, _extraPatterns[pi].UnresolvedFields);
+            foreach (TabItem item in _laneTabs.Items)
+            {
+                var vm = (LaneEditVM)item.Tag!;
+                if (pi < vm.PatternOverrides.Count) AddLaneFields(patternNumber, item, vm.PatternOverrides[pi].UnresolvedFields);
+            }
+        }
+        return result;
+    }
+
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         _error.Text = "";
+
+        // 2026-08-03要望対応: カスタムキー定義の取り込みで確定できなかった項目(プレイテスト・
+        // プレビューの表示に直接関わる項目のみ、keyAssign等のキーボードモード用の項目は対象外)が
+        // 残っている間は保存させない。OKを押してもダイアログで入力を促し、該当のパターン/レーンへ
+        // 切り替えた上でテンプレートエディタでの編集を続行させる(要望どおり、保存自体はブロックする)。
+        var unresolved = CollectUnresolvedFields();
+        if (unresolved.Count > 0)
+        {
+            var (patternIndex, laneItem, fieldName) = unresolved[0];
+            _patternCombo.SelectedIndex = patternIndex;
+            if (laneItem is not null) _laneTabs.SelectedItem = laneItem;
+            MessageBox.Show(this,
+                $"プレイテスト・プレビューの表示に必要な項目が未入力のままですの(あと{unresolved.Count}件、" +
+                $"まず「{fieldName}」をご確認くださいまし)。カスタムキー定義の取り込みで自動取得できなかった" +
+                "項目ですわ。黄色くハイライトされた欄をすべて入力してから、改めて保存してくださいまし。",
+                "入力が必要ですの", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var keyTypeId = _keyTypeId.Text.Trim();
         if (keyTypeId.Length == 0 || keyTypeId.Length > 10 || !keyTypeId.All(char.IsAsciiLetterOrDigit))
         { _error.Text = "keyTypeIdは半角英数字1〜10文字で入力してくださいまし"; return; }

@@ -540,7 +540,7 @@ public partial class MainWindow : Window
         _handClapPlayer = null; // ノート音の選択ファイルが変わった可能性があるため再読込させる
         ApplyAutoSaveTimerSettings(); // 2026-07-25
         ApplyDisplaySettingsToCanvas();
-        if (_document is not null) _document.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 2026-07-19b
+        if (_document is not null) _document.UndoCapacity = Math.Max(1, _appSettings.UndoHistorySize); // 2026-07-19b(2026-08-06: 全タブの履歴へ適用)
         if (_keyboardMode is not null) _keyboardMode.ThresholdMs = _appSettings.SimultaneousPressThresholdMs; // 2026-07-21
 
         // 上部パネルの同項目コントロールへ反映(各Changedハンドラが再保存するが実害なし)
@@ -604,7 +604,15 @@ public partial class MainWindow : Window
             Tuning = _appSettings.DefaultTuning,
             FrzAttempt = _appSettings.DefaultFrzAttempt,
         };
-        project.Tabs.Add(DifficultyTab.CreateFor(template, c.DifficultyName));
+        var firstTab = DifficultyTab.CreateFor(template, c.DifficultyName);
+        // 2026-08-06要望対応: 色の初期値自動補完は「新規プロジェクト作成時」のみに限定する
+        // (以前は②タブの表示更新のたびに書き込んでいたため、プロジェクトを開いた時やタブを追加した際にも
+        // 勝手に既定色が入ってしまう不具合があった。新規作成の入口はここ一箇所のみなので、ここでだけ
+        // 明示的に既定色をセットする)。
+        int groupCount = template.Lanes.Select(l => l.ColorGroup).DefaultIfEmpty(0).Max() + 1;
+        firstTab.SetColorOverride = DefaultSetColors(groupCount);
+        firstTab.FrzColorOverride = DefaultFrzColors();
+        project.Tabs.Add(firstTab);
         AddSession(new EditorDocument(project, _templates), null); // 2026-07-20: 新規プロジェクトタブとして追加
         _appSettings.StatNewProjectCount++;
         _appSettings.Save(AppPaths.SettingsFilePath);
@@ -712,6 +720,7 @@ public partial class MainWindow : Window
 
     private void SaveProjectInternal(bool forcePrompt)
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから保存する(CommitPendingEdits参照)
         if (_document is null)
         {
             MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "保存できません", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -738,6 +747,9 @@ public partial class MainWindow : Window
             // (従来はNewProject_Click等で設定した"untitled"のまま更新されず、保存後も表示が
             // 変わらない不具合になっていた)。
             _document.Project.ProjectName = Path.GetFileNameWithoutExtension(path);
+            // 2026-08-04不具合修正: 旧形式プロジェクト(再生開始フレームをタブ横断で共有していた形式)から
+            // 移行する場合、保存直前に各タブへ値を確定させる(EditorDocument.PrepareForSave参照)。
+            _document.PrepareForSave();
             ProjectSerializer.Save(_document.Project, path);
             _currentFilePath = path;
             _document.MarkSaved(); // 未保存フラグ解除→タイトルバーの'*'も消える(2026-07-19b)
@@ -812,7 +824,7 @@ public partial class MainWindow : Window
                 case KeyMacroStepKind.SetPlaybackStartSeconds:
                     if (_document is not null)
                     {
-                        _document.Project.PlaybackStartFrame = step.Value * 60.0;
+                        _document.CurrentTab.PlaybackStartFrame = step.Value * 60.0;
                         _document.NotifyChanged();
                         InvalidateChartViews();
                     }
@@ -829,6 +841,7 @@ public partial class MainWindow : Window
 
     private void ExportDos_Click(object sender, RoutedEventArgs e)
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
             MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -861,6 +874,7 @@ public partial class MainWindow : Window
     /// 書き出す。合作相手は「ITTNエディタのタブファイルをインポート」/D&Dで自分のプロジェクトへタブ追加できる。</summary>
     private void ExportCurrentTab_Click(object sender, RoutedEventArgs e)
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
             MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -884,6 +898,108 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    /// <summary>現在の難易度タブをSKBエディタ保存ファイル(JSON)形式へエクスポートする
+    /// (2026-08-03要望対応)。SkbExporter参照。</summary>
+    private void ExportSkb_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var round = GridMismatchPolicyDialog.Ask(this, "SKBエディタへエクスポート");
+        if (round is null) return; // キャンセル
+
+        SkbExportResult result;
+        try
+        {
+            result = SkbExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
+                new SkbExportOptions { RoundMisalignedBpmEvents = round.Value });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Filter = "SKBエディタ保存ファイル (*.json)|*.json",
+            FileName = $"{_document.Project.ProjectName}_{_document.CurrentTab.DifficultyName}_skb.json",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            File.WriteAllText(dlg.FileName, result.Json);
+            StatusText.Text = $"SKBエディタ形式でエクスポートしました: {Path.GetFileName(dlg.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"保存に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (result.Warnings.Count > 0)
+            MessageBox.Show(this,
+                "エクスポートは完了いたしましたが、以下の点をご確認くださいまし。\n\n" +
+                string.Join("\n\n", result.Warnings.Select(w => "・" + w)),
+                "エクスポート完了(要確認)", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    /// <summary>現在の難易度タブをFUJIエディタ形式(テキスト)へエクスポートする
+    /// (2026-08-03要望対応)。FujiExporter参照。</summary>
+    private void ExportFuji_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var round = GridMismatchPolicyDialog.Ask(this, "FUJIエディタへエクスポート");
+        if (round is null) return; // キャンセル
+
+        FujiExportResult result;
+        try
+        {
+            result = FujiExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
+                new FujiExportOptions { RoundMisalignedPositions = round.Value });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Filter = "FUJIエディタファイル (*.txt)|*.txt",
+            FileName = $"{_document.Project.ProjectName}_{_document.CurrentTab.DifficultyName}_fuji.txt",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            File.WriteAllText(dlg.FileName, result.Text);
+            StatusText.Text = $"FUJIエディタ形式でエクスポートしました: {Path.GetFileName(dlg.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"保存に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (result.Warnings.Count > 0)
+            MessageBox.Show(this,
+                "エクスポートは完了いたしましたが、以下の点をご確認くださいまし。\n\n" +
+                string.Join("\n\n", result.Warnings.Select(w => "・" + w)),
+                "エクスポート完了(要確認)", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     // =====================================================================
@@ -1198,7 +1314,7 @@ public partial class MainWindow : Window
         _keyboardMode = new KeyboardModeController(doc) { ThresholdMs = _appSettings.SimultaneousPressThresholdMs };
         if (_keyboardModeActive) _keyboardMode.EnterMode();
         FrameEditToggle.IsChecked = false; // 新ドキュメントは拍情報モードから(仕様書7.6、2026-07-17i)
-        doc.UndoStack.Capacity = Math.Max(1, _appSettings.UndoHistorySize); // 仕様書14章(2026-07-19b)
+        doc.UndoCapacity = Math.Max(1, _appSettings.UndoHistorySize); // 仕様書14章(2026-07-19b、2026-08-06: 全タブの履歴へ適用)
         UpdateWindowTitle();
 
         ProjectTitleText.Text = $"{doc.Project.ProjectName} ({doc.Project.MusicTitle})";
@@ -1327,7 +1443,33 @@ public partial class MainWindow : Window
     {
         if (_suppressProjectTabSelectionEvent) return;
         if (ProjectTabControl.SelectedIndex < 0) return;
+
+        CommitPendingEdits(); // 2026-08-06: 切替前に入力中の値を確定させる(下記CommitPendingEdits参照)
         ActivateSession(ProjectTabControl.SelectedIndex);
+    }
+
+    /// <summary>
+    /// 入力途中の右パネル項目を「今」確定させる(2026-08-06不具合修正、洗い出し#2)。
+    ///
+    /// 右パネルの数値項目は「フォーカスが外れた時点で確定」する方式(ProjectNumericField_LostFocus等)の
+    /// ため、テキストボックスにフォーカスが残ったままモデルを読み書きする操作(保存・エクスポート・
+    /// タブ切替・プレイテスト開始など)を実行すると、LostFocusがその処理より後に発火し、
+    /// 「入力した値が保存されない」「変更前タブへの編集が変更後タブへ書き込まれる」といった
+    /// 不具合になる。モデルを読み取る直前に必ずこれを呼び、フォーカスを外してLostFocusを
+    /// 同期的に先へ発火させることで、常に画面の入力内容とモデルが一致した状態にしてから処理へ進む。
+    ///
+    /// Keyboard.ClearFocus()だけでは論理フォーカス(WPFのFocusManager)が残るケースがあるため、
+    /// ウィンドウ自身へ論理フォーカスを移してからキーボードフォーカスを解除する。
+    /// </summary>
+    private void CommitPendingEdits()
+    {
+        var focused = Keyboard.FocusedElement as DependencyObject;
+        if (focused is null) return;
+        // 譜面ビュー等、そもそも入力欄でない要素にフォーカスがある場合は何もしない
+        // (無用なフォーカス移動でキーボードモードの操作対象が変わってしまうのを避ける)。
+        if (focused is not TextBox && focused is not ComboBox) return;
+        FocusManager.SetFocusedElement(this, this);
+        Keyboard.ClearFocus();
     }
 
     /// <summary>「プロジェクトを閉じる」ボタン。未保存なら個別に確認し、最後の1つを閉じた場合は
@@ -1811,7 +1953,7 @@ public partial class MainWindow : Window
         // 範囲選択によるもの)とは独立した機能で、既定OFF)。
         if (_visualTestActive && _appSettings.VisualTestAutoReturnEnabled)
         {
-            double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+            double startFrame = _document.CurrentTab.PlaybackStartFrame ?? 0;
             double thresholdFrame;
             if (_appSettings.VisualTestAutoReturnUnit == "seconds")
             {
@@ -1910,11 +2052,12 @@ public partial class MainWindow : Window
     /// 直接操作できるよう、DuplicateDifficultyTab_Clickの本体をインデックス指定版として分離)。</summary>
     private void DuplicateTabAt(int idx)
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから複製する(複製元に確実に反映させる)
         if (_document is null) return;
         var tabs = _document.Project.Tabs;
         if (idx < 0 || idx >= tabs.Count) return;
 
-        var clone = tabs[idx].Clone();
+        var clone = tabs[idx].Clone(_appSettings.CarryOverPlaybackStartOnTabDuplicate);
         clone.DifficultyName = $"{clone.DifficultyName} のコピー";
         tabs.Insert(idx + 1, clone);
         _document.NotifyTabsChanged(idx + 1);
@@ -1931,6 +2074,7 @@ public partial class MainWindow : Window
     /// 直接操作できるよう、CloseCurrentTab_Clickの本体をインデックス指定版として分離)。</summary>
     private void CloseTabAt(int idx)
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから閉じる(残るタブへの誤コミットを防ぐ)
         if (_document is null) return;
         var tabs = _document.Project.Tabs;
         if (tabs.Count <= 1)
@@ -1945,14 +2089,9 @@ public partial class MainWindow : Window
             "タブを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
-        // 2026-07-26要望対応: リンク中のタブを閉じる場合、相手タブ側の参照が宙に浮かないよう
-        // リンクを解除しておく(タブリンク機能)。
-        if (target.LinkedTabId is { } linkedId)
-        {
-            var partner = tabs.FirstOrDefault(t => t.TabId == linkedId);
-            if (partner is not null) partner.LinkedTabId = null;
-        }
-
+        // 2026-07-26要望対応: リンク中のタブを閉じる場合、相手タブ側の参照が宙に浮かないようリンクを
+        // 解除する(タブリンク機能)。2026-08-06: この解除処理はProjectOperations.RemoveTab側へ集約した
+        // (呼び出し側の作法に依存せず、どの経路から削除しても安全になるように)。
         ProjectOperations.RemoveTab(_document.Project, idx);
         // 2026-07-24: 単純に CurrentTabIndex に代入するだけだと、閉じたタブが末尾以外の場合
         // 「数値としては変わらないインデックス」になり得て(例: 3件中の2番目を閉じると2→2のまま)、
@@ -2020,7 +2159,9 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    // タブのD&D並び替え(仕様書6.1「難易度タブはD&Dで並び替え」/TBD#10、2026-07-20)
+    // タブのD&D並び替え(仕様書6.1「難易度タブはD&Dで並び替え」/TBD#10、2026-07-20。
+    // 2026-08-06要望対応: 「離した場所のタブと入替え」ではなく「離した位置に挿入」する挙動へ変更し、
+    // 挿入先を示すインジケータ(縦線)を表示するようにした)。
     // ProjectTabControl/DifficultyTabControlの両方で共用。DisplayMemberPath運用のまま
     // (ItemTemplate等を変更せず)ヒットテストでTabItem・そのIndexFromContainerを求める方式。
     // 同じ行同士でしかドラッグを開始しないため、行をまたいだ入れ替えは起こらない。
@@ -2036,6 +2177,61 @@ public partial class MainWindow : Window
             source = VisualTreeHelper.GetParent(source);
         return source as TabItem;
     }
+
+    /// <summary>マウス位置(tc基準の座標)から「挿入先index」(0～Items.Count、Countなら末尾へ挿入)を
+    /// 判定する(2026-08-06要望対応)。TabItem上にカーソルがあれば、そのTabItemの左右どちらの半分に
+    /// あるかで「そのタブの前」か「そのタブの後」かを決める。TabItemの外(タブ行の余白)にカーソルが
+    /// ある場合は、先頭タブより左なら先頭、末尾タブより右なら末尾として扱う。</summary>
+    private static int ComputeTabInsertIndex(TabControl tc, Point posOnTabControl, DependencyObject? hitSource)
+    {
+        int count = tc.Items.Count;
+        if (count == 0) return 0;
+
+        var item = FindTabItemAncestor(hitSource);
+        if (item is not null)
+        {
+            int idx = tc.ItemContainerGenerator.IndexFromContainer(item);
+            if (idx < 0) return count;
+            double itemLeft = item.TranslatePoint(new Point(0, 0), tc).X;
+            double midX = itemLeft + item.ActualWidth / 2.0;
+            return posOnTabControl.X < midX ? idx : idx + 1;
+        }
+
+        // TabItemそのものには乗っていない(タブ行の余白部分)。先頭・末尾タブとの位置関係で判定する。
+        if (tc.ItemContainerGenerator.ContainerFromIndex(0) is TabItem first &&
+            posOnTabControl.X < first.TranslatePoint(new Point(0, 0), tc).X)
+            return 0;
+        return count;
+    }
+
+    /// <summary>挿入先index(ComputeTabInsertIndexの戻り値)に対応する、インジケータ線を引くべきX座標
+    /// (tc基準)を求める(2026-08-06要望対応)。</summary>
+    private static double TabInsertIndicatorX(TabControl tc, int insertIndex)
+    {
+        int count = tc.Items.Count;
+        if (count == 0) return 0;
+        if (insertIndex <= 0)
+            return tc.ItemContainerGenerator.ContainerFromIndex(0) is TabItem first
+                ? first.TranslatePoint(new Point(0, 0), tc).X : 0;
+        if (insertIndex >= count)
+            return tc.ItemContainerGenerator.ContainerFromIndex(count - 1) is TabItem last
+                ? last.TranslatePoint(new Point(0, 0), tc).X + last.ActualWidth : 0;
+        return tc.ItemContainerGenerator.ContainerFromIndex(insertIndex) is TabItem mid
+            ? mid.TranslatePoint(new Point(0, 0), tc).X : 0;
+    }
+
+    private Border TabInsertIndicatorFor(TabControl tc) =>
+        ReferenceEquals(tc, ProjectTabControl) ? ProjectTabInsertIndicator : DifficultyTabInsertIndicator;
+
+    private void ShowTabInsertIndicator(TabControl tc, int insertIndex)
+    {
+        var indicator = TabInsertIndicatorFor(tc);
+        double x = TabInsertIndicatorX(tc, insertIndex);
+        indicator.Margin = new Thickness(x - indicator.Width / 2.0, 0, 0, 0);
+        indicator.Visibility = Visibility.Visible;
+    }
+
+    private void HideTabInsertIndicator(TabControl tc) => TabInsertIndicatorFor(tc).Visibility = Visibility.Collapsed;
 
     private void TabControl_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -2060,24 +2256,42 @@ public partial class MainWindow : Window
         _tabDragSourceIndex = -1;
         _tabDragControl = null;
         DragDrop.DoDragDrop(tc, from, DragDropEffects.Move);
+        // DoDragDropはドラッグ操作が終わる(Drop完了・ESCキャンセル・行外へのドロップ等)まで戻らないため、
+        // 終了理由によらずここで確実にインジケータを消す(Drop/DragLeaveの呼び忘れ経路をカバーする保険)。
+        HideTabInsertIndicator(tc);
     }
 
     private void TabControl_PreviewDragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None;
+        var tc = (TabControl)sender;
+        if (!e.Data.GetDataPresent(typeof(int)))
+        {
+            e.Effects = DragDropEffects.None;
+            HideTabInsertIndicator(tc);
+            e.Handled = true;
+            return;
+        }
+        e.Effects = DragDropEffects.Move;
+        int insertIndex = ComputeTabInsertIndex(tc, e.GetPosition(tc), e.OriginalSource as DependencyObject);
+        ShowTabInsertIndicator(tc, insertIndex);
         e.Handled = true;
     }
 
-    /// <summary>プロジェクトタブ行内での並び替え。_sessionsを入れ替え、入れ替え後も同じセッションを
+    private void TabControl_DragLeave(object sender, DragEventArgs e) => HideTabInsertIndicator((TabControl)sender);
+
+    /// <summary>プロジェクトタブ行内での並び替え。2026-08-06要望対応:「離した場所のタブと入替え」ではなく
+    /// 「離した位置(カーソルがタブの左右どちらの半分にあるか)に挿入」する。挿入後も同じセッションを
     /// アクティブにする(順番だけ変わり、選択中プロジェクトは変わらない)。</summary>
     private void ProjectTabControl_Drop(object sender, DragEventArgs e)
     {
+        HideTabInsertIndicator(ProjectTabControl);
         if (!e.Data.GetDataPresent(typeof(int))) return;
         int from = (int)e.Data.GetData(typeof(int));
-        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
-        if (item is null) return;
-        int to = ProjectTabControl.ItemContainerGenerator.IndexFromContainer(item);
-        if (from < 0 || to < 0 || from >= _sessions.Count || to >= _sessions.Count || from == to) return;
+        if (from < 0 || from >= _sessions.Count) return;
+
+        int rawTarget = ComputeTabInsertIndex(ProjectTabControl, e.GetPosition(ProjectTabControl), e.OriginalSource as DependencyObject);
+        int to = rawTarget > from ? rawTarget - 1 : rawTarget; // fromを取り除いた後のインデックスへ変換
+        if (to == from) return;
 
         SyncActiveSessionBeforeSwitch(); // 並び替え前に現在の実行時状態を書き戻しておく
         var moved = _sessions[from];
@@ -2088,17 +2302,21 @@ public partial class MainWindow : Window
         RefreshProjectTabBar();
     }
 
-    /// <summary>難易度タブ行内での並び替え。既存のProjectOperations.MoveTab(1タブ目の色実体入替ルール込み、
-    /// 仕様書6.4.2)をそのまま使う。</summary>
+    /// <summary>難易度タブ行内での並び替え。2026-08-06要望対応:「離した場所のタブと入替え」ではなく
+    /// 「離した位置に挿入」する。既存のProjectOperations.MoveTab(1タブ目の色実体入替ルール込み、
+    /// 仕様書6.4.2)はfromIndex/toIndexとも「挿入後」の絶対indexを取るため、ここで求めた挿入先を
+    /// from除去後のindexへ変換してから渡す。</summary>
     private void DifficultyTabControl_Drop(object sender, DragEventArgs e)
     {
+        HideTabInsertIndicator(DifficultyTabControl);
         if (_document is null || !e.Data.GetDataPresent(typeof(int))) return;
         int from = (int)e.Data.GetData(typeof(int));
-        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
-        if (item is null) return;
-        int to = DifficultyTabControl.ItemContainerGenerator.IndexFromContainer(item);
         var tabs = _document.Project.Tabs;
-        if (from < 0 || to < 0 || from >= tabs.Count || to >= tabs.Count || from == to) return;
+        if (from < 0 || from >= tabs.Count) return;
+
+        int rawTarget = ComputeTabInsertIndex(DifficultyTabControl, e.GetPosition(DifficultyTabControl), e.OriginalSource as DependencyObject);
+        int to = rawTarget > from ? rawTarget - 1 : rawTarget; // fromを取り除いた後のインデックスへ変換
+        if (to == from) return;
 
         ProjectOperations.MoveTab(_document.Project, from, to);
         // 2026-07-24: 並び替え後もtoが元のCurrentTabIndexと同値になり得る(例: 自分より後ろのタブと
@@ -2112,6 +2330,13 @@ public partial class MainWindow : Window
     {
         if (_suppressSelectionEvent || _document is null) return;
         if (DifficultyTabControl.SelectedIndex < 0) return;
+
+        // 2026-08-06不具合修正: 右パネルのテキストボックス(InitialSpeedBox等、LostFocus確定方式の項目)に
+        // フォーカスが残ったままタブを切り替えると、LostFocus(値のコミット)がCurrentTabIndexの切替後に
+        // 発火し、変更前タブへの編集内容が変更後タブへ誤って書き込まれてしまう不具合があった。
+        // 「まだ変更前タブがCurrentTabの状態」で確実にコミットさせてから切り替える(CommitPendingEdits参照)。
+        CommitPendingEdits();
+
         _document.CurrentTabIndex = DifficultyTabControl.SelectedIndex;
         Canvas.InvalidateMeasure();
         if (_splitViewEnabled) Canvas2.InvalidateMeasure(); // 2026-07-26: 分割ビュー中は右ペインも再計測
@@ -2152,22 +2377,26 @@ public partial class MainWindow : Window
     /// (danoniplus本体の仕様通り。従来の「色グループ数×4」は誤りだった)。</summary>
     private static List<string> DefaultFrzColors() => [.. DefaultFrzColorSlots];
 
-    /// <summary>tab.SetColorOverrideをgroupCount件になるよう保証し、そのリスト参照を返す(1タブ目・
-    /// 独自上書き中のタブいずれも、このメソッドを通して初めて実データを持つ)。</summary>
-    private static List<string> EnsureSetColors(DifficultyTab tab, int groupCount)
+    /// <summary>②タブ表示専用: tab.SetColorOverrideをgroupCount件ぶんの表示用リストとして返す
+    /// (2026-08-06不具合修正: 以前はここでtab.SetColorOverride自体へ既定色を書き込んでいたため、
+    /// 未設定のプロジェクトを開いた・タブを追加しただけで勝手にsetColorが設定されてしまう不具合が
+    /// あった。表示専用のため、未設定分は既定色ではなく空欄で埋め、モデルは一切変更しない
+    /// (実際にモデルへ書き込むのはユーザーが値を編集した時のみ、ColorField_LostFocus参照)。</summary>
+    private static List<string> DisplaySetColors(DifficultyTab tab, int groupCount)
     {
-        tab.SetColorOverride ??= DefaultSetColors(groupCount);
-        while (tab.SetColorOverride.Count < groupCount) tab.SetColorOverride.Add("");
-        return tab.SetColorOverride;
+        var list = tab.SetColorOverride is null ? [] : new List<string>(tab.SetColorOverride);
+        while (list.Count < groupCount) list.Add("");
+        return list;
     }
 
-    /// <summary>tab.FrzColorOverrideを常に4件になるよう保証し、そのリスト参照を返す(2026-07-26:
-    /// 色グループ数に関わらず固定4スロット)。</summary>
-    private static List<string> EnsureFrzColors(DifficultyTab tab)
+    /// <summary>②タブ表示専用: tab.FrzColorOverrideを4件ぶんの表示用リストとして返す(2026-07-26:
+    /// 色グループ数に関わらず固定4スロット、2026-08-06不具合修正: DisplaySetColors同様、モデルへの
+    /// 書き込みは行わない表示専用の読み取りへ変更した)。</summary>
+    private static List<string> DisplayFrzColors(DifficultyTab tab)
     {
-        tab.FrzColorOverride ??= DefaultFrzColors();
-        while (tab.FrzColorOverride.Count < 4) tab.FrzColorOverride.Add("");
-        return tab.FrzColorOverride;
+        var list = tab.FrzColorOverride is null ? [] : new List<string>(tab.FrzColorOverride);
+        while (list.Count < 4) list.Add("");
+        return list;
     }
 
     /// <summary>hexとしてパースできればそのブラシ、できなければ(グラデーション等の生文字列)灰色のプレビュー。</summary>
@@ -2223,7 +2452,8 @@ public partial class MainWindow : Window
 
         bool isFirstTab = _document.CurrentTabIndex == 0;
         ColorTab0NoticeText.Visibility = isFirstTab ? Visibility.Visible : Visibility.Collapsed;
-        ColorCommonCheck.Visibility = isFirstTab ? Visibility.Collapsed : Visibility.Visible;
+        SetColorCommonCheck.Visibility = isFirstTab ? Visibility.Collapsed : Visibility.Visible;
+        FrzColorCommonCheck.Visibility = isFirstTab ? Visibility.Collapsed : Visibility.Visible;
 
         var tab0 = _document.Project.Tabs[0];
         var currentTab = _document.CurrentTab;
@@ -2231,35 +2461,45 @@ public partial class MainWindow : Window
 
         _suppressColorPanelEvents = true;
 
-        bool useCommon = !isFirstTab && currentTab.SetColorOverride is null;
-        if (!isFirstTab) ColorCommonCheck.IsChecked = useCommon;
+        // 2026-08-06要望対応: setColor/frzColorの「共通を使う」をそれぞれ独立して判定する
+        // (以前はSetColorOverrideの有無だけで両方まとめて判定していたため、「setは変えるがfrzは
+        // 共通のまま」のような組み合わせが選べなかった)。
+        bool useCommonSet = !isFirstTab && currentTab.SetColorOverride is null;
+        bool useCommonFrz = !isFirstTab && currentTab.FrzColorOverride is null;
+        if (!isFirstTab)
+        {
+            SetColorCommonCheck.IsChecked = useCommonSet;
+            FrzColorCommonCheck.IsChecked = useCommonFrz;
+        }
 
-        bool editable = isFirstTab || !useCommon;
-        var setSource = editable && !isFirstTab ? EnsureSetColors(currentTab, groupCount) : EnsureSetColors(tab0, groupCount);
+        bool editableSet = isFirstTab || !useCommonSet;
+        bool editableFrz = isFirstTab || !useCommonFrz;
+        var setSource = editableSet && !isFirstTab ? DisplaySetColors(currentTab, groupCount) : DisplaySetColors(tab0, groupCount);
         // 2026-07-26: frzColorは色グループ数に関わらず常に4スロット固定の1セットのみ(danoniplus本体の仕様通り)
-        var frzSource = editable && !isFirstTab ? EnsureFrzColors(currentTab) : EnsureFrzColors(tab0);
+        var frzSource = editableFrz && !isFirstTab ? DisplayFrzColors(currentTab) : DisplayFrzColors(tab0);
 
         for (int g = 0; g < groupCount; g++)
-            AddColorField(SetColorPanel, $"色グループ{g}", g < setSource.Count ? setSource[g] : "", editable, ("set", g, -1));
+            AddColorField(SetColorPanel, $"色グループ{g}", g < setSource.Count ? setSource[g] : "", editableSet, ("set", g, -1));
 
-        // 2026-07-16l: defaultFrzColorUse(dos-h0063)がONの間、frzColorの指定は強制的にOFFにする
-        // (本体側の既定フリーズアロー色セットが優先され、frzColorの値自体が無視されるため)。
+        // 2026-08-05不具合修正: defaultFrzColorUse(dos-h0063)がONでも、frzColorのHit(判定中、[2]/[3])は
+        // 本体側で引き続き有効(生きる)ため、frzColor入力欄自体を無効化してはいけない(以前は4スロット
+        // まとめて編集不可にしていたが、これだと判定中の色を指定できなくなってしまう不具合だった)。
+        // ONの間は始点終点(通常)/帯(通常)([0]/[1])の値のみが無視される旨を案内するに留める。
         bool defaultFrzColorUse = _document.Project.ExtraHeaders.TryGetValue("defaultFrzColorUse", out var dfu) && dfu == "true";
         if (defaultFrzColorUse)
         {
             FrzColorPanel.Children.Add(new TextBlock
             {
-                Text = "④タブのdefaultFrzColorUseが有効なため、frzColorは指定できません。",
+                Text = "④タブのdefaultFrzColorUseが有効なため、始点終点(通常)/帯(通常)の値は無視されます(空欄可)。始点終点(判定中)/帯(判定中)は引き続き有効です。",
                 Foreground = Brushes.Gray,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 0, 0, 8),
             });
         }
-        bool frzEditable = editable && !defaultFrzColorUse;
 
         // 2026-07-26: frzColorは色グループの概念を持たないため、色グループ見出しなしで4スロットのみ表示する
         for (int s = 0; s < 4; s++)
-            AddColorField(FrzColorPanel, FrzSlotLabels[s], s < frzSource.Count ? frzSource[s] : "", frzEditable, ("frz", -1, s));
+            AddColorField(FrzColorPanel, FrzSlotLabels[s], s < frzSource.Count ? frzSource[s] : "", editableFrz, ("frz", -1, s));
 
         _suppressColorPanelEvents = false;
     }
@@ -2276,14 +2516,21 @@ public partial class MainWindow : Window
 
         if (kind == "set")
         {
-            if (targetTab.SetColorOverride is null || group >= targetTab.SetColorOverride.Count) return;
+            // 2026-08-06不具合修正: 表示側(DisplaySetColors)がモデルへ書き込まなくなったため、
+            // ユーザーが実際に値を編集したこの時点で初めてSetColorOverrideを実体化する
+            // (未設定分は既定色ではなく空欄"" で埋める。「新規プロジェクト作成時のみ既定色を
+            // 自動補完する」というユーザー確定仕様により、ここでは補完しない)。
+            targetTab.SetColorOverride ??= [];
+            while (targetTab.SetColorOverride.Count <= group) targetTab.SetColorOverride.Add("");
             if (targetTab.SetColorOverride[group] == box.Text) return;
             targetTab.SetColorOverride[group] = box.Text;
         }
         else
         {
             // 2026-07-26: frzColorは色グループを持たない固定4スロットのため、slotがそのままインデックス
-            if (targetTab.FrzColorOverride is null || slot >= targetTab.FrzColorOverride.Count) return;
+            // (2026-08-06不具合修正: 上記SetColorOverride同様、編集時に初めて実体化する)
+            targetTab.FrzColorOverride ??= [];
+            while (targetTab.FrzColorOverride.Count <= slot) targetTab.FrzColorOverride.Add("");
             if (targetTab.FrzColorOverride[slot] == box.Text) return;
             targetTab.FrzColorOverride[slot] = box.Text;
         }
@@ -2291,22 +2538,45 @@ public partial class MainWindow : Window
         InvalidateChartViews(); // レーン色プレビュー(LaneBrush)へ反映
     }
 
-    private void ColorCommonCheck_Changed(object sender, RoutedEventArgs e)
+    /// <summary>setColorの「全ての難易度で共通」切替(2026-08-06要望対応: frzColorとは独立して
+    /// 切り替えられるよう分離した。「setは変えるがfrzは共通のまま」等の組み合わせに対応するため)。</summary>
+    private void SetColorCommonCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressColorPanelEvents || _document is null || _document.CurrentTabIndex == 0) return;
         var tab = _document.CurrentTab;
         var tab0 = _document.Project.Tabs[0];
         int groupCount = ColorGroupCount();
 
-        if (ColorCommonCheck.IsChecked == true)
+        if (SetColorCommonCheck.IsChecked == true)
         {
             tab.SetColorOverride = null;
+        }
+        else
+        {
+            // 2026-08-06: ユーザーが明示的に「共通を使う」を外した(=このタブだけ独自のsetColorに
+            // したい)操作なので、その時点のtab0の表示値をコピーして開始点にする(tab0が未設定なら
+            // 空欄のままコピーする。「新規プロジェクト作成時のみ既定色を自動補完する」の対象外の
+            // 操作のため、ここで既定色を持ち出すことはしない)。
+            tab.SetColorOverride = DisplaySetColors(tab0, groupCount);
+        }
+        _document.NotifyChanged();
+        RefreshColorPanel();
+    }
+
+    /// <summary>frzColorの「全ての難易度で共通」切替(2026-08-06要望対応: SetColorCommonCheck_Changed参照)。</summary>
+    private void FrzColorCommonCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressColorPanelEvents || _document is null || _document.CurrentTabIndex == 0) return;
+        var tab = _document.CurrentTab;
+        var tab0 = _document.Project.Tabs[0];
+
+        if (FrzColorCommonCheck.IsChecked == true)
+        {
             tab.FrzColorOverride = null;
         }
         else
         {
-            tab.SetColorOverride = [.. EnsureSetColors(tab0, groupCount)];
-            tab.FrzColorOverride = [.. EnsureFrzColors(tab0)];
+            tab.FrzColorOverride = DisplayFrzColors(tab0);
         }
         _document.NotifyChanged();
         RefreshColorPanel();
@@ -2367,37 +2637,71 @@ public partial class MainWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
         row.Children.Add(new TextBlock { Text = def.Name, Width = 150, VerticalAlignment = VerticalAlignment.Center });
 
-        if (def.Type == HeaderParamType.Bool)
-        {
-            // 真偽値パラメータは「使用する」チェックを持たず、チェック自体がON/OFF値を兼ねる
-            // (ONならtrueとして出力、OFFなら未出力=エンジン既定値。2026-07-16g、簡略化の設計判断)。
-            var boolCheck = new CheckBox { IsChecked = hasValue && existing == "true", VerticalAlignment = VerticalAlignment.Center };
-            boolCheck.Checked += (_, _) => { headers[def.Name] = "true"; _document!.NotifyChanged(); };
-            boolCheck.Unchecked += (_, _) => { headers.Remove(def.Name); _document!.NotifyChanged(); };
-
-            if (def.Name == "defaultFrzColorUse")
-            {
-                // 2026-07-16l: defaultFrzColorUseがONになった場合、frzColorの指定を強制的にOFFにする
-                // (dos-h0063の仕様上、true時はfrzColorの値自体が無視されるため。ONにした瞬間、
-                // 全タブのFrzColorOverrideをクリアし、②タブのfrzColor入力欄も編集不可にする)。
-                boolCheck.Checked += (_, _) =>
-                {
-                    foreach (var t in _document!.Project.Tabs) t.FrzColorOverride = null;
-                    RefreshColorPanel();
-                };
-                boolCheck.Unchecked += (_, _) => RefreshColorPanel();
-            }
-
-            row.Children.Add(boolCheck);
-            targetPanel.Children.Add(row);
-            return;
-        }
-
         var useCheck = new CheckBox { Content = "使用する", IsChecked = hasValue, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
         row.Children.Add(useCheck);
 
         switch (def.Type)
         {
+            case HeaderParamType.Bool:
+                {
+                    // 2026-08-05要望対応: 真偽値パラメータも他の型と同じ「使用する」チェック+値選択の
+                    // 形式へ統一する(旧: 単一チェックボックスでON=true出力・OFF=未出力のみだったため、
+                    // 明示的なfalse出力ができなかった)。「使用する」OFFの間は未出力(エンジン既定値)、
+                    // ONの間はtrue/falseラジオボタンで選んだ値を明示的に出力する。
+                    bool initialTrue = initial == "true";
+                    var trueRadio = new RadioButton
+                    {
+                        Content = "true", GroupName = $"boolval_{def.Name}",
+                        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0),
+                        IsEnabled = hasValue, IsChecked = initialTrue,
+                    };
+                    var falseRadio = new RadioButton
+                    {
+                        Content = "false", GroupName = $"boolval_{def.Name}",
+                        VerticalAlignment = VerticalAlignment.Center,
+                        IsEnabled = hasValue, IsChecked = !initialTrue,
+                    };
+
+                    void CommitBoolValue()
+                    {
+                        if (useCheck.IsChecked != true) return;
+                        headers[def.Name] = trueRadio.IsChecked == true ? "true" : "false";
+                        _document!.NotifyChanged();
+                    }
+                    trueRadio.Checked += (_, _) => CommitBoolValue();
+                    falseRadio.Checked += (_, _) => CommitBoolValue();
+
+                    useCheck.Checked += (_, _) =>
+                    {
+                        trueRadio.IsEnabled = true;
+                        falseRadio.IsEnabled = true;
+                        CommitBoolValue();
+                    };
+                    useCheck.Unchecked += (_, _) =>
+                    {
+                        trueRadio.IsEnabled = false;
+                        falseRadio.IsEnabled = false;
+                        headers.Remove(def.Name);
+                        _document!.NotifyChanged();
+                    };
+
+                    if (def.Name == "defaultFrzColorUse")
+                    {
+                        // 2026-08-05不具合修正: defaultFrzColorUseがtrueになっても、frzColorのHit
+                        // (判定中、[2]/[3])は本体側で引き続き有効なため、FrzColorOverrideを丸ごとクリア
+                        // してはいけない(以前はtrue化のたびに全タブの値を消していたが、判定中の色設定が
+                        // 失われてしまう不具合だった)。②タブの案内表示(始点終点/帯(通常)が無視される旨)を
+                        // 更新するためだけにRefreshColorPanelを呼ぶ。
+                        trueRadio.Checked += (_, _) => RefreshColorPanel();
+                        falseRadio.Checked += (_, _) => RefreshColorPanel();
+                        useCheck.Unchecked += (_, _) => RefreshColorPanel();
+                    }
+
+                    row.Children.Add(trueRadio);
+                    row.Children.Add(falseRadio);
+                    break;
+                }
+
             case HeaderParamType.Dropdown:
                 {
                     var combo = new ComboBox { ItemsSource = def.Options, Width = 140, IsEnabled = hasValue, SelectedItem = initial };
@@ -3440,12 +3744,12 @@ public partial class MainWindow : Window
     private void SnapKeyboardCursorToNearestGrid()
     {
         if (_document is null || !_keyboardModeActive || !_document.Snap.Enabled
-            || _document.Project.PlaybackStartFrame is not { } f) return;
+            || _document.CurrentTab.PlaybackStartFrame is not { } f) return;
         var engine = _document.Project.CreateTimingEngine();
         long cur = (long)Math.Round(engine.FrameToTick(f));
         long step = _document.Snap.GridTicks;
         long snapped = Math.Max(0, (long)Math.Round((double)cur / step) * step);
-        _document.Project.PlaybackStartFrame = engine.TickToFrame(snapped);
+        _document.CurrentTab.PlaybackStartFrame = engine.TickToFrame(snapped);
         ScrollKeyboardCursorIntoView();
         _document.NotifyChanged(markModified: false);
     }
@@ -3737,7 +4041,7 @@ public partial class MainWindow : Window
                 {
                     var engine = _document.Project.CreateTimingEngine();
                     long snappedTick = _document.Snap.Snap(liveTick);
-                    _document.Project.PlaybackStartFrame = engine.TickToFrame(snappedTick);
+                    _document.CurrentTab.PlaybackStartFrame = engine.TickToFrame(snappedTick);
                 }
                 StopVisualTest(returnToStart: false);
                 return true;
@@ -3786,9 +4090,9 @@ public partial class MainWindow : Window
                 if (_controller is not null && _controller.DeleteSelection()) InvalidateChartViews();
                 return true;
             case ShortcutId.ClearPlaybackStartLine: // 再生開始フレームのリセット
-                if (_document!.Project.PlaybackStartFrame is not null)
+                if (_document!.CurrentTab.PlaybackStartFrame is not null)
                 {
-                    _document.Project.PlaybackStartFrame = null;
+                    _document.CurrentTab.PlaybackStartFrame = null;
                     _document.NotifyChanged();
                 }
                 return true;
@@ -4086,7 +4390,7 @@ public partial class MainWindow : Window
     /// なくても即座にプレビューへ反映するため)。幾何(speed/boost等)の再計算は行わない。</summary>
     private void SyncPreviewStartFrame()
     {
-        double startFrame = _document?.Project.PlaybackStartFrame ?? 0;
+        double startFrame = _document?.CurrentTab.PlaybackStartFrame ?? 0;
         _previewSurface.SetStartFrame(startFrame);
         if (!_visualTestActive) _previewSurface.CurrentFrame = startFrame;
         // 2026-07-29要望対応: ノート配置・色編集等、doc.Changedを伴うあらゆる編集操作の結果を
@@ -4953,7 +5257,7 @@ public partial class MainWindow : Window
     /// <summary>上部パネルの再生開始フレーム表示を更新する(2026-07-17f)</summary>
     private void UpdateStartFrameText()
     {
-        if (_document?.Project.PlaybackStartFrame is { } f)
+        if (_document?.CurrentTab.PlaybackStartFrame is { } f)
         {
             var engine = _document.Project.CreateTimingEngine();
             StartFramePosText.Text = $"{(long)Math.Round(engine.FrameToTick(f))}t / {f:0.0}f / {f / 60.0:0.00}s";
@@ -5025,13 +5329,14 @@ public partial class MainWindow : Window
     /// <summary>目視テスト開始: 再生開始フレーム(未設定なら曲頭)から音楽再生+再生位置ライン表示(2026-07-17f)</summary>
     private void StartVisualTest()
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値(InitialSpeed等)を確定してから開始する
         if (_document is null) return;
         if (!_audioLoaded)
         {
             MessageBox.Show(this, "音楽ファイルが読み込まれていませんの。目視テストには音楽の読み込みが必要ですわ。", "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+        double startFrame = _document.CurrentTab.PlaybackStartFrame ?? 0;
 
         // 2026-07-26: 再生開始ラインが音楽ファイルの実際の長さを超えて置かれていた場合、_audioPlayer.Position
         // がクランプされて曲の末尾に固定され、無音のまま再生位置ライン・スクロールが一切動かなくなる不具合
@@ -5089,7 +5394,7 @@ public partial class MainWindow : Window
     {
         if (_document is null) return;
         var engine = _document.Project.CreateTimingEngine();
-        double startFrame = _document.Project.PlaybackStartFrame ?? 0;
+        double startFrame = _document.CurrentTab.PlaybackStartFrame ?? 0;
         long startTick = Math.Max(0, (long)Math.Round(engine.FrameToTick(startFrame)));
         var (measure, _) = engine.TickToMeasurePosition(startTick);
         long topTick = engine.MeasureStartTick(Math.Max(0, measure - 1));
@@ -5309,6 +5614,7 @@ public partial class MainWindow : Window
 
     private void StartPlaytest()
     {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値(InitialSpeed等)を確定してから開始する
         if (_document is null) return;
         if (!_audioLoaded)
         {
@@ -5325,7 +5631,7 @@ public partial class MainWindow : Window
             _appSettings.PlaytestReverse,
             _appSettings.PlaytestHiSpeed,
             _appSettings.PlaytestOffsetFrames,
-            _document.Project.PlaybackStartFrame ?? 0,
+            _document.CurrentTab.PlaybackStartFrame ?? 0,
             _appSettings.PlaytestWindowScale,
             _appSettings.PlaytestAutoPlay,
             _appSettings.PlaytestQuitKeyDelete,

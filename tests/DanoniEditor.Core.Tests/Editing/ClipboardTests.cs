@@ -4,7 +4,10 @@ using DanoniEditor.Editing;
 
 namespace DanoniEditor.Core.Tests.Editing;
 
-/// <summary>クリップボード(仕様書13章: Ctrl+X/C/V、6.3上段「クリップボード系」)のテスト</summary>
+/// <summary>クリップボード(仕様書13章: Ctrl+X/C/V、6.3上段「クリップボード系」)のテスト。
+/// 2026-08-06: staticなEditorClipboardを共有する他クラスとの並列実行による競合を避けるため
+/// "EditorClipboard"コレクションに所属させる(EditorClipboardCollection.cs参照)。</summary>
+[Collection("EditorClipboard")]
 public class ClipboardTests
 {
     private const long T = DanoniEditor.Core.Timing.TimingEngine.TicksPerBeat / 48; // 旧48tick/拍基準からの換算係数(=35)
@@ -25,13 +28,13 @@ public class ClipboardTests
         ctrl.End(pos);
     }
 
-    /// <summary>再生開始フレーム(Project.PlaybackStartFrame)を直接tick指定で設定するヘルパ
-    /// (2026-08-04: PasteのAnchorがCurrentTickからこちらへ変更された)。エンジンのTickToFrameで
-    /// 変換するので、Paste側のFrameToTick変換と厳密に往復一致する。</summary>
+    /// <summary>再生開始フレーム(2026-08-04不具合修正でタブごとに独立、CurrentTab.PlaybackStartFrame)を
+    /// 直接tick指定で設定するヘルパ(2026-08-04: PasteのAnchorがCurrentTickからこちらへ変更された)。
+    /// エンジンのTickToFrameで変換するので、Paste側のFrameToTick変換と厳密に往復一致する。</summary>
     private static void SetPlaybackStartFrame(EditorDocument doc, long tick)
     {
         var engine = doc.Project.CreateTimingEngine();
-        doc.Project.PlaybackStartFrame = engine.TickToFrame(tick);
+        doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(tick);
     }
 
     // --- Copy: 有効化条件(仕様書6.3上段) ---

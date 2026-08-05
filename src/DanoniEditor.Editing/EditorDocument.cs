@@ -1,3 +1,4 @@
+using System.Linq;
 using DanoniEditor.Core.Models;
 
 namespace DanoniEditor.Editing;
@@ -38,16 +39,100 @@ public sealed class EditorDocument
         {
             if (value < 0 || value >= Project.Tabs.Count || value == _currentTabIndex) return;
             _currentTabIndex = value;
+            MarkTabActivated(value); // 2026-08-04: 再生開始ライン旧形式移行(下記コメント参照)
             Selection.Clear(); // タブ切替で選択状態は引き継がない(異なるレーン構成のため)
             _layoutCache = null;
             NotifyChanged();
         }
     }
 
+    /// <summary>【旧・互換用】旧形式プロジェクト(再生開始フレームをプロジェクト全体で1つ共有していた
+    /// 頃、ChartProject.PlaybackStartFrame参照)を読み込んだ直後の値(2026-08-04不具合修正)。
+    /// 新形式(DifficultyTab.PlaybackStartFrameがタブごとに独立)のプロジェクトではnull。
+    /// 各タブが初めて表示された時点でMarkTabActivatedにより順次そのタブへ振り分けられ、
+    /// PrepareForSaveで未表示タブぶんの振り分けが完了するとnullへ戻る。</summary>
+    private double? _pendingLegacyPlaybackStart;
+
+    /// <summary>プロジェクトを開いてから現在まで(保存を含む)一度でも表示された難易度タブのindex集合
+    /// (2026-08-04不具合修正)。旧形式プロジェクトの再生開始フレーム移行でのみ使う。</summary>
+    private readonly HashSet<int> _activatedTabIndices = [];
+
+    /// <summary>指定タブが「表示された」ことを記録する(2026-08-04不具合修正、CurrentTabIndexのsetter・
+    /// NotifyTabsChanged・コンストラクタから呼ぶ)。旧形式プロジェクトからの移行待ち値が残っていて、
+    /// かつそのタブがまだ自分自身のPlaybackStartFrameを持たない場合、このタイミングで旧値を
+    /// そのタブ自身の値として確定させる(ユーザー確定仕様: 「一度でもアクティブになったタブ」は
+    /// 旧値を引き継ぐ)。以後はそのタブ固有の値として独立して編集・クリアできる
+    /// (BackSpaceでのクリアが正しく効くよう、フォールバック参照ではなくこの時点で実体をコピーする)。</summary>
+    private void MarkTabActivated(int index)
+    {
+        if (!_activatedTabIndices.Add(index)) return;
+        if (_pendingLegacyPlaybackStart is { } legacy && Project.Tabs[index].PlaybackStartFrame is null)
+            Project.Tabs[index].PlaybackStartFrame = legacy;
+    }
+
     /// <summary>現在選択中のオブジェクト集合(仕様書6.3.1のグループ選択/移動の基礎)</summary>
     public HashSet<ObjectRef> Selection { get; } = [];
 
-    public UndoStack UndoStack { get; } = new();
+    // =====================================================================
+    // Undo/Redo履歴(2026-08-06不具合修正: 難易度タブごとに分離)
+    //
+    // 【背景】IEditActionの各実装(EditActions.cs)は、Do/Undoの実行「時点」のdoc.CurrentTabを
+    // 対象に操作する設計になっている。従来はUndoStackがドキュメント(=プロジェクト)全体で1本しか
+    // 無く、タブ切替でもクリアされなかったため、「タブAでノートを削除 → タブBへ切替 → Ctrl+Z」で
+    // DeleteNoteAction.Undoが『タブBに存在しなかったノートを追加する』など、エラーを出さずに
+    // 別タブの譜面を書き換えてしまう不具合があった(タブBのレーン数が少ない場合は
+    // IndexOutOfRangeExceptionにもなり得た)。
+    //
+    // 【対処】履歴をタブごと(キー=TabId)に分離し、Undo/Redoはカレントタブのスタックだけを操作する。
+    // TabIdは並び替えでも変わらずそのタブ自身を指し続けるため、D&D並び替えで履歴が入れ替わることは
+    // ない(複製タブは新しいTabIdを採番するので、複製直後は空の履歴から始まる)。
+    //
+    // 【既知の制限】BPM変化点・拍子・マーカーのようなプロジェクト全体(ChartProject)のデータを
+    // 変更するアクションも、実行時のカレントタブの履歴へ積まれる。そのため「タブAでBPMを変更 →
+    // タブBでCtrl+Z」ではそのBPM変更は取り消されない(タブAへ戻ればUndoできる)。誤った譜面破壊を
+    // 防ぐことを優先した仕様上のトレードオフ。
+    // =====================================================================
+
+    private readonly Dictionary<string, UndoStack> _undoStacks = [];
+    private int _undoCapacity = UndoStack.DefaultCapacity;
+
+    /// <summary>カレントタブのUndo/Redo履歴(2026-08-06: タブごとに分離。上記コメント参照)。</summary>
+    public UndoStack UndoStack => UndoStackFor(CurrentTab.TabId);
+
+    /// <summary>指定タブの履歴を取得する(未作成なら現在の容量設定で作る)。</summary>
+    private UndoStack UndoStackFor(string tabId)
+    {
+        if (!_undoStacks.TryGetValue(tabId, out var stack))
+        {
+            stack = new UndoStack { Capacity = _undoCapacity };
+            _undoStacks[tabId] = stack;
+        }
+        return stack;
+    }
+
+    /// <summary>Undo履歴の保持件数(仕様書14章、環境設定)。全タブの履歴へ一括で適用する
+    /// (2026-08-06: タブごとに履歴を分離したため、個別のUndoStack.Capacityではなくこちらを使う)。</summary>
+    public int UndoCapacity
+    {
+        get => _undoCapacity;
+        set
+        {
+            _undoCapacity = Math.Max(1, value);
+            foreach (var stack in _undoStacks.Values) stack.Capacity = _undoCapacity;
+        }
+    }
+
+    /// <summary>Project.Tabsから消えたタブの履歴を破棄する(2026-08-06、タブ削除時のリーク防止)。
+    /// タブを閉じる操作自体はUndo対象外(ユーザー確定仕様、MainWindow.CloseTabAtの確認ダイアログ参照)の
+    /// ため、閉じたタブの履歴は復元せず捨ててよい。</summary>
+    private void PruneUndoStacks()
+    {
+        if (_undoStacks.Count == 0) return;
+        var alive = Project.Tabs.Select(t => t.TabId).ToHashSet();
+        foreach (var id in _undoStacks.Keys.Where(id => !alive.Contains(id)).ToList())
+            _undoStacks.Remove(id);
+    }
+
     public SnapService Snap { get; } = new();
 
     /// <summary>状態変化通知(WPF側はこれをInvalidateVisualのトリガにする)</summary>
@@ -80,6 +165,8 @@ public sealed class EditorDocument
     {
         int target = indexOverride ?? _currentTabIndex;
         _currentTabIndex = Math.Clamp(target, 0, Math.Max(0, Project.Tabs.Count - 1));
+        MarkTabActivated(_currentTabIndex); // 2026-08-04: CurrentTabIndexのsetter同様に記録する
+        PruneUndoStacks(); // 2026-08-06: 閉じられたタブのUndo履歴を破棄する
         Selection.Clear();
         _layoutCache = null;
         NotifyChanged();
@@ -114,6 +201,30 @@ public sealed class EditorDocument
         Templates = templates;
         if (project.Tabs.Count == 0)
             throw new ArgumentException("プロジェクトに難易度タブが1つも存在しません", nameof(project));
+        // 2026-08-04: 旧形式プロジェクト(ChartProject.PlaybackStartFrameが値を持つ)を読み込んだ場合のみ
+        // 移行待ち状態になる。新形式(常にnull)では以下は何もしない。
+        _pendingLegacyPlaybackStart = project.PlaybackStartFrame;
+        MarkTabActivated(_currentTabIndex); // 開いた直後に表示されているタブも「表示された」扱い(旧値を即座に引き継ぐ)
+    }
+
+    /// <summary>保存直前に呼ぶ(2026-08-04不具合修正)。旧形式プロジェクト(再生開始フレームをタブ横断で
+    /// 共有していた形式)から移行する場合のみ意味を持つ。表示済みタブへの旧値の振り分けは
+    /// MarkTabActivatedにより表示のたびに即座に行われているため、ここでは残る問題
+    /// ―「プロジェクトを開いてから保存するまでの間に一度も表示されなかったタブ」―だけを扱う
+    /// (ユーザー確定仕様): 既に値が入っている既存タブの中で最もインデックスが若いタブの値を使う
+    /// (該当が無ければ旧値そのものを使う)。移行が完了したらChartProject.PlaybackStartFrame
+    /// (旧フィールド)をnullへクリアし、以後は何もしない(冪等)。新規プロジェクト(旧値が最初から
+    /// 無い)では何もしない。</summary>
+    public void PrepareForSave()
+    {
+        if (_pendingLegacyPlaybackStart is not { } legacy) return;
+
+        var fallback = Project.Tabs.Select(t => t.PlaybackStartFrame).FirstOrDefault(v => v.HasValue) ?? legacy;
+        foreach (var tab in Project.Tabs)
+            tab.PlaybackStartFrame ??= fallback;
+
+        Project.PlaybackStartFrame = null;
+        _pendingLegacyPlaybackStart = null;
     }
 
     /// <summary>フレーム情報モード状態(仕様書7.6、2026-07-17i)。null=拍情報モード(通常)</summary>

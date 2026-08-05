@@ -677,8 +677,8 @@ public class SmartToolControllerTests
         var col = layout.Column(ColumnKind.Marker);
         Assert.True(ctrl.DoubleLeft(At(col, layout, 96 * T)));
         // BPM120: 1拍=30frame、tick96=2拍 → 60frame
-        Assert.NotNull(doc.Project.PlaybackStartFrame);
-        Assert.Equal(60.0, doc.Project.PlaybackStartFrame!.Value, 3);
+        Assert.NotNull(doc.CurrentTab.PlaybackStartFrame);
+        Assert.Equal(60.0, doc.CurrentTab.PlaybackStartFrame!.Value, 3);
     }
 
     [Fact]
@@ -686,7 +686,7 @@ public class SmartToolControllerTests
     {
         var (doc, ctrl, layout) = NewScene();
         Assert.False(ctrl.DoubleLeft(At(layout.NoteColumn(0), layout, 96 * T)));
-        Assert.Null(doc.Project.PlaybackStartFrame);
+        Assert.Null(doc.CurrentTab.PlaybackStartFrame);
     }
 
     [Fact]

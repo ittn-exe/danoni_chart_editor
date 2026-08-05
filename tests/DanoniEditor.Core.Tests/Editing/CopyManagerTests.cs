@@ -173,7 +173,10 @@ public class PasteLaneStateTests
 
 /// <summary>SmartToolControllerのコピーマネージャー関連API(ClipboardNeedsLaneMapping・
 /// ClipboardSourceLanesWithObjects・PasteWithLaneMapping)の統合テスト(2026-07-31)。
-/// 5key(タブ0)と23key(タブ1)を同一プロジェクトに持たせ、キー種の異なるタブ間コピペを再現する。</summary>
+/// 5key(タブ0)と23key(タブ1)を同一プロジェクトに持たせ、キー種の異なるタブ間コピペを再現する。
+/// 2026-08-06: staticなEditorClipboardを共有するClipboardTestsとの並列実行による競合を避けるため
+/// "EditorClipboard"コレクションに所属させる(EditorClipboardCollection.cs参照)。</summary>
+[Collection("EditorClipboard")]
 public class PasteWithLaneMappingTests
 {
     public PasteWithLaneMappingTests() => EditorClipboard.Clear();

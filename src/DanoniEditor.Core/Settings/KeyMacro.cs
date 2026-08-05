@@ -12,8 +12,8 @@ public enum KeyMacroStepKind
     /// <summary>再生速度を設定する(目視テスト・プレイテスト共通、AppSettings.PlaybackSpeedと同じ値。
     /// Valueは倍率、例: 1.0=等倍)</summary>
     SetPlaybackSpeed,
-    /// <summary>再生開始ライン(ChartProject.PlaybackStartFrame)を設定する(Valueは秒単位、
-    /// 内部ではframe = Value*60に変換される)</summary>
+    /// <summary>再生開始ライン(DifficultyTab.PlaybackStartFrame、2026-08-04不具合修正でタブごとに
+    /// 独立)を設定する(Valueは秒単位、内部ではframe = Value*60に変換される)</summary>
     SetPlaybackStartSeconds,
     /// <summary>目視テストを開始する(Valueは使用しない)</summary>
     StartVisualTest,

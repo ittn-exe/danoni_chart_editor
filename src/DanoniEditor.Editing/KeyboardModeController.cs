@@ -5,7 +5,8 @@ namespace DanoniEditor.Editing;
 /// <summary>
 /// SKB操作モード(キーボード操作、2026-07-21確定仕様)のコントローラ。WPF非依存(Editing層)。
 ///
-/// - カレントタイミングは<see cref="EditorDocument.Project"/>の<c>PlaybackStartFrame</c>を流用する
+/// - カレントタイミングは<see cref="EditorDocument.CurrentTab"/>の<c>PlaybackStartFrame</c>
+///   (2026-08-04不具合修正でタブごとに独立、旧: Project.PlaybackStartFrame)を流用する
 ///   (常に設定済みとして扱う。モード開始時にnullならtick0で初期化)。
 /// - カーソル移動(↑/Space=前進、↓/B=後退)は<see cref="EditorDocument.Snap"/>のグリッド単位(GridTicks)。
 /// - ノート入力キーは1回の押下でトグル(存在すれば削除、無ければ配置)。
@@ -41,9 +42,9 @@ public sealed class KeyboardModeController
     /// <summary>キーボードモード開始時に呼ぶ。PlaybackStartFrame未設定ならtick0で初期化する。</summary>
     public void EnterMode()
     {
-        if (_doc.Project.PlaybackStartFrame is not null) return;
+        if (_doc.CurrentTab.PlaybackStartFrame is not null) return;
         var engine = _doc.Project.CreateTimingEngine();
-        _doc.Project.PlaybackStartFrame = engine.TickToFrame(0);
+        _doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(0);
         _doc.NotifyChanged(markModified: false);
     }
 
@@ -234,13 +235,13 @@ public sealed class KeyboardModeController
     // =====================================================================
 
     private long CurrentCursorTick(TimingEngine engine) =>
-        _doc.Project.PlaybackStartFrame is { } f ? (long)Math.Round(engine.FrameToTick(f)) : 0;
+        _doc.CurrentTab.PlaybackStartFrame is { } f ? (long)Math.Round(engine.FrameToTick(f)) : 0;
 
     /// <summary>ユーザーによる明示的なカーソル移動の共通処理(MoveCursor/MoveCursorByMeasure/
     /// MoveCursorToPreviousMeasureOrCurrentStartで共用)。同時押し判定の直前入力記録をリセットする。</summary>
     private void ApplyExplicitCursorMove(TimingEngine engine, long tick)
     {
-        _doc.Project.PlaybackStartFrame = engine.TickToFrame(tick);
+        _doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(tick);
         _lastPressAt = null;
         _doc.NotifyChanged(markModified: false);
     }
@@ -267,7 +268,7 @@ public sealed class KeyboardModeController
         // 2026-08-01不具合修正: MoveCursorと同様、スナップOFF時はGridTicks固定ではなく
         // 最寄りの整数フレーム単位で進める。
         long next = _doc.Snap.Enabled ? cur + _doc.Snap.GridTicks : StepByOneFrame(engine, cur, forward: true);
-        _doc.Project.PlaybackStartFrame = engine.TickToFrame(next);
+        _doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(next);
         _doc.NotifyChanged(markModified: false);
     }
 

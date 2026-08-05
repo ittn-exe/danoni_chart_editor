@@ -82,4 +82,20 @@ public class ColorDefaultsFrzColorTests
         Assert.Equal("#ARROWDEF", normal);
         Assert.Equal("#ARROWDEF", bar);
     }
+
+    /// <summary>2026-08-05不具合修正の回帰テスト: defaultFrzColorUseの宣言に関わらず、
+    /// frzColorのHit(判定中、[2]/[3])は本体側で引き続き有効なため、ResolveFrzHitColorsHexは
+    /// defaultFrzColorUseの値を一切参照せずslot2/3をそのまま返す(ResolveFrzColorsHexとは対照的)。</summary>
+    [Fact]
+    public void ResolveFrzHitColorsHex_IgnoresDefaultFrzColorUse_HitColorsAlwaysLive()
+    {
+        var project = NewProject();
+        project.ExtraHeaders["defaultFrzColorUse"] = "true";
+        var tab = NewTab(["#111111", "#222222", "#333333", "#444444"]);
+        project.Tabs.Add(tab);
+
+        var (hit, hitBar) = ColorDefaults.ResolveFrzHitColorsHex(tab, project, "#normalFallback", "#barFallback");
+        Assert.Equal("#333333", hit);
+        Assert.Equal("#444444", hitBar);
+    }
 }

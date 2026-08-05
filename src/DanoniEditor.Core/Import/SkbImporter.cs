@@ -21,7 +21,8 @@ public sealed class SkbImportResult
 /// <summary>
 /// SKBエディタ形式のインポーター(仕様書15.4)。実データ(skb_test/skb_test_dos)で検証した解釈:
 /// - ★scores[] は難易度ごとではなく「ページごと」の配列(仕様書15.4の記述はこの点誤り)
-/// - 1ページ = pageBlockNum × 48tick(4分音符=48tick)。globalTick = ページindex×tpp + tick
+/// - 1ページ = pageBlockNum × 48tick(4分音符=48tick、SKBネイティブの固定分解能)。
+///   globalTick(ネイティブ) = ページindex×tpp + tick
 /// - frame = blankFrame + startNum + globalTick × (3600/bpm/48)   ※timings[0]基準
 /// - freezes はレーンごとにページ横断で平坦化し、順に[始点,終点,始点,終点...]とペアリング
 ///   (ページを跨ぐフリーズは始点と終点が別ページに現れる)
@@ -32,10 +33,22 @@ public sealed class SkbImportResult
 ///   (2026-07-17c追加)として正確に再現する — 各セグメント先頭のBpmEventに
 ///   FrameAnchor=blankFrame+timing.startNumを設定することで、TimingEngine側が区間の境目で
 ///   積算をリセットし、SKB本体の計算式と厳密に一致するフレーム値を再現できる。
+///
+/// 2026-08-03不具合修正: notes[]/freezes[]/speeds[].position等の生の整数値(SKBネイティブの
+/// 48tick/拍分解能)を、本ツール内部の分解能(TicksPerBeat=1680、2026-07-19gに48から引き上げ)へ
+/// 変換せずそのまま加算していたため、実際のSKBエディタで作成されたファイルを読み込むと位置が
+/// 大きくズレる不具合があった(SkbExporter側の対称な不具合とユーザー提供の実データ比較
+/// (skbtestbynode.txt/ittnbynode.txt)により発覚)。PosScale(=1680/48=35)を乗じて変換する。
 /// </summary>
 public sealed class SkbImporter
 {
     private readonly Func<string, KeyTemplate> _templateResolver;
+
+    /// <summary>SKBネイティブの1拍あたりtick数(4分音符=48tick、実データで確認済みの固定値)。</summary>
+    private const long NativeTicksPerBeat = 48;
+
+    /// <summary>SKBネイティブtick(48/拍)→本ツール内部tick(TicksPerBeat=1680)への換算係数(=35)。</summary>
+    private static readonly long PosScale = TimingEngine.TicksPerBeat / NativeTicksPerBeat;
 
     public SkbImporter(Func<string, KeyTemplate> templateResolver)
         => _templateResolver = templateResolver;
@@ -105,17 +118,17 @@ public sealed class SkbImporter
 
             for (int lane = 0; lane < Math.Min(laneCount, pg.notes.Count); lane++)
                 foreach (var pos in pg.notes[lane])
-                    tab.Lanes[lane].Notes.Add(pageBase + pos);
+                    tab.Lanes[lane].Notes.Add(pageBase + pos * PosScale);
             if (pg.notes.Count != laneCount)
                 warnings.Add($"ページ{page + 1}: notesのレーン数{pg.notes.Count}がキー数{laneCount}と一致しません");
 
             for (int lane = 0; lane < Math.Min(laneCount, pg.freezes.Count); lane++)
                 foreach (var pos in pg.freezes[lane])
-                    frzBoundaries[lane].Add(pageBase + pos);
+                    frzBoundaries[lane].Add(pageBase + pos * PosScale);
 
             foreach (var sp in pg.speeds)
             {
-                var ev = new ValueEvent(pageBase + sp.position, sp.value);
+                var ev = new ValueEvent(pageBase + sp.position * PosScale, sp.value);
                 if (sp.type == "speed") tab.SpeedEvents.Add(ev);
                 else if (sp.type == "boost") tab.BoostEvents.Add(ev);
                 else warnings.Add($"ページ{page + 1}: 不明なspeeds.type='{sp.type}'を無視");

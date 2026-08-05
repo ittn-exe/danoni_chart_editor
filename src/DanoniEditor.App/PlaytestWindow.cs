@@ -525,7 +525,7 @@ internal sealed class PlaytestWindow : Window
             var engine = _doc.Project.CreateTimingEngine();
             long liveTick = (long)Math.Round(engine.FrameToTick(_currentFrame));
             long snappedTick = _doc.Snap.Snap(liveTick);
-            _doc.Project.PlaybackStartFrame = engine.TickToFrame(snappedTick);
+            _doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(snappedTick);
             Close();
             e.Handled = true;
             return;

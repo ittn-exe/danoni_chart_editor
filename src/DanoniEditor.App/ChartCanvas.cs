@@ -869,6 +869,12 @@ public sealed class ChartCanvas : FrameworkElement
         double tA = layout.YToTick(yTop), tB = layout.YToTick(yBottom);
         long tickMin = Math.Max(0, (long)Math.Min(tA, tB) - 1);
         long tickMax = (long)Math.Max(tA, tB) + 1;
+        // 2026-08-02要望対応(2026-08-03実装): 全体のカリング用tickMinは0でクランプされているため、
+        // 0小節目より手前(tick<0)の再生開始ライン・再生位置ラインが常に描画対象外になり、目視テストで
+        // 実際には(無音を)再生しているのに何も表示されず「始まっていないように見える」不具合があった。
+        // 座標変換自体はTopMargin(400px)の余白内であれば負のtickでも問題ないため、この2つの線だけは
+        // 0でクランプしていない生のtickMinを使う(グリッド線・ノート等、他の描画には影響させない)。
+        long tickMinRaw = (long)Math.Min(tA, tB) - 1;
 
         DrawWaveform(dc, layout, engine, yTop, yBottom); // 最下層(2026-07-18)。カラム背景は半透明のため透ける
         DrawColumnBackgrounds(dc, layout, yTop, yBottom);
@@ -879,7 +885,7 @@ public sealed class ChartCanvas : FrameworkElement
         // 密集した譜面で再生開始ラインがノートを覆い隠して見えづらいとの指摘対応。DrawNotesAndFreezes内で
         // ノート画像→強調表示の順に描く(ヒットフラッシュと同様、同一ノートの中で画像→強調表示の重ね順は
         // 元々維持されている)ため、ここではDrawPlaybackStartLine自体をDrawNotesAndFreezesより前へ移すだけでよい。
-        DrawPlaybackStartLine(dc, layout, engine, tickMin, tickMax);
+        DrawPlaybackStartLine(dc, layout, engine, tickMinRaw, tickMax);
         DrawLinkedBackgroundNotes(dc, layout, tab, tickMin, tickMax); // 2026-07-26: タブリンクの背景ノート(本体より奥)
         DrawNotesAndFreezes(dc, layout, tab, project, tickMin, tickMax);
         DrawValueEvents(dc, layout, tab, project, tickMin, tickMax);
@@ -889,7 +895,7 @@ public sealed class ChartCanvas : FrameworkElement
         DrawWordEntries(dc, layout, tab, tickMin, tickMax); // 2026-07-23: 歌詞レーン(TBD 4)
         DrawSelectionHighlights(dc, layout, Document, tickMin, tickMax);
         DrawDragPreview(dc, layout, tab, project);
-        DrawPlaybackLine(dc, layout, tickMin, tickMax);
+        DrawPlaybackLine(dc, layout, tickMinRaw, tickMax);
         DrawTimeRangeSelectionHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-27: 時間情報レーンの時間範囲選択
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
@@ -2198,7 +2204,7 @@ public sealed class ChartCanvas : FrameworkElement
     /// 色・太さはAppSettings(表示設定ダイアログ)で変更可能。</summary>
     private void DrawPlaybackStartLine(DrawingContext dc, ChartLayout layout, TimingEngine engine, long tickMin, long tickMax)
     {
-        if (Document?.Project.PlaybackStartFrame is not { } frame) return;
+        if (Document?.CurrentTab.PlaybackStartFrame is not { } frame) return;
         double tick = engine.FrameToTick(frame);
         if (tick < tickMin || tick > tickMax) return;
         double y = layout.TickToY(tick);

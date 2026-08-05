@@ -218,13 +218,22 @@ public static class ProjectOperations
     /// ゲージパラメータ(DifficultyTab.GaugeParams、2026-07-24でPerTabCsv方式から移行)は
     /// タブ自身が保持するデータになったため、他タブ側のインデックス調整は一切不要
     /// (タブを削除すればそのタブのGaugeParamsも一緒に破棄されるだけで整合する)。
+    /// 2026-08-06: タブリンク(LinkedTabId、2026-07-26)の解除もここで行うようCore側へ集約した。
+    /// 従来は呼び出し側(MainWindow.CloseTabAt)が事前に相手タブのLinkedTabIdをnullにする作法に
+    /// 依存しており、他の経路からRemoveTabが呼ばれると宙に浮いたリンクが残る構造だった
+    /// (削除済みタブのTabIdを指したままになり、リンク表示が無言で機能しなくなる)。
     /// </summary>
     public static void RemoveTab(ChartProject project, int index)
     {
         if (index < 0 || index >= project.Tabs.Count) return;
         var oldFirst = project.Tabs[0];
+        var removed = project.Tabs[index];
         project.Tabs.RemoveAt(index);
         if (project.Tabs.Count == 0) return;
+
+        // 削除したタブを指しているリンクを解除する(相互参照の相方を残さない)。
+        foreach (var t in project.Tabs)
+            if (t.LinkedTabId == removed.TabId) t.LinkedTabId = null;
 
         var newFirst = project.Tabs[0];
         if (!ReferenceEquals(oldFirst, newFirst))

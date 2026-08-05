@@ -35,6 +35,7 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _startLineWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _startLineColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _startLinePreview = MakePreview();
+    private readonly CheckBox _carryOverPlaybackStart = new() { Content = "タブ複製時に再生開始ラインを複製先へ引き継ぐ" };
     // --- カーソルライン(マウスモード、2026-07-25) ---
     private readonly TextBox _cursorLineWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBox _cursorLineColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
@@ -172,6 +173,7 @@ internal sealed class PreferencesWindow : Window
     /// <summary>2026-08-02要望対応: 選択中テンプレートを本体互換のカスタムキー定義テキストへ
     /// エクスポートするウィンドウを開くボタン。</summary>
     private readonly Button _templateExportButton = new() { Content = "カスタムキー定義へエクスポート", Width = 190, IsEnabled = false };
+    private readonly Button _templateImportButton = new() { Content = "カスタムキー定義からインポート", Width = 190 };
     private readonly TemplateRepository? _templates;
 
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
@@ -536,6 +538,8 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(_startLinePreview);
         _startLineColor.TextChanged += (_, _) => _startLinePreview.Background = SafeBrush(_startLineColor.Text);
         _startLineColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _startLineColor.Text);
+        _carryOverPlaybackStart.Margin = new Thickness(0, 4, 0, 4);
+        p.Children.Add(_carryOverPlaybackStart);
 
         p.Children.Add(Label("カーソルライン(マウスモード)", section: true));
         p.Children.Add(Label("細い線の太さ(px):"));
@@ -914,9 +918,22 @@ internal sealed class PreferencesWindow : Window
             catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗いたしましたの: {ex.Message}"; return; }
             new CustomKeyExportWindow(template, dir) { Owner = this }.ShowDialog();
         };
+        _templateImportButton.Click += (_, _) =>
+        {
+            var dir = AppPaths.FindAssetDir("template");
+            if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+            var win = new CustomKeyImportWindow(dir) { Owner = this };
+            if (win.ShowDialog() != true || win.SavedPath is null) return;
+            RefreshTemplateList();
+            // 2026-08-03要望対応: 取り込み直後は仮生成した項目(laneId/engineLaneNum等)の確認が
+            // 必要なため、そのままテンプレートエディタを開いて確認・編集を促す。取得できなかった
+            // 項目(FieldStatus)も併せて渡し、テンプレートエディタ側でハイライト表示させる。
+            OpenTemplateEditor(win.SavedPath, win.FieldStatus);
+        };
         row.Children.Add(_templateEditButton);
         row.Children.Add(_templateNewButton);
         row.Children.Add(_templateExportButton);
+        row.Children.Add(_templateImportButton);
         p.Children.Add(row);
 
         RefreshTemplateList();
@@ -937,11 +954,11 @@ internal sealed class PreferencesWindow : Window
         }
     }
 
-    private void OpenTemplateEditor(string? path)
+    private void OpenTemplateEditor(string? path, DanoniEditor.Core.Import.ImportFieldStatus? pendingIssues = null)
     {
         var dir = AppPaths.FindAssetDir("template");
         if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
-        var win = new TemplateEditorWindow(dir, path) { Owner = this };
+        var win = new TemplateEditorWindow(dir, path, pendingIssues) { Owner = this };
         if (win.ShowDialog() != true) return;
 
         // 2026-07-26: 実行中のTemplateRepositoryキャッシュを破棄し、次回参照時にディスクの最新内容を
@@ -1138,6 +1155,7 @@ internal sealed class PreferencesWindow : Window
         _startLineWidth.Text = s.PlaybackStartLineWidth.ToString(CultureInfo.InvariantCulture);
         _startLineColor.Text = s.PlaybackStartLineColorHex;
         _startLinePreview.Background = SafeBrush(s.PlaybackStartLineColorHex);
+        _carryOverPlaybackStart.IsChecked = s.CarryOverPlaybackStartOnTabDuplicate;
         _cursorLineWidth.Text = s.CursorLineWidth.ToString(CultureInfo.InvariantCulture);
         _cursorLineColor.Text = s.CursorLineColorHex;
         _cursorLinePreview.Background = SafeBrush(s.CursorLineColorHex);
@@ -1307,6 +1325,7 @@ internal sealed class PreferencesWindow : Window
         _work.HighlightLineColorHex = _gridColor.Text;
         _work.PlaybackStartLineWidth = sw;
         _work.PlaybackStartLineColorHex = _startLineColor.Text;
+        _work.CarryOverPlaybackStartOnTabDuplicate = _carryOverPlaybackStart.IsChecked == true;
         _work.CursorLineWidth = clw;
         _work.CursorLineColorHex = _cursorLineColor.Text;
         _work.CursorHighlightWidth = chw;

@@ -44,29 +44,31 @@ internal static class ExtraHeaderDefs
         // 実際はg_canDisabledSettings/g_displays(danoni_constants.js)の各要素ごとに動的生成される
         // "{要素名}Use"という個別パラメータ群だと判明。全項目をここへ列挙して差し替える。
         // g_canDisabledSettings系(設定変更の許可/禁止、単純なtrue/false):
-        new("speedUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("motionUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("scrollUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("reverseUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("shuffleUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("autoPlayUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("gaugeUse", HeaderParamType.Bool, "設定時の初期設定"),
+        // 2026-08-05要望対応: Bool型は「使用する」チェック+true/falseラジオボタンの形式へ統一した
+        // (旧: 単一チェックボックスでON=true出力・OFF=未出力のみ)。既定値は原則"true"(要望に基づく)。
+        new("speedUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("motionUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("scrollUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("reverseUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("shuffleUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("autoPlayUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("gaugeUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
         // excessiveUse: g_canDisabledSettingsとしては単純なtrue/falseだが、本体側は同じヘッダー名を
         // 難易度ごとの"有効可否,初期ON/OFF"の複合値($区切り複数)としても読み取る、より複雑な二重の
         // 意味を持つ(danoni_main.js確認済み)。ここでは前者(単純なtrue/false)のみサポートし、
         // 難易度ごとの複合指定は将来課題とする(TBD参照)。
-        new("excessiveUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("appearanceUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("playWindowUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("stepAreaUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("frzReturnUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("shakingUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("effectUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("camoufrageUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("camoufrageTypeUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("swappingUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("judgRangeUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("autoRetryUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("excessiveUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("appearanceUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("playWindowUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("stepAreaUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("frzReturnUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("shakingUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("effectUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("camoufrageUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("camoufrageTypeUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("swappingUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("judgRangeUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("autoRetryUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
         // g_displays系: "有効可否,初期ON/OFF"(例"true,ON"、省略時は"true"のみ)の複合値のため、
         // 単純なBool型では表現できずRaw型(生文字列)で暫定対応する。
         new("stepZoneUse", HeaderParamType.Raw, "設定時の初期設定"),
@@ -80,14 +82,14 @@ internal static class ExtraHeaderDefs
         new("backgroundUse", HeaderParamType.Raw, "設定時の初期設定"),
         new("arrowEffectUse", HeaderParamType.Raw, "設定時の初期設定"),
         new("specialUse", HeaderParamType.Raw, "設定時の初期設定"),
-        new("difSelectorUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("difSelectorUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
         // scoreDetailUse: 2026-07-30確認、Bool型ではなく「表示したい項目名をカンマ区切りで列挙する」
         // 形式(有効な項目名: Density/Speed/ToolDif/HighScore/MiniMap、レガシー別名Velocity→Speed・
         // DifLevel→ToolDifも本体側で変換される)。Bool出力("true"等)では該当項目名が無く全滅するため
         // Raw型(生文字列)へ変更。
         new("scoreDetailUse", HeaderParamType.Raw, "設定時の初期設定"),
-        new("transKeyUse", HeaderParamType.Bool, "設定時の初期設定"),
-        new("colorCdPaddingUse", HeaderParamType.Bool, "設定時の初期設定"),
+        new("transKeyUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
+        new("colorCdPaddingUse", HeaderParamType.Bool, "設定時の初期設定", "true"),
         new("customFont", HeaderParamType.Text, "設定時の初期設定"),
         new("displayChainOFF", HeaderParamType.Raw, "設定時の初期設定"),
         new("keyGroupOrder", HeaderParamType.Raw, "設定時の初期設定"),
@@ -98,19 +100,20 @@ internal static class ExtraHeaderDefs
         // --- プレイ時の初期設定 ---
         // 2026-07-16l: 本体側(danoniplus)の既定はtrueだが、エディタでは意図しないfrzColor無効化を
         // 避けるため既定falseとする(ユーザー指定)。ONにするとfrzColorの指定が強制的にOFFになる
-        // (MainWindow側のUI連動・DosExporterの出力抑止を参照)。
+        // (MainWindow側のUI連動・DosExporterの出力抑止を参照)。2026-08-05: 他のBool項目は既定trueへ
+        // 統一したが、本項目のみユーザー確定仕様により既定falseを維持する(例外)。
         new("defaultFrzColorUse", HeaderParamType.Bool, "プレイ時の初期設定", "false"),
-        new("frzScopeFromAC", HeaderParamType.Bool, "プレイ時の初期設定"),
-        new("jdgPosReset", HeaderParamType.Bool, "プレイ時の初期設定"),
-        new("bottomWordSet", HeaderParamType.Bool, "プレイ時の初期設定"),
+        new("frzScopeFromAC", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
+        new("jdgPosReset", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
+        new("bottomWordSet", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
         // 2026-07-30確認: danoni_main.jsを確認したところ、wordAutoReverseは2値の真偽ではなく
         // "auto"(既定、未指定時)/"ON"/"OFF"の3値である(C_DIS_AUTO/C_FLG_ON/C_FLG_OFF)。
         // 「使用する」チェックOFF=ヘッダー未出力=auto相当、チェックON時はON/OFFを明示的に選べる
         // Dropdown型へ変更し、「明示的にOFFにする」指定ができなかった問題を解消する。
         new("wordAutoReverse", HeaderParamType.Dropdown, "プレイ時の初期設定", "ON", ["ON", "OFF"]),
-        new("frzStartjdgUse", HeaderParamType.Bool, "プレイ時の初期設定"),
-        new("excessiveJdgUse", HeaderParamType.Bool, "プレイ時の初期設定"),
-        new("finishView", HeaderParamType.Bool, "プレイ時の初期設定"),
+        new("frzStartjdgUse", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
+        new("excessiveJdgUse", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
+        new("finishView", HeaderParamType.Bool, "プレイ時の初期設定", "true"),
         new("playingX", HeaderParamType.Number, "プレイ時の初期設定"),
         new("playingY", HeaderParamType.Number, "プレイ時の初期設定"),
         new("playingWidth", HeaderParamType.Number, "プレイ時の初期設定"),
@@ -139,23 +142,23 @@ internal static class ExtraHeaderDefs
         new("readyColor", HeaderParamType.Color, "プレイ時の初期設定", "#FFFFFF"),
 
         // --- タイトル・結果画面の初期設定 ---
-        new("customTitleUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("customBackUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("customBackMainUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("commentAutoBr", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("commentExternal", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("masktitleButton", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("maskresultButton", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
-        new("resultMotionSet", HeaderParamType.Bool, "タイトル・結果画面の初期設定"),
+        new("customTitleUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("customBackUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("customBackMainUse", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("commentAutoBr", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("commentExternal", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("masktitleButton", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("maskresultButton", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
+        new("resultMotionSet", HeaderParamType.Bool, "タイトル・結果画面の初期設定", "true"),
         new("titleSize", HeaderParamType.Number, "タイトル・結果画面の初期設定"),
         new("resultDelayFrame", HeaderParamType.Number, "タイトル・結果画面の初期設定"),
         new("resultFormat", HeaderParamType.Raw, "タイトル・結果画面の初期設定"),
         new("resultValsView", HeaderParamType.Raw, "タイトル・結果画面の初期設定"),
 
         // --- カスタムデータの取込 ---
-        new("autoPreload", HeaderParamType.Bool, "カスタムデータの取込"),
-        new("bgCanvasUse", HeaderParamType.Bool, "カスタムデータの取込"),
-        new("baseBright", HeaderParamType.Bool, "カスタムデータの取込"),
+        new("autoPreload", HeaderParamType.Bool, "カスタムデータの取込", "true"),
+        new("bgCanvasUse", HeaderParamType.Bool, "カスタムデータの取込", "true"),
+        new("baseBright", HeaderParamType.Bool, "カスタムデータの取込", "true"),
         new("customJs", HeaderParamType.Text, "カスタムデータの取込"),
         new("customCss", HeaderParamType.Text, "カスタムデータの取込"),
         new("settingType", HeaderParamType.Text, "カスタムデータの取込"),
@@ -164,9 +167,9 @@ internal static class ExtraHeaderDefs
         new("imgType", HeaderParamType.Raw, "カスタムデータの取込"),
 
         // --- デフォルトデザインの利用有無 ---
-        new("customTitleArrowUse", HeaderParamType.Bool, "デフォルトデザインの利用有無"),
-        new("customTitleAnimationUse", HeaderParamType.Bool, "デフォルトデザインの利用有無"),
-        new("customReadyUse", HeaderParamType.Bool, "デフォルトデザインの利用有無"),
+        new("customTitleArrowUse", HeaderParamType.Bool, "デフォルトデザインの利用有無", "true"),
+        new("customTitleAnimationUse", HeaderParamType.Bool, "デフォルトデザインの利用有無", "true"),
+        new("customReadyUse", HeaderParamType.Bool, "デフォルトデザインの利用有無", "true"),
 
         // --- タイトル文字エフェクト ---
         new("titleLineHeight", HeaderParamType.Number, "タイトル文字エフェクト"),
@@ -177,8 +180,8 @@ internal static class ExtraHeaderDefs
         new("titleArrowName", HeaderParamType.Raw, "タイトル文字エフェクト"),
 
         // --- クレジット・共通設定 ---
-        new("autoSpread", HeaderParamType.Bool, "クレジット・共通設定"),
-        new("heightVariable", HeaderParamType.Bool, "クレジット・共通設定"),
+        new("autoSpread", HeaderParamType.Bool, "クレジット・共通設定", "true"),
+        new("heightVariable", HeaderParamType.Bool, "クレジット・共通設定", "true"),
         new("windowWidth", HeaderParamType.Number, "クレジット・共通設定"),
         new("windowHeight", HeaderParamType.Number, "クレジット・共通設定"),
         new("hashTag", HeaderParamType.Text, "クレジット・共通設定"),
@@ -191,6 +194,8 @@ internal static class ExtraHeaderDefs
         new("skinType", HeaderParamType.Raw, "クレジット・共通設定"),
 
         // --- クエリパラメータ(例外枠) ---
+        // 2026-08-05: debugのみ、誤ってON状態で出力してしまうリスクを避けるため既定falseを維持する
+        // (ユーザー確定仕様、他のBool項目の既定trueからの例外)。
         new("debug", HeaderParamType.Bool, "クエリパラメータ(例外枠)", "false"),
     ];
 }

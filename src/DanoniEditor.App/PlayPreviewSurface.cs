@@ -94,7 +94,7 @@ internal sealed class PlayPreviewSurface : FrameworkElement
             return;
         }
 
-        _startFrame = doc.Project.PlaybackStartFrame ?? 0; // 2026-07-29要望対応
+        _startFrame = doc.CurrentTab.PlaybackStartFrame ?? 0; // 2026-07-29要望対応
         int patternIndex = PlaytestWindow.ResolvePlaytestPatternIndex(appSettings, doc.CurrentTemplate.KeyTypeId);
         _template = doc.CurrentTemplate.WithPattern(patternIndex);
         _reverse = appSettings?.PlaytestReverse ?? false;

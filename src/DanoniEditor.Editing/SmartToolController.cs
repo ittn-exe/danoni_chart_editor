@@ -810,7 +810,7 @@ public sealed class SmartToolController
         if (col is not { Kind: ColumnKind.Marker or ColumnKind.TimeInfo }) return false;
         long tick = SnappedTickAt(pos);
         var engine = _doc.Project.CreateTimingEngine();
-        _doc.Project.PlaybackStartFrame = engine.TickToFrame(tick);
+        _doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(tick);
         _doc.NotifyChanged();
         return true;
     }
@@ -980,7 +980,8 @@ public sealed class SmartToolController
     }
 
     /// <summary>クリップボードの内容を貼り付ける(Ctrl+V)。
-    /// tick基準点は再生開始フレーム(Project.PlaybackStartFrame、マーカー/時間情報レーンのダブルクリックで
+    /// tick基準点は再生開始フレーム(2026-08-04不具合修正でタブごとに独立、
+    /// EditorDocument.CurrentTab.PlaybackStartFrame、マーカー/時間情報レーンのダブルクリックで
     /// 設定される「現在の再生開始位置」、仕様書7.4)。2026-07-26: 従来はCurrentTick(シングルクリックで
     /// 設定される位置)基準だったが、プレイテストの開始位置と揃えたいという要望により変更した。
     /// 一度も設定されていなければtick0を基準にする。laneはコピー時の元レーンをそのまま使い、
@@ -996,7 +997,7 @@ public sealed class SmartToolController
         if (entries is null || entries.Count == 0) return false;
 
         long anchorTick = 0;
-        if (_doc.Project.PlaybackStartFrame is { } startFrame)
+        if (_doc.CurrentTab.PlaybackStartFrame is { } startFrame)
         {
             var engine = _doc.Project.CreateTimingEngine();
             anchorTick = (long)Math.Round(engine.FrameToTick(startFrame));
@@ -1111,7 +1112,7 @@ public sealed class SmartToolController
         if (entries is null || entries.Count == 0) return false;
 
         long anchorTick = 0;
-        if (_doc.Project.PlaybackStartFrame is { } startFrame)
+        if (_doc.CurrentTab.PlaybackStartFrame is { } startFrame)
         {
             var engine = _doc.Project.CreateTimingEngine();
             anchorTick = (long)Math.Round(engine.FrameToTick(startFrame));

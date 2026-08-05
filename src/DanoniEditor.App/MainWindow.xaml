@@ -22,6 +22,9 @@
                 <MenuItem Header="dos.txtをエクスポート(_E)..." InputGestureText="Ctrl+E" Click="ExportDos_Click"/>
                 <!-- 2026-07-23: 合作用途(TBD 5)。カレント難易度タブ1つだけをITTNエディタ形式で書き出す -->
                 <MenuItem Header="現在の難易度タブをエクスポート(_T)..." Click="ExportCurrentTab_Click"/>
+                <!-- 2026-08-03要望対応: 現在の難易度タブ1つを他エディタ形式へ書き出す -->
+                <MenuItem Header="SKBエディタへエクスポート..." Click="ExportSkb_Click"/>
+                <MenuItem Header="FUJIエディタへエクスポート..." Click="ExportFuji_Click"/>
                 <Separator/>
                 <!-- 2026-07-30要望対応: FUJI D&D・SKBコピペをまとめた専用ウィンドウ(繰り返しインポートしたい時の近道) -->
                 <MenuItem Header="インポートウィンドウ(_I)..." Click="OpenImportHubWindow_Click"/>
@@ -253,14 +256,19 @@
                         <StackPanel Margin="8">
                             <TextBlock x:Name="ColorTab0NoticeText" Text="このタブが「共通」の実体です(dos.txt出力時、無サフィックスのsetColor/frzColorになります)"
                                        FontStyle="Italic" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
-                            <CheckBox x:Name="ColorCommonCheck" Content="全ての難易度で共通" Margin="0,0,0,8"
-                                      Checked="ColorCommonCheck_Changed" Unchecked="ColorCommonCheck_Changed" Visibility="Collapsed"/>
 
+                            <!-- 2026-08-06要望対応: setColor/frzColorを個別に「共通を使う」切替できるよう、
+                                 チェックボックスをそれぞれのセクション見出しの直前に分離して配置する
+                                 (以前は1つのチェックボックスで両方まとめて切り替えていた)。 -->
                             <TextBlock Text="setColor" FontWeight="Bold" Margin="0,4,0,4"/>
+                            <CheckBox x:Name="SetColorCommonCheck" Content="全ての難易度で共通" Margin="0,0,0,8"
+                                      Checked="SetColorCommonCheck_Changed" Unchecked="SetColorCommonCheck_Changed" Visibility="Collapsed"/>
                             <StackPanel x:Name="SetColorPanel"/>
 
                             <Separator Margin="0,12,0,8"/>
                             <TextBlock Text="frzColor" FontWeight="Bold" Margin="0,0,0,2"/>
+                            <CheckBox x:Name="FrzColorCommonCheck" Content="全ての難易度で共通" Margin="0,0,0,8"
+                                      Checked="FrzColorCommonCheck_Changed" Unchecked="FrzColorCommonCheck_Changed" Visibility="Collapsed"/>
                             <StackPanel x:Name="FrzColorPanel"/>
 
                             <Separator Margin="0,12,0,8"/>
@@ -528,13 +536,22 @@
                  同一グループ内のみD&Dで並び替え可能(TabControl_Preview*/*_Dropは両方の行で共用のヘルパ)。 -->
             <DockPanel Grid.Row="0" Height="28">
                 <Button DockPanel.Dock="Right" Content="プロジェクトを閉じる" Width="110" Click="CloseProject_Click"/>
-                <TabControl x:Name="ProjectTabControl"
-                            SelectionChanged="ProjectTabControl_SelectionChanged"
-                            AllowDrop="True"
-                            PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
-                            PreviewMouseMove="TabControl_PreviewMouseMove"
-                            PreviewDragOver="TabControl_PreviewDragOver"
-                            Drop="ProjectTabControl_Drop"/>
+                <!-- 2026-08-06要望対応: D&D並び替えを「離した場所のタブと入替え」ではなく「離した位置に挿入」に
+                     変更するのに伴い、挿入先を示すインジケータ(縦線)をTabControlに重ねて表示する。
+                     Grid内で同一セルに重ねることでオーバーレイにする(IsHitTestVisible=Falseでドラッグ判定を妨げない)。 -->
+                <Grid>
+                    <TabControl x:Name="ProjectTabControl"
+                                SelectionChanged="ProjectTabControl_SelectionChanged"
+                                AllowDrop="True"
+                                PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
+                                PreviewMouseMove="TabControl_PreviewMouseMove"
+                                PreviewDragOver="TabControl_PreviewDragOver"
+                                DragLeave="TabControl_DragLeave"
+                                Drop="ProjectTabControl_Drop"/>
+                    <Border x:Name="ProjectTabInsertIndicator" Width="2" Background="#FF4444"
+                            HorizontalAlignment="Left" VerticalAlignment="Stretch"
+                            Visibility="Collapsed" IsHitTestVisible="False"/>
+                </Grid>
             </DockPanel>
             <DockPanel Grid.Row="1" Height="28">
                 <!-- 2026-07-17: 「タブを閉じる」ができず難易度タブを削除できないとの要望対応。
@@ -546,14 +563,20 @@
                 <!-- 2026-07-26: 新規譜面(難易度タブ)追加。新規プロジェクト作成時と同じダイアログで
                      キー種・難易度名を指定し、カレントプロジェクトへタブを追加する -->
                 <Button DockPanel.Dock="Right" Content="新規譜面を追加" Width="100" Click="AddDifficultyTab_Click"/>
-                <TabControl x:Name="DifficultyTabControl"
-                            SelectionChanged="DifficultyTabControl_SelectionChanged"
-                            AllowDrop="True"
-                            PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
-                            PreviewMouseMove="TabControl_PreviewMouseMove"
-                            PreviewDragOver="TabControl_PreviewDragOver"
-                            Drop="DifficultyTabControl_Drop"
-                            MouseRightButtonUp="DifficultyTabControl_MouseRightButtonUp"/>
+                <Grid>
+                    <TabControl x:Name="DifficultyTabControl"
+                                SelectionChanged="DifficultyTabControl_SelectionChanged"
+                                AllowDrop="True"
+                                PreviewMouseLeftButtonDown="TabControl_PreviewMouseLeftButtonDown"
+                                PreviewMouseMove="TabControl_PreviewMouseMove"
+                                PreviewDragOver="TabControl_PreviewDragOver"
+                                DragLeave="TabControl_DragLeave"
+                                Drop="DifficultyTabControl_Drop"
+                                MouseRightButtonUp="DifficultyTabControl_MouseRightButtonUp"/>
+                    <Border x:Name="DifficultyTabInsertIndicator" Width="2" Background="#FF4444"
+                            HorizontalAlignment="Left" VerticalAlignment="Stretch"
+                            Visibility="Collapsed" IsHitTestVisible="False"/>
+                </Grid>
             </DockPanel>
             <!-- 2026-07-26要望対応: 譜面ビュー分割表示。既定は分割用の列(スプリッタ/ペイン2/ミニマップ2)が
                  幅0・非表示(分割OFF)で、SplitViewToggle_ChangedがApplySplitViewLayoutで列幅とVisibilityを

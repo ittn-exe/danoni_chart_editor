@@ -55,6 +55,12 @@ public sealed class AppSettings
     /// <summary>再生開始フレーム可視化ラインの色(6桁カラーコード)。</summary>
     public string PlaybackStartLineColorHex { get; set; } = "#4FC3F7";
 
+    /// <summary>タブ複製時に再生開始ライン(DifficultyTab.PlaybackStartFrame)を複製先へ引き継ぐか
+    /// (2026-08-04要望対応: 再生開始ラインをタブごとに独立させたことに伴い新設)。既定OFF
+    /// (複製先は未設定=曲頭から再生。タブごとに独立した値という趣旨に合わせ、明示的にONへ
+    /// 切り替えた場合のみ複製元の値を引き継ぐ)。環境設定「表示」カテゴリからのみ変更可能。</summary>
+    public bool CarryOverPlaybackStartOnTabDuplicate { get; set; } = false;
+
     // =====================================================================
     // カーソルライン(マウスモード、2026-07-25): ホバー中の最寄りスナップ位置を示す横線と、
     // カーソルが乗っているレーンを強調する帯。それぞれ独立に太さ・色を変更できる。
