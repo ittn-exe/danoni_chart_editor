@@ -210,6 +210,66 @@ public class ClipboardTests
         Assert.False(ctrl.Paste());
     }
 
+    // --- 2026-08-08新設の回帰テスト: マイナスフレームへの貼り付け
+    // (ChartProject.AllowNegativeFramePlacement、既定false)。BPMは常に対象外。 ---
+
+    [Fact]
+    public void Paste_Note_AllowNegativeFalse_Default_SkipsNegativeDestination()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, -100 * T); // マイナスtickへ着地させる
+        Assert.False(doc.Project.AllowNegativeFramePlacement); // 既定OFF
+        Assert.False(ctrl.Paste());
+        Assert.DoesNotContain(doc.CurrentTab.Lanes[0].Notes, t => t < 0);
+    }
+
+    [Fact]
+    public void Paste_Note_AllowNegativeTrue_PlacesAtNegativeTick()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, -100 * T);
+        Assert.True(ctrl.Paste());
+        Assert.Contains(-100 * T, doc.CurrentTab.Lanes[0].Notes);
+    }
+
+    [Fact]
+    public void Paste_SpeedEvent_AllowNegativeTrue_PlacesAtNegativeTick()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Speed, 48 * T, 1.5));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Speed, -1, 48 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, -200 * T);
+        Assert.True(ctrl.Paste());
+        Assert.Contains(doc.CurrentTab.SpeedEvents, e => e.Tick == -200 * T && e.Value == 1.5);
+    }
+
+    [Fact]
+    public void Paste_Bpm_AllowNegativeTrue_StillSkipped_AtNegativeTick()
+    {
+        // BPMはTimingEngineの不変条件(先頭イベントのTick==0)保護のため、フラグに関係なく常に対象外
+        var (doc, ctrl, _) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 48 * T, 150));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Bpm, -1, 48 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, -200 * T);
+        Assert.False(ctrl.Paste());
+        Assert.DoesNotContain(doc.Project.BpmEvents, e => e.Tick < 0);
+    }
+
     // --- キー種違いのプロジェクトへの貼り付け(レーン範囲外はスキップ) ---
 
     [Fact]
@@ -223,6 +283,46 @@ public class ClipboardTests
         var (dstDoc, dstCtrl, _) = NewScene("5"); // laneCount=5(0-4)、lane20は範囲外
         Assert.False(dstCtrl.Paste());
         Assert.All(dstDoc.CurrentTab.Lanes, l => Assert.Empty(l.Notes));
+    }
+
+    // --- 2026-08-08不具合修正(第三者報告): 貼り付け先に既存ノートがある場合は重ねず、
+    //     そのノートだけパスする(進捗まとめ、詳細はMoveObjectsAction.Doのコメント参照) ---
+
+    [Fact]
+    public void Paste_Note_SkipsWhenDestinationOccupied_DoesNotDuplicate()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, 200 * T);
+        doc.Execute(new PlaceNoteAction(0, 200 * T)); // 貼り付け先に先客がいる状態を作る
+
+        Assert.False(ctrl.Paste()); // 配置対象が1件も無い=何も貼り付けられない
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes, t => t == 200 * T); // 重複していない
+    }
+
+    [Fact]
+    public void Paste_MultipleNotes_OneOccupied_PastesOnlyTheFreeOne()
+    {
+        var (doc, ctrl, _) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        doc.Execute(new PlaceNoteAction(0, 96 * T)); // 最小tick(48*T)から+48*T
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 96 * T));
+        ctrl.CopySelection();
+
+        SetPlaybackStartFrame(doc, 500 * T);
+        doc.Execute(new PlaceNoteAction(0, 500 * T)); // 貼り付け先の前半だけ先客がいる状態を作る
+
+        Assert.True(ctrl.Paste()); // 後半(500*T+48*T)は空いているので貼り付けは成立する
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes, t => t == 500 * T); // 先客のまま重複しない
+        Assert.Contains(500 * T + 48 * T, doc.CurrentTab.Lanes[0].Notes); // 空いていた方は貼り付けられる
+
+        // 2026-08-08追加対応: 選択には「貼り付けが成功したノート」と「パスする原因になった既存ノート」の両方が入る
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 500 * T + 48 * T);
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 500 * T);
     }
 
     // --- 選択状態・Undo単位 ---

@@ -307,4 +307,47 @@ public class PasteWithLaneMappingTests
         for (int i = 0; i < doc.CurrentTemplate.KeyCount; i++)
             if (i != 5) Assert.Empty(doc.CurrentTab.Lanes[i].Notes);
     }
+
+    // --- 2026-08-08新設の回帰テスト: マイナスフレームへの貼り付け(レーン対応表経由、
+    // ChartProject.AllowNegativeFramePlacement、既定false) ---
+
+    [Fact]
+    public void PasteWithLaneMapping_AllowNegativeFalse_Default_SkipsNegativeDestination()
+    {
+        var (doc, ctrl) = NewTwoKeyTypeScene();
+
+        doc.CurrentTabIndex = 0;
+        doc.Execute(new PlaceNoteAction(0, 480));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 480));
+        Assert.True(ctrl.CopySelection());
+
+        doc.CurrentTabIndex = 1;
+        var engine = doc.Project.CreateTimingEngine();
+        doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(-480);
+        Assert.False(doc.Project.AllowNegativeFramePlacement); // 既定OFF
+
+        var mapping = new List<(int SourceLane, int DestLane)> { (0, 5) };
+        Assert.False(ctrl.PasteWithLaneMapping(mapping, PasteConflictOptions.Default, preserveProperties: true));
+        Assert.Empty(doc.CurrentTab.Lanes[5].Notes);
+    }
+
+    [Fact]
+    public void PasteWithLaneMapping_AllowNegativeTrue_PlacesAtNegativeTick()
+    {
+        var (doc, ctrl) = NewTwoKeyTypeScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+
+        doc.CurrentTabIndex = 0;
+        doc.Execute(new PlaceNoteAction(0, 480));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 480));
+        Assert.True(ctrl.CopySelection());
+
+        doc.CurrentTabIndex = 1;
+        var engine = doc.Project.CreateTimingEngine();
+        doc.CurrentTab.PlaybackStartFrame = engine.TickToFrame(-480);
+
+        var mapping = new List<(int SourceLane, int DestLane)> { (0, 5) };
+        Assert.True(ctrl.PasteWithLaneMapping(mapping, PasteConflictOptions.Default, preserveProperties: true));
+        Assert.Contains(-480L, doc.CurrentTab.Lanes[5].Notes);
+    }
 }

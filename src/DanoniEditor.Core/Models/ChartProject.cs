@@ -27,6 +27,18 @@ public sealed class ChartProject
     public int BlankFrame { get; set; } = 0;
     public int FrzAttempt { get; set; } = 5;
 
+    /// <summary>2026-08-08要望対応(再設計版): tick&lt;0(frame&lt;0、チャートのtick0より手前)への
+    /// オブジェクト配置を許可するかどうか。既定false。trueの間、譜面ビュー上のクリック配置・
+    /// ペーストでtick&lt;0への配置が可能になる(SmartToolController.SnappedTickAt/Paste/
+    /// PasteWithLaneMapping参照)。BPMイベントはTimingEngineの前提(tick0に先頭BPM必須)に
+    /// 直結するため、この設定に関わらず常に対象外(tick&lt;0への配置は禁止のまま)。
+    /// このフラグは「新規配置の可否」のみを制御し、既にtick&lt;0にあるオブジェクト(このフラグが
+    /// falseの間に外部形式からインポートされた場合等)を削除・警告する機能ではない
+    /// (TimingEngine.TickToFrameは元々tick&lt;0でも正しく変換できるため、フラグの値に関わらず
+    /// エクスポート結果には影響しない)。dos.txtへは出力しないエディタ専用設定のため、
+    /// SerializeTabExportの対象には含めない。</summary>
+    public bool AllowNegativeFramePlacement { get; set; } = false;
+
     /// <summary>StartNumber: 小節0の頭が置かれる絶対フレーム(仕様書7.3。実運用ではblankFrameと同値)</summary>
     public double StartNumber { get; set; } = 0;
 
@@ -363,27 +375,53 @@ public sealed record GaugeNameDef(string Name, string? DisplayName = null);
 /// どちらの形式でも読めるようにする)。書き戻しは常に新形式(オブジェクト)で行う。</summary>
 public sealed class GaugeNameDefConverter : JsonConverter<GaugeNameDef>
 {
+    /// <summary>2026-08-09不具合修正: 従来は「自分自身を除いたoptionsで再帰デシリアライズ/
+    /// シリアライズする」方式(RawOptions)だったが、GaugeNameDefには
+    /// [JsonConverter(typeof(GaugeNameDefConverter))]属性が型そのものに付与されているため、
+    /// options.Convertersリストから自分を取り除いてもSystem.Text.Jsonの型解決は属性を見て
+    /// 結局同じコンバータへ戻ってしまい、Read/Write双方が無限再帰(スタックオーバーフロー、
+    /// try/catchで捕捉不可能な即死クラッシュ)に陥っていた(第三者報告: 曲名編集後の上書き保存で
+    /// クラッシュ。実際はgaugeNamesを含む全プロジェクトの保存で発生する不具合で、曲名の内容とは
+    /// 無関係だった)。JsonSerializerを一切経由せず、Utf8JsonReader/Utf8JsonWriterを直接操作して
+    /// フィールドを手動で読み書きすることで、型解決による自己参照そのものを断つ。</summary>
     public override GaugeNameDef Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.String)
             return new GaugeNameDef(reader.GetString()!);
         if (reader.TokenType == JsonTokenType.StartObject)
-            return JsonSerializer.Deserialize<GaugeNameDef>(ref reader, RawOptions(options))
-                ?? throw new JsonException("gaugeNamesの要素を読み込めませんでした");
+        {
+            string? name = null;
+            string? displayName = null;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject) break;
+                if (reader.TokenType != JsonTokenType.PropertyName) continue;
+                string? propName = reader.GetString();
+                reader.Read();
+                if (string.Equals(propName, "name", StringComparison.OrdinalIgnoreCase))
+                    name = reader.GetString();
+                else if (string.Equals(propName, "displayName", StringComparison.OrdinalIgnoreCase))
+                    displayName = reader.GetString();
+                else
+                    reader.Skip();
+            }
+            return name is null
+                ? throw new JsonException("gaugeNamesの要素にnameがありません")
+                : new GaugeNameDef(name, displayName);
+        }
         throw new JsonException("gaugeNamesの要素は文字列またはオブジェクトで指定してください");
     }
 
-    public override void Write(Utf8JsonWriter writer, GaugeNameDef value, JsonSerializerOptions options) =>
-        JsonSerializer.Serialize(writer, value, RawOptions(options));
-
-    // 自分自身(このコンバータ)を除いたoptionsで再帰デシリアライズ/シリアライズする
-    // (options内に自分が登録されたままだとGaugeNameDef自体の再帰呼び出しで無限ループになるため)。
-    private static JsonSerializerOptions RawOptions(JsonSerializerOptions options)
+    public override void Write(Utf8JsonWriter writer, GaugeNameDef value, JsonSerializerOptions options)
     {
-        var clone = new JsonSerializerOptions(options);
-        for (int i = clone.Converters.Count - 1; i >= 0; i--)
-            if (clone.Converters[i] is GaugeNameDefConverter) clone.Converters.RemoveAt(i);
-        return clone;
+        string nameProp = options.PropertyNamingPolicy?.ConvertName(nameof(GaugeNameDef.Name)) ?? nameof(GaugeNameDef.Name);
+        string displayNameProp = options.PropertyNamingPolicy?.ConvertName(nameof(GaugeNameDef.DisplayName)) ?? nameof(GaugeNameDef.DisplayName);
+
+        writer.WriteStartObject();
+        writer.WriteString(nameProp, value.Name);
+        if (value.DisplayName is not null)
+            writer.WriteString(displayNameProp, value.DisplayName);
+        writer.WriteEndObject();
     }
 }
 

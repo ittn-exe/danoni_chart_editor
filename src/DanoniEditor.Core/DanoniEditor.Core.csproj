@@ -6,4 +6,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 2026-08-08: dos.txtエクスポート時のShift-JIS選択(DosTextEncoding.cs)に必要。
+         .NET(Core/5以降)は既定でコードページ932(Shift-JIS)を扱えないため追加。 -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>

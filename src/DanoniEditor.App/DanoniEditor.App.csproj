@@ -14,7 +14,7 @@
     <!-- 2026-07-26: バージョン番号は自動生成せず、リリースのたびに手動で書き換える運用(ユーザー確定方針)。
          この1行がAssemblyVersion/FileVersion/InformationalVersionの既定値にもなる(個別上書き無しの場合)。
          環境報告(DiagnosticsReport.cs)等、人間向けの表示にはInformationalVersionを使うこと。 -->
-    <Version>0.2.0.26</Version>
+    <Version>0.2.0.41</Version>
     <!--  バージョン番号書式：Major.Minor.Patch.Build
           Buildは自動インクリメントの予定-->
   </PropertyGroup>

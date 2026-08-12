@@ -208,6 +208,11 @@ internal sealed class PlaytestWindow : Window
         double distY = _playingHeight - StepY + stepYRHeader;
         _baseSpeed = 1 + ((distY - (stepYHeader - StepY) * 2) / (500 - StepY) - 1) * 0.85;
         _baseScrollSpeed = _hiSpeed * _baseSpeed * 2;
+        // 2026-08-08c要望対応: 「スクロール速度を維持」トグル(AppSettings.KeepScrollSpeedInPlaytest)がONの場合、
+        // 再生速度(_playbackSpeed、音声のSpeedRatioにのみ影響する)に関わらずノートの見た目のスクロール速度を
+        // 一定に保つため、(1/再生速度)を追加で乗算しておく。「プレイテストへ反映」がOFFの間は_playbackSpeedが
+        // 常に1.0で渡ってくるため、このトグルの値自体は実質的に影響しない(MainWindow.StartPlaytest参照)。
+        if (appSettings?.KeepScrollSpeedInPlaytest == true) _baseScrollSpeed /= _playbackSpeed;
         _stepYTop = stepYHeader + ArrowSize / 2;
         _stepYBottom = _playingHeight + stepYRHeader - stepYHeader - ArrowSize / 2;
 

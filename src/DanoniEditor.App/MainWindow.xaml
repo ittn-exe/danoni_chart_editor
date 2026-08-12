@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DanoniEditor.App"
-        Title="ダンおに譜面エディタ" Width="1280" Height="800"
+        Title="IDE (ITTN-DANONI-EDITOR)" Width="1280" Height="800"
         Icon="Assets/AppIcon.ico">
     <!-- 仕様書6.1: 上段=グローバル設定 / 左=編集ツール / 中央=譜面 / 右=プロパティ / 下=ステータス -->
     <DockPanel>
@@ -54,7 +54,7 @@
         <!-- 2026-08-02要望対応: FHD(1920x1080)環境だと上パネルが画面幅に見切れるとの指摘対応で
              「ピッチで指定...」より後ろの項目を2段目へ折り返した。行数が増えるため高さは固定値を
              やめてコンテンツに合わせて自動算出させる(Height指定を撤去)。 -->
-        <Border DockPanel.Dock="Top" Background="#F0F0F0">
+        <Border x:Name="TopPanelBorder" DockPanel.Dock="Top" Background="#F0F0F0">
             <StackPanel VerticalAlignment="Center" Margin="8">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock x:Name="ProjectTitleText" Text="(プロジェクト未作成)" VerticalAlignment="Center" Margin="0,0,16,0" FontWeight="Bold"/>
@@ -102,6 +102,10 @@
                     <TextBox x:Name="VolumeBox" Width="36" VerticalAlignment="Center" Margin="0,0,2,0"
                              LostFocus="VolumeBox_LostFocus"/>
                     <TextBlock Text="%" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                </StackPanel>
+                <!-- 2026-08-08要望対応: 「音量」欄より後ろ(プレーテスト設定〜プレイテストへ反映)を
+                     ここで一段下へ折り返した(元は1つ上の行に全て収まっていた)。 -->
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                     <!-- 2026-07-17g: プレイテスト(Ctrl+P)用設定。値はAppSettingsに永続化 -->
                     <TextBlock Text="プレーテスト:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <CheckBox x:Name="PlaytestReverseCheck" Content="Reverse" VerticalAlignment="Center" Margin="0,0,8,0"
@@ -126,9 +130,24 @@
                     <!-- 2026-07-26: 再生速度をピッチ(半音移動量)から指定するダイアログを開く -->
                     <Button Content="ピッチで指定..." Width="90" VerticalAlignment="Center" Margin="0,0,8,0"
                             Click="PlaybackSpeedByPitch_Click"/>
+                    <!-- 2026-08-08要望対応: OFF(既定)ならプレイテストは常に等倍で再生し、「再生速度」欄の設定に
+                         影響されない。ONの間だけプレイテスト開始時に再生速度を反映する(MainWindow.StartPlaytest参照)。
+                         IsCheckedはXAMLで固定値を書かず(起動時クラッシュ回避のため他のトグルと同様)、コード側で設定する。 -->
+                    <ToggleButton x:Name="ReflectPlaybackSpeedInPlaytestToggle" Content="プレイテストへ反映" Width="110" VerticalAlignment="Center" Margin="0,0,8,0"
+                                  ToolTip="ONの間、プレイテストの再生速度にも「再生速度」欄の設定を反映する(OFFなら常に1.0倍)"
+                                  Checked="ReflectPlaybackSpeedInPlaytestToggle_Changed" Unchecked="ReflectPlaybackSpeedInPlaytestToggle_Changed"/>
+                    <!-- 2026-08-08c要望対応: 「ノートのスクロール速度だけは再生速度に関わらず一定にしたい」との
+                         要望で追加。ONの間、プレイテストのスクロール速度に(1/再生速度)を乗算し、再生速度を
+                         変えても見た目のスクロール速度が変わらないようにする(PlaytestWindow参照)。
+                         プレイテストへ反映がOFFの場合は再生速度自体が常に1.0倍のため、このトグルの値は
+                         実質的に影響しない(1/1.0=1倍のまま)。 -->
+                    <ToggleButton x:Name="KeepScrollSpeedInPlaytestToggle" Content="スクロール速度を維持" Width="130" VerticalAlignment="Center" Margin="0,0,8,0"
+                                  ToolTip="ONの間、プレイテストのノートスクロール速度に(1/再生速度)を乗算し、再生速度を変えても見た目のスクロール速度を一定に保ちます"
+                                  Checked="KeepScrollSpeedInPlaytestToggle_Changed" Unchecked="KeepScrollSpeedInPlaytestToggle_Changed"/>
                 </StackPanel>
                 <!-- 2026-08-02要望対応: FHD環境での見切れ対策で、「ピッチで指定...」より後ろの
-                     表示系トグル群をここで2段目へ折り返した(元は1つ上の行に全て収まっていた)。 -->
+                     表示系トグル群をここで折り返した(元は1つ上の行に全て収まっていた)。2026-08-08b要望対応:
+                     ループ再生の項目群を独立行から一段上のこの行(譜面ビュー分割の横)へ統合した。 -->
                 <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                     <ToggleButton x:Name="ShowNoteImagesToggle" Content="ノート画像 表示" Width="100" Margin="0,0,4,0"
                                   IsChecked="True" Checked="ShowNoteImagesToggle_Changed" Unchecked="ShowNoteImagesToggle_Changed"/>
@@ -153,12 +172,10 @@
                     <ToggleButton x:Name="SplitViewToggle" Content="譜面ビュー分割" Width="90" Margin="8,0,0,0"
                                   Checked="SplitViewToggle_Changed" Unchecked="SplitViewToggle_Changed"
                                   ToolTip="譜面ビューを左右に分割し、同じ難易度タブを両方に表示します(独立スクロール、どちらでも編集可。キーボードモード中はTabキーでアクティブ側を切替)"/>
-                </StackPanel>
-                <!-- 2026-07-29要望対応: 選択範囲(時間情報レーンの範囲選択)のループ再生(DAW風、既定OFF)。
-                     目視テストは常に再生開始ラインから始まり、ループ終点に到達するとループ始点へ戻って
-                     再生を続ける(停止しない)。 -->
-                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                    <TextBlock Text="ループ再生(目視テスト):" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <!-- 2026-07-29要望対応: 選択範囲(時間情報レーンの範囲選択)のループ再生(DAW風、既定OFF)。
+                         目視テストは常に再生開始ラインから始まり、ループ終点に到達するとループ始点へ戻って
+                         再生を続ける(停止しない)。2026-08-08b要望対応でこの行(譜面ビュー分割の横)へ移動。 -->
+                    <TextBlock Text="ループ再生(目視テスト):" VerticalAlignment="Center" Margin="16,0,4,0"/>
                     <TextBlock Text="選択始点:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                     <TextBlock x:Name="LoopStartFrameText" Text="-" VerticalAlignment="Center" Margin="0,0,12,0"/>
                     <TextBlock Text="選択終点:" VerticalAlignment="Center" Margin="0,0,2,0"/>
@@ -233,6 +250,13 @@
 
                             <TextBlock Text="frzAttempt" Margin="0,8,0,2"/>
                             <TextBox x:Name="FrzAttemptBox" LostFocus="ProjectNumericField_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
+
+                            <!-- 2026-08-08要望対応(再設計版): tick<0(frame<0)へのオブジェクト配置を
+                                 許可するかどうか。ONの間、譜面ビューのクリック配置・ペーストでtick<0への
+                                 配置が可能になる(BPMイベントは対象外、常に禁止のまま)。 -->
+                            <CheckBox x:Name="AllowNegativeFramePlacementCheck" Content="マイナスフレームを許容する" Margin="0,8,0,0"
+                                      Checked="AllowNegativeFramePlacementCheck_Changed" Unchecked="AllowNegativeFramePlacementCheck_Changed"
+                                      ToolTip="ONの間、譜面ビューでtick&lt;0(frame&lt;0)の位置へノート・speed/boost等を配置できるようになります(BPMイベントを除く)"/>
 
                             <Separator Margin="0,12,0,8"/>
                             <TextBlock Text="現在の難易度タブ" FontWeight="Bold" Margin="0,0,0,4"/>
@@ -400,19 +424,25 @@
                                 <CheckBox x:Name="NColorHitEnabledCheck" Content="端点(Hit)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorHitColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
-                                    <Button x:Name="NColorHitHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitHistoryButton_Click"/>
+                                    <Button x:Name="NColorHitPickerButton" Content="色" Width="32" Margin="4,0,0,0" Click="NColorHitPickerButton_Click"/>
+                                    <Button x:Name="NColorHitFavoriteButton" Content="☆登録" Width="44" Margin="4,0,0,0" Click="NColorHitFavoriteButton_Click"/>
+                                    <TextBlock x:Name="NColorHitFavoriteOkText" Text="OK" Foreground="Green" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
                                 </StackPanel>
 
                                 <CheckBox x:Name="NColorHitBarEnabledCheck" Content="帯(HitBar)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorHitBarColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitBarColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
-                                    <Button x:Name="NColorHitBarHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitBarHistoryButton_Click"/>
+                                    <Button x:Name="NColorHitBarPickerButton" Content="色" Width="32" Margin="4,0,0,0" Click="NColorHitBarPickerButton_Click"/>
+                                    <Button x:Name="NColorHitBarFavoriteButton" Content="☆登録" Width="44" Margin="4,0,0,0" Click="NColorHitBarFavoriteButton_Click"/>
+                                    <TextBlock x:Name="NColorHitBarFavoriteOkText" Text="OK" Foreground="Green" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
                                 </StackPanel>
 
                                 <CheckBox x:Name="NColorHitShadowEnabledCheck" Content="塗りつぶし(HitShadow)" Checked="NColorHitEnabled_Changed" Unchecked="NColorHitEnabled_Changed" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorHitShadowColorBox" Width="96" TextChanged="NColorFrzHitField_Changed" LostFocus="NColorHitShadowColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
-                                    <Button x:Name="NColorHitShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorHitShadowHistoryButton_Click"/>
+                                    <Button x:Name="NColorHitShadowPickerButton" Content="色" Width="32" Margin="4,0,0,0" Click="NColorHitShadowPickerButton_Click"/>
+                                    <Button x:Name="NColorHitShadowFavoriteButton" Content="☆登録" Width="44" Margin="4,0,0,0" Click="NColorHitShadowFavoriteButton_Click"/>
+                                    <TextBlock x:Name="NColorHitShadowFavoriteOkText" Text="OK" Foreground="Green" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
                                 </StackPanel>
 
                                 <Separator Margin="0,4,0,8"/>
@@ -423,13 +453,17 @@
                                 <TextBlock Text="ノート(ArrowShadow)" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorArrowShadowColorBox" Width="96" TextChanged="NColorShadowField_Changed" LostFocus="NColorArrowShadowColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
-                                    <Button x:Name="NColorArrowShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorArrowShadowHistoryButton_Click"/>
+                                    <Button x:Name="NColorArrowShadowPickerButton" Content="色" Width="32" Margin="4,0,0,0" Click="NColorArrowShadowPickerButton_Click"/>
+                                    <Button x:Name="NColorArrowShadowFavoriteButton" Content="☆登録" Width="44" Margin="4,0,0,0" Click="NColorArrowShadowFavoriteButton_Click"/>
+                                    <TextBlock x:Name="NColorArrowShadowFavoriteOkText" Text="OK" Foreground="Green" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
                                 </StackPanel>
 
                                 <TextBlock Text="フリーズ(NormalShadow)" Margin="0,4,0,2"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBox x:Name="NColorNormalShadowColorBox" Width="96" TextChanged="NColorShadowField_Changed" LostFocus="NColorNormalShadowColorBox_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
-                                    <Button x:Name="NColorNormalShadowHistoryButton" Content="履歴" Width="40" Margin="4,0,0,0" Click="NColorNormalShadowHistoryButton_Click"/>
+                                    <Button x:Name="NColorNormalShadowPickerButton" Content="色" Width="32" Margin="4,0,0,0" Click="NColorNormalShadowPickerButton_Click"/>
+                                    <Button x:Name="NColorNormalShadowFavoriteButton" Content="☆登録" Width="44" Margin="4,0,0,0" Click="NColorNormalShadowFavoriteButton_Click"/>
+                                    <TextBlock x:Name="NColorNormalShadowFavoriteOkText" Text="OK" Foreground="Green" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,0,0" Visibility="Collapsed"/>
                                 </StackPanel>
 
                                 <Separator Margin="0,4,0,8"/>
@@ -592,24 +626,45 @@
                     <ColumnDefinition x:Name="Minimap2Column" Width="0"/>
                 </Grid.ColumnDefinitions>
                 <Border x:Name="ChartPane1Border" Grid.Column="0" BorderThickness="0" BorderBrush="Transparent">
-                    <ScrollViewer x:Name="ChartScrollViewer"
-                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                                  ScrollChanged="ChartScrollViewer_ScrollChanged"
-                                  PreviewMouseDown="ChartScrollViewer_PreviewMouseDown">
-                        <local:ChartCanvas x:Name="Canvas"/>
-                    </ScrollViewer>
+                    <!-- 2026-08-08要望対応: レーンラベルヘッダー(LaneHeaderBar)をScrollViewerの外側の専用行へ
+                         分離。従来はChartCanvas上へのオーバーレイ描画のため、スクロールでその位置に来た
+                         オブジェクトがラベルの下に隠れてしまう不具合があった。表示位置(上部/下部/非表示)は
+                         環境設定「表示」で選べる(ApplyLaneLabelHeaderPosition参照)。RowDefinitionの高さは
+                         そちらで動的に切り替える(既定は上部固定=Row0がAuto、Row2が0)。 -->
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition x:Name="ChartPane1HeaderTopRow" Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition x:Name="ChartPane1HeaderBottomRow" Height="0"/>
+                        </Grid.RowDefinitions>
+                        <local:LaneHeaderBar x:Name="LaneHeaderBar1" Grid.Row="0"/>
+                        <ScrollViewer x:Name="ChartScrollViewer" Grid.Row="1"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      ScrollChanged="ChartScrollViewer_ScrollChanged"
+                                      PreviewMouseDown="ChartScrollViewer_PreviewMouseDown">
+                            <local:ChartCanvas x:Name="Canvas"/>
+                        </ScrollViewer>
+                    </Grid>
                 </Border>
                 <local:ChartMinimap x:Name="Minimap" Grid.Column="1"/>
                 <GridSplitter x:Name="ChartSplitGridSplitter" Grid.Column="2" Width="4" HorizontalAlignment="Stretch"
                               VerticalAlignment="Stretch" Background="#CCCCCC" ResizeBehavior="PreviousAndNext"
                               Cursor="SizeWE" Visibility="Collapsed" ToolTip="ドラッグで分割の幅を調整"/>
                 <Border x:Name="ChartPane2Border" Grid.Column="3" Visibility="Collapsed" BorderThickness="0" BorderBrush="Transparent">
-                    <ScrollViewer x:Name="ChartScrollViewer2"
-                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                                  ScrollChanged="ChartScrollViewer2_ScrollChanged"
-                                  PreviewMouseDown="ChartScrollViewer2_PreviewMouseDown">
-                        <local:ChartCanvas x:Name="Canvas2"/>
-                    </ScrollViewer>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition x:Name="ChartPane2HeaderTopRow" Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition x:Name="ChartPane2HeaderBottomRow" Height="0"/>
+                        </Grid.RowDefinitions>
+                        <local:LaneHeaderBar x:Name="LaneHeaderBar2" Grid.Row="0"/>
+                        <ScrollViewer x:Name="ChartScrollViewer2" Grid.Row="1"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      ScrollChanged="ChartScrollViewer2_ScrollChanged"
+                                      PreviewMouseDown="ChartScrollViewer2_PreviewMouseDown">
+                            <local:ChartCanvas x:Name="Canvas2"/>
+                        </ScrollViewer>
+                    </Grid>
                 </Border>
                 <local:ChartMinimap x:Name="Minimap2" Grid.Column="4" Visibility="Collapsed"/>
             </Grid>

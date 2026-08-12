@@ -54,6 +54,23 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _linkedHighlightColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Border _linkedHighlightPreview = MakePreview();
 
+    // --- カラーピッカー > お気に入りの管理(2026-08-08新設、お気に入りの色機能)。
+    // 登録(☆登録ボタン)は各色欄側で完結するため、ここでは一覧表示と削除のみを扱う。
+    // SelectionMode.Multiple: クリックのたびに選択がトグルする(Ctrl/Shift不要、「トグル式で複数選択可」
+    // というユーザー確定仕様)。
+    private readonly ListBox _favoriteColorsList = new() { SelectionMode = SelectionMode.Multiple, Height = 320 };
+
+    // --- カラーピッカー > お気に入りのD&D並び替え(2026-08-08要望対応)。難易度タブの入替えと同じ
+    // 「掴んだ内容をドロップ先に挿入する」「挿入先がわかるよう線でオーバーレイ表示」方式。 ---
+    private readonly Border _favColorInsertIndicator = new()
+    {
+        Height = 2, Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x44, 0x44)),
+        HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top,
+        Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+    };
+    private Point _favColorDragStartPoint;
+    private int _favColorDragSourceIndex = -1;
+
     // --- テスト再生 > 全般: ノート音として鳴らす./sounds内の音声ファイル選択 ---
     private readonly ComboBox _noteSoundFile = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
 
@@ -127,6 +144,14 @@ internal sealed class PreferencesWindow : Window
 
     // --- 譜面ビューReverse(2026-07-22、環境設定のみで切替) ---
     private readonly CheckBox _chartViewReverse = new() { Content = "譜面ビューをReverse表示する(tick0を下端・末尾を上端にする)" };
+
+    // --- レーンラベルヘッダーの表示位置(2026-08-08要望対応、ChartViewReverseとは独立) ---
+    private readonly RadioButton _laneHeaderTop = new() { Content = "上部に固定表示", GroupName = "laneHeaderPosition", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly RadioButton _laneHeaderBottom = new() { Content = "下部に固定表示", GroupName = "laneHeaderPosition", Margin = new Thickness(0, 0, 0, 2) };
+    private readonly RadioButton _laneHeaderHidden = new() { Content = "非表示", GroupName = "laneHeaderPosition", Margin = new Thickness(0, 0, 0, 2) };
+
+    // --- フレーム数のblankFrame込み表示(2026-08-08要望対応) ---
+    private readonly CheckBox _showFrameWithBlankFrame = new() { Content = "フレーム数をblankFrame込みの値で表示する(dos.txt出力値と一致させたい場合はON)" };
 
     // --- キーボードモードのSpace/B方向(2026-07-26要望対応) ---
     private readonly RadioButton _spaceBModeVisual = new() { Content = "見た目通りの上下(Spaceで下方向、Bで上方向、現在の実装)", GroupName = "spaceBMode", Margin = new Thickness(0, 0, 0, 2) };
@@ -216,9 +241,10 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("テンプレート");
         categories.Items.Add("キーマクロ");
         categories.Items.Add("ショートカットキー");
+        categories.Items.Add("カラーピッカー");
         categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildShortcutsPanel(), BuildStatsPanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildShortcutsPanel(), BuildColorPickerPanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -487,14 +513,33 @@ internal sealed class PreferencesWindow : Window
         Margin = section ? new Thickness(0, 8, 0, 6) : new Thickness(0, 4, 0, 2),
     };
 
-    /// <summary>色コード入力欄+履歴ピッカーボタンの横並び行を作る(2026-07-23)。</summary>
+    /// <summary>色コード入力欄+ピッカー呼び出し+お気に入り登録ボタンの横並び行を作る(2026-07-23、
+    /// 2026-08-08: 「履歴」ボタンを統合カラーピッカー(履歴+お気に入り+HSV視覚選択+RGB/HEX入力、
+    /// ColorPickerPopup)呼び出しへ置き換え、「☆登録」ボタン(現在値をお気に入りへ追加)を新設した
+    /// (進捗まとめ5-2、お気に入りの色機能)。いずれも_work(環境設定の作業コピー)を対象とするため、
+    /// OK確定まで実際の設定へは反映されない(他の環境設定項目と同じ挙動)。押しても見た目の変化が
+    /// 分かりづらいとの指摘を受け、登録成功時に「OK」を2秒間表示する(TransientOkFeedback)。</summary>
     private UIElement ColorFieldRow(TextBox colorBox)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left };
-        var historyBtn = new Button { Content = "履歴", Width = 36, Margin = new Thickness(4, 0, 0, 0) };
-        historyBtn.Click += (_, _) => ColorHistoryPicker.Show(_work, historyBtn, hex => colorBox.Text = hex);
+        var pickerBtn = new Button { Content = "色", Width = 32, Margin = new Thickness(4, 0, 0, 0) };
+        pickerBtn.Click += (_, _) => ColorPickerPopup.Show(_work, pickerBtn, colorBox.Text, hex => colorBox.Text = hex);
+        var favBtn = new Button { Content = "☆登録", Width = 44, Margin = new Thickness(4, 0, 0, 0) };
+        var favOkText = new TextBlock
+        {
+            Text = "OK", Foreground = Brushes.Green, FontWeight = FontWeights.Bold,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        favBtn.Click += (_, _) =>
+        {
+            if (FavoriteColorPicker.Register(_work, colorBox.Text))
+                TransientOkFeedback.Show(favOkText);
+        };
         row.Children.Add(colorBox);
-        row.Children.Add(historyBtn);
+        row.Children.Add(pickerBtn);
+        row.Children.Add(favBtn);
+        row.Children.Add(favOkText);
         return row;
     }
 
@@ -512,7 +557,20 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("キーボードモード中の←/→キーの移動方向:"));
         p.Children.Add(_leftRightModeVisual);
         p.Children.Add(_leftRightModeTime);
+        // 2026-08-08要望対応: レーンラベルヘッダー(speed/boost/BPM等の見出しバー)の表示位置。
+        // 従来はChartCanvas上へのオーバーレイ描画のため、スクロールでその位置に来たオブジェクトが
+        // ラベルの下に隠れて操作できなくなる不具合があり、別領域(LaneHeaderBar)へ分離した。
+        // ChartViewReverse(進行方向の反転)とは独立して選べる。
+        p.Children.Add(Label("レーンラベルヘッダー(speed/boost/BPM等の見出しバー)の表示位置:"));
+        p.Children.Add(_laneHeaderTop);
+        p.Children.Add(_laneHeaderBottom);
+        p.Children.Add(_laneHeaderHidden);
+        // 2026-08-08要望対応: フレーム数のblankFrame込み表示トグル。マイナスフレームに置いた
+        // オブジェクトの表示フレームとdos.txt出力フレームの不一致による勘違いを予防する。
+        _showFrameWithBlankFrame.Margin = new Thickness(0, 8, 0, 0);
+        p.Children.Add(_showFrameWithBlankFrame);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("ノート表示", section: true));
         _showImages.Margin = new Thickness(0, 0, 0, 4);
         _showGrid.Margin = new Thickness(0, 0, 0, 4);
@@ -530,6 +588,7 @@ internal sealed class PreferencesWindow : Window
         _gridColor.TextChanged += (_, _) => _gridPreview.Background = SafeBrush(_gridColor.Text);
         _gridColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _gridColor.Text);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("再生開始フレームライン", section: true));
         p.Children.Add(Label("太さ(px):"));
         p.Children.Add(_startLineWidth);
@@ -541,6 +600,7 @@ internal sealed class PreferencesWindow : Window
         _carryOverPlaybackStart.Margin = new Thickness(0, 4, 0, 4);
         p.Children.Add(_carryOverPlaybackStart);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("カーソルライン(マウスモード)", section: true));
         p.Children.Add(Label("細い線の太さ(px):"));
         p.Children.Add(_cursorLineWidth);
@@ -558,6 +618,7 @@ internal sealed class PreferencesWindow : Window
         _cursorHighlightColor.TextChanged += (_, _) => _cursorHighlightPreview.Background = SafeBrush(_cursorHighlightColor.Text);
         _cursorHighlightColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _cursorHighlightColor.Text);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("マクロ範囲マーカー(レーン入替マクロの選択範囲)", section: true));
         p.Children.Add(Label("マーカー線の太さ(px):"));
         p.Children.Add(_macroRangeWidth);
@@ -567,6 +628,7 @@ internal sealed class PreferencesWindow : Window
         _macroRangeColor.TextChanged += (_, _) => _macroRangePreview.Background = SafeBrush(_macroRangeColor.Text);
         _macroRangeColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _macroRangeColor.Text);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("タブリンクの背景ノート(右パネル「リンク」タブ)", section: true));
         p.Children.Add(Label("ノートのサイズ比率(1.0=通常サイズ、既定0.85=-15%):"));
         p.Children.Add(_linkedNoteSizeRatio);
@@ -585,6 +647,7 @@ internal sealed class PreferencesWindow : Window
         _linkedHighlightColor.TextChanged += (_, _) => _linkedHighlightPreview.Background = SafeBrush(_linkedHighlightColor.Text);
         _linkedHighlightColor.LostFocus += (_, _) => ColorHistoryPicker.Record(_work, _linkedHighlightColor.Text);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("マーカーのコメント表示(仕様書7.4)", section: true));
         _markerFull.Margin = new Thickness(0, 0, 0, 2);
         _markerHead.Margin = new Thickness(0, 0, 0, 2);
@@ -593,6 +656,7 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("先頭表示の文字数:"));
         p.Children.Add(_markerHeadChars);
 
+        p.Children.Add(new Separator { Margin = new Thickness(0, 12, 0, 8) });
         p.Children.Add(Label("レーン文字サイズ(ZoomScale=1.0時、pt)", section: true));
         p.Children.Add(Label("時間情報レーン(小節番号/frame/time):"));
         p.Children.Add(_timeInfoFontSize);
@@ -1110,6 +1174,192 @@ internal sealed class PreferencesWindow : Window
     // カウンタだが、ここでは解禁段階等には一切触れず、純粋な利用実績として並べるだけにする)。
     // =====================================================================
 
+    /// <summary>「カラーピッカー」カテゴリ(2026-08-08新設)。お気に入りの色(AppSettings.FavoriteColors)は
+    /// 各色欄の「☆登録」ボタンから追加する運用のため、ここでは一覧表示と削除のみを扱う
+    /// (登録・削除の役割分担はユーザー確定仕様)。</summary>
+    private UIElement BuildColorPickerPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("お気に入りの管理", section: true));
+        p.Children.Add(new TextBlock
+        {
+            Text = "色欄の「☆登録」ボタンで追加したお気に入りの色の一覧です。削除する項目をクリックで選択し"
+                 + "(複数選択可)、「削除」を押してください。OKを押すまでは確定しません。",
+            TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray, FontSize = 11, Margin = new Thickness(0, 0, 0, 8),
+        });
+
+        RefreshFavoriteColorsList();
+
+        // 2026-08-08要望対応: D&Dで並び替え可能にする(難易度タブの入替えと同じ、掴んだ内容を
+        // ドロップ先へ挿入する方式+挿入先を示す線のオーバーレイ)。ListBoxと同じ位置・サイズに
+        // インジケータを重ねるため、Gridで包む。
+        var favColorListHost = new Grid();
+        favColorListHost.Children.Add(_favoriteColorsList);
+        favColorListHost.Children.Add(_favColorInsertIndicator);
+        p.Children.Add(favColorListHost);
+
+        _favoriteColorsList.AllowDrop = true;
+        _favoriteColorsList.PreviewMouseLeftButtonDown += FavoriteColorsList_PreviewMouseLeftButtonDown;
+        _favoriteColorsList.PreviewMouseMove += FavoriteColorsList_PreviewMouseMove;
+        _favoriteColorsList.PreviewDragOver += FavoriteColorsList_PreviewDragOver;
+        _favoriteColorsList.DragLeave += (_, _) => HideFavColorInsertIndicator();
+        _favoriteColorsList.Drop += FavoriteColorsList_Drop;
+
+        var deleteBtn = new Button { Content = "削除", Width = 80, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0) };
+        deleteBtn.Click += (_, _) =>
+        {
+            var targets = _favoriteColorsList.SelectedItems.Cast<ListBoxItem>()
+                .Select(i => i.Tag as string).Where(t => t is not null).Cast<string>().ToList();
+            if (targets.Count == 0) return;
+            foreach (var hex in targets) _work.FavoriteColors.Remove(hex);
+            RefreshFavoriteColorsList();
+        };
+        p.Children.Add(deleteBtn);
+
+        return p;
+    }
+
+    /// <summary>お気に入り一覧の再描画。色見本+カラーコードを1行とし、Tagへ実データ(hex文字列)を
+    /// 保持する(削除処理での選択項目特定用)。0件の場合は選択不可の案内行のみ表示する。</summary>
+    private void RefreshFavoriteColorsList()
+    {
+        _favoriteColorsList.Items.Clear();
+        if (_work.FavoriteColors.Count == 0)
+        {
+            _favoriteColorsList.Items.Add(new ListBoxItem { Content = "登録されているお気に入りはありません。", IsEnabled = false });
+            return;
+        }
+
+        foreach (var hex in _work.FavoriteColors)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(new Border
+            {
+                Width = 16, Height = 16, Margin = new Thickness(0, 0, 6, 0),
+                BorderBrush = Brushes.Black, BorderThickness = new Thickness(1),
+                Background = SafeBrush(hex),
+            });
+            row.Children.Add(new TextBlock { Text = hex, VerticalAlignment = VerticalAlignment.Center });
+            _favoriteColorsList.Items.Add(new ListBoxItem { Content = row, Tag = hex });
+        }
+    }
+
+    // --- お気に入り一覧のD&D並び替え(2026-08-08要望対応)。MainWindow.xaml.csのタブ入替
+    // (TabControl_PreviewMouseMove等)と同じ考え方: ドラッグ開始→ドラッグ中は挿入予定位置に線を
+    // 表示→ドロップ位置(カーソルが各行の上半分/下半分どちらにあるか)へ挿入する。 ---
+
+    private static ListBoxItem? FindListBoxItemAncestor(DependencyObject? d)
+    {
+        while (d is not null && d is not ListBoxItem) d = VisualTreeHelper.GetParent(d);
+        return d as ListBoxItem;
+    }
+
+    /// <summary>ドロップ先index(0〜FavoriteColors.Count)を、カーソルが乗っている行の上半分/下半分の
+    /// どちらかで判定する(タブ入替のComputeTabInsertIndexと同じ考え方、横→縦に置き換え)。</summary>
+    private int ComputeFavColorInsertIndex(Point posOnListBox, DependencyObject? originalSource)
+    {
+        int count = _work.FavoriteColors.Count;
+        if (count == 0) return 0;
+
+        var item = FindListBoxItemAncestor(originalSource);
+        if (item is not null)
+        {
+            int idx = _favoriteColorsList.ItemContainerGenerator.IndexFromContainer(item);
+            if (idx < 0 || idx >= count) return count; // 0件時のプレースホルダ行等は末尾扱い
+            double itemTop = item.TranslatePoint(new Point(0, 0), _favoriteColorsList).Y;
+            double midY = itemTop + item.ActualHeight / 2.0;
+            return posOnListBox.Y < midY ? idx : idx + 1;
+        }
+
+        // 行そのものには乗っていない(リスト下部の余白等)。先頭行との位置関係で判定する。
+        if (_favoriteColorsList.ItemContainerGenerator.ContainerFromIndex(0) is ListBoxItem first &&
+            posOnListBox.Y < first.TranslatePoint(new Point(0, 0), _favoriteColorsList).Y)
+            return 0;
+        return count;
+    }
+
+    private void ShowFavColorInsertIndicator(int insertIndex)
+    {
+        int count = _work.FavoriteColors.Count;
+        if (count == 0) { HideFavColorInsertIndicator(); return; }
+
+        double y;
+        if (insertIndex <= 0)
+            y = _favoriteColorsList.ItemContainerGenerator.ContainerFromIndex(0) is ListBoxItem first
+                ? first.TranslatePoint(new Point(0, 0), _favoriteColorsList).Y : 0;
+        else if (insertIndex >= count)
+            y = _favoriteColorsList.ItemContainerGenerator.ContainerFromIndex(count - 1) is ListBoxItem last
+                ? last.TranslatePoint(new Point(0, 0), _favoriteColorsList).Y + last.ActualHeight : 0;
+        else
+            y = _favoriteColorsList.ItemContainerGenerator.ContainerFromIndex(insertIndex) is ListBoxItem mid
+                ? mid.TranslatePoint(new Point(0, 0), _favoriteColorsList).Y : 0;
+
+        _favColorInsertIndicator.Margin = new Thickness(0, y - _favColorInsertIndicator.Height / 2.0, 0, 0);
+        _favColorInsertIndicator.Visibility = Visibility.Visible;
+    }
+
+    private void HideFavColorInsertIndicator() => _favColorInsertIndicator.Visibility = Visibility.Collapsed;
+
+    private void FavoriteColorsList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var item = FindListBoxItemAncestor(e.OriginalSource as DependencyObject);
+        if (item is null) return;
+        int idx = _favoriteColorsList.ItemContainerGenerator.IndexFromContainer(item);
+        if (idx < 0 || idx >= _work.FavoriteColors.Count) return; // 0件時のプレースホルダ行はドラッグ対象外
+        _favColorDragStartPoint = e.GetPosition(null);
+        _favColorDragSourceIndex = idx;
+    }
+
+    private void FavoriteColorsList_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_favColorDragSourceIndex < 0 || e.LeftButton != MouseButtonState.Pressed) return;
+
+        var pos = e.GetPosition(null);
+        if (Math.Abs(pos.X - _favColorDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(pos.Y - _favColorDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+        int from = _favColorDragSourceIndex;
+        _favColorDragSourceIndex = -1;
+        DragDrop.DoDragDrop(_favoriteColorsList, from, DragDropEffects.Move);
+        // DoDragDropはドラッグ操作が終わるまで戻らないため、終了理由によらずここで確実にインジケータを消す
+        // (Drop/DragLeaveの呼び忘れ経路をカバーする保険、タブ入替と同じ考え方)。
+        HideFavColorInsertIndicator();
+    }
+
+    private void FavoriteColorsList_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(int)))
+        {
+            e.Effects = DragDropEffects.None;
+            HideFavColorInsertIndicator();
+            e.Handled = true;
+            return;
+        }
+        e.Effects = DragDropEffects.Move;
+        int insertIndex = ComputeFavColorInsertIndex(e.GetPosition(_favoriteColorsList), e.OriginalSource as DependencyObject);
+        ShowFavColorInsertIndicator(insertIndex);
+        e.Handled = true;
+    }
+
+    /// <summary>「離した場所の項目と入替え」ではなく「離した位置(カーソルが行の上半分/下半分どちらに
+    /// あるか)に挿入」する(タブ入替のDrop処理と同じ方式)。</summary>
+    private void FavoriteColorsList_Drop(object sender, DragEventArgs e)
+    {
+        HideFavColorInsertIndicator();
+        if (!e.Data.GetDataPresent(typeof(int))) return;
+        int from = (int)e.Data.GetData(typeof(int));
+        if (from < 0 || from >= _work.FavoriteColors.Count) return;
+
+        int rawTarget = ComputeFavColorInsertIndex(e.GetPosition(_favoriteColorsList), e.OriginalSource as DependencyObject);
+        int to = rawTarget > from ? rawTarget - 1 : rawTarget; // fromを取り除いた後のインデックスへ変換
+        if (to == from) return;
+
+        var moved = _work.FavoriteColors[from];
+        _work.FavoriteColors.RemoveAt(from);
+        _work.FavoriteColors.Insert(to, moved);
+        RefreshFavoriteColorsList();
+    }
+
     private UIElement BuildStatsPanel()
     {
         var p = new StackPanel { Margin = new Thickness(4) };
@@ -1214,6 +1464,10 @@ internal sealed class PreferencesWindow : Window
         _timeInfoFontSize.Text = s.TimeInfoFontSize.ToString(CultureInfo.InvariantCulture);
         _markerFontSize.Text = s.MarkerFontSize.ToString(CultureInfo.InvariantCulture);
         _chartViewReverse.IsChecked = s.ChartViewReverse;
+        _laneHeaderTop.IsChecked = s.LaneLabelHeaderPosition != "bottom" && s.LaneLabelHeaderPosition != "hidden"; // 既定"top"扱い
+        _laneHeaderBottom.IsChecked = s.LaneLabelHeaderPosition == "bottom";
+        _laneHeaderHidden.IsChecked = s.LaneLabelHeaderPosition == "hidden";
+        _showFrameWithBlankFrame.IsChecked = s.ShowFrameWithBlankFrame;
         _spaceBModeTime.IsChecked = s.KeyboardModeSpaceBMode == "time";
         _spaceBModeVisual.IsChecked = s.KeyboardModeSpaceBMode != "time";
         _leftRightModeTime.IsChecked = s.KeyboardModeLeftRightMode == "time";
@@ -1361,6 +1615,9 @@ internal sealed class PreferencesWindow : Window
         _work.TimeInfoFontSize = timeInfoFontSize;
         _work.MarkerFontSize = markerFontSize;
         _work.ChartViewReverse = _chartViewReverse.IsChecked == true;
+        _work.LaneLabelHeaderPosition = _laneHeaderBottom.IsChecked == true ? "bottom"
+            : _laneHeaderHidden.IsChecked == true ? "hidden" : "top";
+        _work.ShowFrameWithBlankFrame = _showFrameWithBlankFrame.IsChecked == true;
         _work.KeyboardModeSpaceBMode = _spaceBModeTime.IsChecked == true ? "time" : "visual";
         _work.KeyboardModeLeftRightMode = _leftRightModeTime.IsChecked == true ? "time" : "visual";
         _work.DefaultStartFrame = defSf;

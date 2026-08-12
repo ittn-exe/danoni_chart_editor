@@ -172,7 +172,9 @@ public sealed class SmartToolController
 
     /// <summary>ホイールクリック(中ボタン)でフリーズアローを配置する(2026-07-17: FUJIエディタに
     /// 同機能があるとの要望対応)。ドラッグは伴わない単発操作。ノートレーン上・既存オブジェクトが
-    /// 無い位置でのみ、既定長(現在のスナップ間隔)のフリーズを1件配置する。</summary>
+    /// 無い位置でのみ、既定長(4分音符相当、2026-08-08要望対応: 帯が短すぎると上下の判定に吸われて
+    /// 選択・移動しづらいとの報告のため、以前のスナップ間隔基準から固定長へ変更)のフリーズを
+    /// 1件配置する。</summary>
     public void MiddleClick(PointerPos pos)
     {
         // 2026-07-23: 色編集モード中はフリーズ即時配置を行わず、Shift+クリック相当(端点・帯を
@@ -188,7 +190,7 @@ public sealed class SmartToolController
         if (col is not { Kind: ColumnKind.Note }) return;
         if (HitAt(pos, hitScale: 1.0) is not null) return; // 既存オブジェクト上では何もしない(誤操作防止)
         long tick = SnappedTickAt(pos);
-        _doc.Execute(new PlaceFreezeAction(col.NoteLaneIndex, tick, tick + _doc.Snap.GridTicks));
+        _doc.Execute(new PlaceFreezeAction(col.NoteLaneIndex, tick, tick + TimingEngine.TicksPerBeat));
         _doc.RecordStat(EditorStatKind.ObjectsPlaced, 1);
     }
 
@@ -529,17 +531,62 @@ public sealed class SmartToolController
             setHit, PaintHitColor, setHitBar, PaintHitBarColor, setHitShadow, PaintHitShadowColor));
     }
 
+    /// <summary>ヒットした部位・現在の色編集サブモードから、そのオブジェクトへの色解除アクションを
+    /// 組み立てる(2026-08-08不具合修正: 従来はサブモードを見ずに常にColor/BandColorしか解除しようと
+    /// せず、Shadow(塗りつぶし色)・FrzHit(ヒット時色)サブモード中の右クリックが何も解除できなかった。
+    /// PaintAtのサブモード別振り分けと対称になるよう用意した共通ヘルパー。対象が無ければnullを返す)。
+    /// 単発右クリック(ResetColorAt)・右ドラッグ連続解除(FinishColorClearDrag)・選択解除
+    /// (ResetSelectionColors)の3箇所から共用する。</summary>
+    private IEditAction? BuildResetColorAction(ObjectRef hit) => SubMode switch
+    {
+        ColorEditSubMode.Shadow => BuildResetShadowAction(hit),
+        ColorEditSubMode.FrzHit => BuildResetFrzHitAction(hit),
+        _ => BuildResetNormalAction(hit),
+    };
+
+    /// <summary>通常サブモード: Color(端点/ノート本体)・BandColor(帯)を対象とする(従来の挙動)。</summary>
+    private IEditAction? BuildResetNormalAction(ObjectRef hit)
+    {
+        bool resetColor = hit.Kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd;
+        bool resetBand = hit.Kind == ObjectKind.FreezeBody;
+        if (!resetColor && !resetBand) return null;
+        var entry = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == hit.Tick);
+        if (entry is null) return null;
+        if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) return null;
+        return new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor: resetColor, resetBand: resetBand);
+    }
+
+    /// <summary>塗りつぶし色(Shadow)サブモード: ShadowColorを対象とする。通常ノート(ArrowShadow)・
+    /// フリーズ(NormalShadow、部位問わず)いずれも対象(PaintShadowAtと対称、2026-08-08不具合修正)。</summary>
+    private IEditAction? BuildResetShadowAction(ObjectRef hit)
+    {
+        if (hit.Kind is not (ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) return null;
+        var entry = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == hit.Tick);
+        if (entry?.ShadowColor is null) return null;
+        return new ResetNoteColorAction(hit.Lane, hit.Tick, resetShadow: true);
+    }
+
+    /// <summary>ヒット時色(FrzHit)サブモード: フリーズのみ対象。チェックが入っている(有効な)項目の
+    /// うち、実際に値が設定されているものだけ解除する(PaintFrzHitAtと対称、2026-08-08不具合修正)。</summary>
+    private IEditAction? BuildResetFrzHitAction(ObjectRef hit)
+    {
+        if (hit.Kind is not (ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) return null;
+        var entry = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == hit.Tick);
+        if (entry is null) return null;
+        bool resetHit = HitEnabled && entry.HitColor is not null;
+        bool resetHitBar = HitBarEnabled && entry.HitBarColor is not null;
+        bool resetHitShadow = HitShadowEnabled && entry.HitShadowColor is not null;
+        if (!resetHit && !resetHitBar && !resetHitShadow) return null;
+        return new ResetNoteColorAction(hit.Lane, hit.Tick, resetHit: resetHit, resetHitBar: resetHitBar, resetHitShadow: resetHitShadow);
+    }
+
     /// <summary>右クリックでヒットした部位の色指定のみを解除する(左クリックの塗り分けと対称、
     /// 2026-07-23ユーザー確定仕様)。対象部位に色が設定されていなければ何もしない。</summary>
     private void ResetColorAt(ObjectRef hit)
     {
-        bool resetColor = hit.Kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd;
-        bool resetBand = hit.Kind == ObjectKind.FreezeBody;
-        var list = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides;
-        var entry = list.FirstOrDefault(e => e.Tick == hit.Tick);
-        if (entry is null) return;
-        if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) return;
-        _doc.Execute(new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor, resetBand));
+        var action = BuildResetColorAction(hit);
+        if (action is null) return;
+        _doc.Execute(action);
     }
 
     /// <summary>色編集モード中の右ドラッグ連続操作(2026-07-30要望対応)。ドラッグパスが触れた
@@ -550,22 +597,16 @@ public sealed class SmartToolController
         var actions = new List<IEditAction>();
         foreach (var hit in _dragDeleteTouched)
         {
-            bool resetColor = hit.Kind is ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd;
-            bool resetBand = hit.Kind == ObjectKind.FreezeBody;
-            if (!resetColor && !resetBand) continue;
-            var entry = _doc.CurrentTab.Lanes[hit.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == hit.Tick);
-            if (entry is null) continue;
-            if ((resetColor && entry.Color is null) || (resetBand && entry.BandColor is null)) continue;
-            actions.Add(new ResetNoteColorAction(hit.Lane, hit.Tick, resetColor, resetBand));
+            var action = BuildResetColorAction(hit);
+            if (action is not null) actions.Add(action);
         }
         if (actions.Count == 0) return;
         _doc.Execute(new CompositeEditAction(actions, "ドラッグ色解除"));
     }
 
     /// <summary>選択中のノート/フリーズのうち色が設定されているものだけ色を解除する
-    /// (色編集モード中のDeleteキー、2026-07-23)。フリーズは端点・帯どちらも設定されていれば
-    /// まとめて解除する(選択は個々の部位ではなく実体単位のため)。ノート以外・色未設定のものは無視する。
-    /// 対象が1つも無ければfalseを返す。</summary>
+    /// (色編集モード中のDeleteキー、2026-07-23)。判定基準はResetColorAt(単発右クリック)と同じ
+    /// (2026-08-08不具合修正: サブモードごとの振り分けに対応)。対象が1つも無ければfalseを返す。</summary>
     public bool ResetSelectionColors()
     {
         if (_doc.Selection.Count == 0) return false;
@@ -576,10 +617,8 @@ public sealed class SmartToolController
         var actions = new List<IEditAction>();
         foreach (var r in unique)
         {
-            if (r.Kind is not (ObjectKind.Note or ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) continue;
-            var entry = _doc.CurrentTab.Lanes[r.Lane].ColorOverrides.FirstOrDefault(e => e.Tick == r.Tick);
-            if (entry is null) continue;
-            actions.Add(new ResetNoteColorAction(r.Lane, r.Tick, entry.Color is not null, entry.BandColor is not null));
+            var action = BuildResetColorAction(r);
+            if (action is not null) actions.Add(action);
         }
         if (actions.Count == 0) return false;
         _doc.Execute(new CompositeEditAction(actions, "選択色解除"));
@@ -1006,16 +1045,39 @@ public sealed class SmartToolController
 
         var actions = new List<IEditAction>();
         var pasted = new List<ObjectRef>();
+        // 2026-08-08不具合修正(第三者報告): 貼り付け先に既存ノートがあれば、そのノートだけ貼り付けを
+        // パスする(重複配置の防止、詳細はMoveObjectsAction.Doのコメント参照)。実際の配置は
+        // CompositeEditAction実行まで遅延するため、doc.CurrentTab.Notesだけでは同一回の貼り付け内で
+        // 複数エントリが同じ位置へ集中するケースを検出できない。stagedNoteTicksで今回分も合わせて追跡する。
+        // 2026-08-08追加対応: パスする原因になった既存ノートはblockersへ記録し、貼り付け成功分と
+        // 合わせて選択状態にする(なぜ一部が貼り付けられなかったのかが一目で分かるようにする)。
+        var stagedNoteTicks = new HashSet<(int Lane, long Tick)>();
+        var blockers = new List<ObjectRef>();
 
+        // 2026-08-08要望対応(再設計版): ChartProject.AllowNegativeFramePlacementがONの間、
+        // tick<0(frame<0)への貼り付けも許可する。ただしBPMイベントはTimingEngineの前提
+        // (tick0に先頭BPM必須)に直結するため、この設定に関わらず常に対象外のままとする
+        // (下のswitch内では届かず、ここで既に弾かれる)。
+        bool allowNegative = _doc.Project.AllowNegativeFramePlacement;
         foreach (var e in entries)
         {
             long tick = anchorTick + e.TickOffset;
-            if (tick < 0) continue;
+            if (tick < 0 && (e.Kind == ObjectKind.Bpm || !allowNegative)) continue;
 
             switch (e.Kind)
             {
                 case ObjectKind.Note:
                     if (e.Lane < 0 || e.Lane >= laneCount) break;
+                    if (!stagedNoteTicks.Add((e.Lane, tick)))
+                    {
+                        blockers.Add(new ObjectRef(ObjectKind.Note, e.Lane, tick)); // 今回の貼り付け内での重複
+                        break;
+                    }
+                    if (_doc.CurrentTab.Lanes[e.Lane].Notes.Contains(tick))
+                    {
+                        blockers.Add(new ObjectRef(ObjectKind.Note, e.Lane, tick)); // 既存ノートと衝突
+                        break;
+                    }
                     actions.Add(new PlaceNoteAction(e.Lane, tick));
                     AddSidecarActions(actions, e, e.Lane, tick);
                     pasted.Add(new ObjectRef(ObjectKind.Note, e.Lane, tick));
@@ -1058,6 +1120,7 @@ public sealed class SmartToolController
         _doc.RecordStat(EditorStatKind.Paste);
         _doc.Selection.Clear();
         foreach (var r in pasted) _doc.Selection.Add(r);
+        foreach (var r in blockers) _doc.Selection.Add(r); // パスする原因になった既存ノートも選択に加える
         _doc.NotifyChanged(markModified: false); // Execute側で変更済み、こちらは選択更新の通知のみ
         return true;
     }
@@ -1121,12 +1184,15 @@ public sealed class SmartToolController
 
         var actions = new List<IEditAction>();
         var pasted = new List<ObjectRef>();
+        // 2026-08-08要望対応(再設計版): ChartProject.AllowNegativeFramePlacementがONの間、
+        // tick<0(frame<0)への貼り付けも許可する。BPMイベントは常に対象外(Paste()と同じ理由)。
+        bool allowNegative = _doc.Project.AllowNegativeFramePlacement;
 
         // --- レーンに依存しないエントリ(speed/boost/BPM/マーカー)は通常のPasteと同じロジックでそのまま貼り付ける ---
         foreach (var e in entries)
         {
             long tick = anchorTick + e.TickOffset;
-            if (tick < 0) continue;
+            if (tick < 0 && (e.Kind == ObjectKind.Bpm || !allowNegative)) continue;
             switch (e.Kind)
             {
                 case ObjectKind.Speed:
@@ -1161,7 +1227,7 @@ public sealed class SmartToolController
             if (e.Kind is not (ObjectKind.Note or ObjectKind.FreezeStart)) continue;
             if (!destLanesBySource.TryGetValue(e.Lane, out var destLanes)) continue;
             long tick = anchorTick + e.TickOffset;
-            if (tick < 0) continue;
+            if (tick < 0 && !allowNegative) continue;
             foreach (var destLane in destLanes)
             {
                 if (destLane < 0 || destLane >= laneCount) continue;
@@ -1347,8 +1413,11 @@ public sealed class SmartToolController
         switch (col.Kind)
         {
             case ColumnKind.Note:
+                // 2026-08-08要望対応: 新規フリーズの既定長を4分音符相当(TicksPerBeat)に変更。
+                // 以前はスナップ間隔(細かい分解能では非常に短くなる)を使っていたため、帯が短いと
+                // 上下の端点判定に吸われて選択・移動しづらいとの報告があった。
                 return shift
-                    ? new PlaceFreezeAction(col.NoteLaneIndex, tick, tick + _doc.Snap.GridTicks)
+                    ? new PlaceFreezeAction(col.NoteLaneIndex, tick, tick + TimingEngine.TicksPerBeat)
                     : new PlaceNoteAction(col.NoteLaneIndex, tick);
 
             case ColumnKind.Speed:
@@ -1426,15 +1495,20 @@ public sealed class SmartToolController
     public long SnappedTickAt(PointerPos pos)
     {
         double rawTick = _doc.CurrentLayout.YToTick(pos.Y);
+        // 2026-08-08要望対応(再設計版): ChartProject.AllowNegativeFramePlacementがONの間、
+        // tick<0(frame<0)への配置を許可する(BPMイベントはこの関数経由では配置されないため
+        // 除外を意識する必要はない。ペースト側の除外はSmartToolController.Paste/
+        // PasteWithLaneMapping内で別途行っている)。
+        bool allowNegative = _doc.Project.AllowNegativeFramePlacement;
         // フレーム情報モード中は常にフレーム単位スナップ(2026-07-17i、仕様書7.6)。
         // 拍グリッドはBPM当て込み中の「動く側」なので、拍スナップは意味を持たない。
-        if (!_doc.IsFrameEditMode && _doc.Snap.Enabled) return _doc.Snap.Snap(rawTick);
+        if (!_doc.IsFrameEditMode && _doc.Snap.Enabled) return _doc.Snap.Snap(rawTick, allowNegative);
 
         var engine = _doc.Project.CreateTimingEngine();
-        long roughTick = Math.Max(0, (long)Math.Round(rawTick));
+        long roughTick = allowNegative ? (long)Math.Round(rawTick) : Math.Max(0, (long)Math.Round(rawTick));
         double frame = Math.Round(engine.TickToFrame(roughTick));
         double tick = engine.FrameToTick(frame);
-        return Math.Max(0, (long)Math.Round(tick));
+        return allowNegative ? (long)Math.Round(tick) : Math.Max(0, (long)Math.Round(tick));
     }
 
     private void SelectSingle(ObjectRef r)

@@ -259,10 +259,16 @@ public sealed class SetNoteColorAction(int lane, long tick, string value, bool s
     }
 }
 
-/// <summary>ノート/フリーズの色指定を解除する(色編集モード「通常」サブモードの右クリック/選択中
-/// Deleteキー)。resetColor/resetBandで指定した部位のみクリアする。Shadow/Hit系フィールドが
-/// 残っていればエントリ自体は削除しない(それらも0件になった場合のみエントリを削除)。</summary>
-public sealed class ResetNoteColorAction(int lane, long tick, bool resetColor, bool resetBand) : IEditAction
+/// <summary>ノート/フリーズの色指定を解除する(色編集モードの右クリック/選択中Deleteキー/右ドラッグ
+/// 連続解除)。resetColor/resetBand(通常サブモード)・resetShadow(塗りつぶし色サブモード)・
+/// resetHit/resetHitBar/resetHitShadow(ヒット時色サブモード)のうち指定した部位のみクリアする
+/// (2026-08-08不具合修正: 従来はresetColor/resetBandしか無く、Shadow/Hitサブモード中の右クリックが
+/// 何も解除できなかった。PaintAt側のサブモード別振り分けと対称になるよう、SmartToolController側の
+/// 呼び出し元でサブモードごとに適切なフラグだけをtrueにして渡す)。指定していない部位は元の値を保持する。
+/// 全フィールドが空になった場合のみエントリ自体を削除する。</summary>
+public sealed class ResetNoteColorAction(int lane, long tick,
+    bool resetColor = false, bool resetBand = false,
+    bool resetShadow = false, bool resetHit = false, bool resetHitBar = false, bool resetHitShadow = false) : IEditAction
 {
     private NColorEntry? _before;
 
@@ -277,7 +283,11 @@ public sealed class ResetNoteColorAction(int lane, long tick, bool resetColor, b
         var merged = new NColorEntry(tick,
             resetColor ? null : _before.Color,
             resetBand ? null : _before.BandColor,
-            _before.AllFlag, _before.ShadowColor, _before.HitColor, _before.HitBarColor, _before.HitShadowColor);
+            _before.AllFlag,
+            resetShadow ? null : _before.ShadowColor,
+            resetHit ? null : _before.HitColor,
+            resetHitBar ? null : _before.HitBarColor,
+            resetHitShadow ? null : _before.HitShadowColor);
         if (!NColorEntryMerge.IsEmpty(merged)) list.Add(merged);
     }
 
@@ -851,10 +861,18 @@ public sealed class MoveObjectsAction : IEditAction
 {
     private readonly record struct MoveRecord(ObjectRef Before, ObjectRef After);
 
+    /// <summary>2026-08-08不具合修正(第三者報告への追加対応): 移動先が既存ノートで塞がっていたため
+    /// 移動をパスしたノートの記録。ユーザー確定仕様により、パスしたノートは元の位置へ戻さず削除する
+    /// (カット&amp;ペーストで移動先が塞がっていた場合と同じ結果に揃える)。付随データ(色指定・コメント)も
+    /// DeleteNoteActionと同じ要領で一緒に削除し、Undoでまとめて復元する(実体だけ消えて付随データが
+    /// 別tickの幽霊として残る事故を防ぐ)。</summary>
+    private readonly record struct BlockedNoteRecord(ObjectRef Before, NColorEntry? Color, NoteAnnotation? Annotation);
+
     private readonly IReadOnlyList<ObjectRef> _originalTargets;
     private readonly int _laneDelta;
     private readonly long _tickDelta;
     private List<MoveRecord>? _applied;
+    private List<BlockedNoteRecord>? _blockedNotes;
 
     public MoveObjectsAction(IEnumerable<ObjectRef> targets, int laneDelta, long tickDelta)
     {
@@ -869,25 +887,82 @@ public sealed class MoveObjectsAction : IEditAction
     {
         int laneCount = doc.CurrentTemplate.KeyCount;
         var records = new List<MoveRecord>();
-        foreach (var r in _originalTargets)
+        var blockedNotes = new List<BlockedNoteRecord>();
+        var blockerRefs = new List<ObjectRef>(); // パスする原因になった既存ノート(選択対象に加える)
+        var tab = doc.CurrentTab;
+
+        // 2026-08-08不具合修正(第三者報告): 通常ノートは他の種別と異なり、移動先に「この操作で
+        // 移動中でない」既存ノートがあれば衝突として弾く必要がある(従来はチェックが無く、選択→
+        // ドラッグ移動で移動先に既にノートがあってもそのまま重ねて置けてしまっていた)。
+        // 単純に1件ずつMove()を呼ぶと、選択内で連鎖的に位置がずれる塊移動(例: 連続する3音を
+        // まとめて1つ分ずらす)まで自分自身との衝突として誤検知してしまうため、対象ノートを
+        // 先に全てレーンから取り除いてから配置し直す(選択内で行き先が空くケースは衝突扱いに
+        // せず、選択外のノートとの衝突・選択内での行き先重複だけを検出する)。
+        //
+        // 衝突した場合は移動をパスする。ユーザー確定仕様により、パスしたノートは元の位置へは
+        // 戻さず削除し(「移動した」という結果を直感的に受け取れるよう、取り残されたノートを
+        // 残さない)、移動後の選択対象は「移動が成功したノート」+「パスする原因になった既存
+        // ノート」とする(なぜ止まったのかが一目で分かるようにする)。
+        var noteTargets = _originalTargets.Where(r => r.Kind == ObjectKind.Note).ToList();
+        foreach (var r in noteTargets) tab.Lanes[r.Lane].Notes.Remove(r.Tick);
+        foreach (var r in noteTargets)
+        {
+            int newLane = Math.Clamp(r.Lane + _laneDelta, 0, Math.Max(0, laneCount - 1));
+            long newTick = r.Tick + _tickDelta;
+            var destLane = tab.Lanes[newLane];
+            if (newTick < 0 || destLane.Notes.Contains(newTick))
+            {
+                var srcLane = tab.Lanes[r.Lane];
+                var color = srcLane.ColorOverrides.FirstOrDefault(c => c.Tick == r.Tick);
+                if (color is not null) srcLane.ColorOverrides.Remove(color);
+                var annotation = srcLane.Annotations.FirstOrDefault(a => a.Tick == r.Tick);
+                if (annotation is not null) srcLane.Annotations.Remove(annotation);
+                blockedNotes.Add(new BlockedNoteRecord(r, color, annotation));
+                if (newTick >= 0) blockerRefs.Add(new ObjectRef(ObjectKind.Note, newLane, newTick));
+                continue;
+            }
+            destLane.Notes.Add(newTick);
+            MoveSidecarEntries(tab, r.Lane, r.Tick, newLane, newTick);
+            records.Add(new MoveRecord(r, new ObjectRef(ObjectKind.Note, newLane, newTick)));
+        }
+
+        foreach (var r in _originalTargets.Where(r => r.Kind != ObjectKind.Note))
         {
             var after = Move(doc, r, _laneDelta, _tickDelta, laneCount);
             if (after is { } a) records.Add(new MoveRecord(r, a));
         }
+
         _applied = records;
-        RefreshSelection(doc, records.Select(x => x.After));
+        _blockedNotes = blockedNotes;
+        RefreshSelection(doc, records.Select(x => x.After).Concat(blockerRefs));
     }
 
     public void Undo(EditorDocument doc)
     {
-        if (_applied is null) return;
+        var tab = doc.CurrentTab;
         var restored = new List<ObjectRef>();
-        foreach (var rec in _applied)
+
+        if (_applied is not null)
         {
-            // After→Beforeへ、実際に記録された絶対位置で正確に戻す(デルタ再適用ではない)
-            var back = MoveExact(doc, rec.After, rec.Before);
-            if (back) restored.Add(rec.Before);
+            foreach (var rec in _applied)
+            {
+                // After→Beforeへ、実際に記録された絶対位置で正確に戻す(デルタ再適用ではない)
+                var back = MoveExact(doc, rec.After, rec.Before);
+                if (back) restored.Add(rec.Before);
+            }
         }
+
+        if (_blockedNotes is not null)
+        {
+            foreach (var b in _blockedNotes)
+            {
+                tab.Lanes[b.Before.Lane].Notes.Add(b.Before.Tick);
+                if (b.Color is not null) tab.Lanes[b.Before.Lane].ColorOverrides.Add(b.Color);
+                if (b.Annotation is not null) tab.Lanes[b.Before.Lane].Annotations.Add(b.Annotation);
+                restored.Add(b.Before);
+            }
+        }
+
         RefreshSelection(doc, restored);
     }
 
@@ -897,21 +972,14 @@ public sealed class MoveObjectsAction : IEditAction
         foreach (var r in refs) doc.Selection.Add(r);
     }
 
-    /// <summary>refで指定されたオブジェクトを(laneDelta,tickDelta)だけ動かす。移動後の新ObjectRefを返す(移動不能ならnull)。</summary>
+    /// <summary>refで指定されたオブジェクトを(laneDelta,tickDelta)だけ動かす。移動後の新ObjectRefを返す(移動不能ならnull)。
+    /// 2026-08-08: 通常ノート(ObjectKind.Note)は衝突回避(元の位置に留める)が必要になったためDo()側で
+    /// 個別に処理するようになり、ここには来ない(呼び出し元でKind != Noteへ絞り込み済み)。</summary>
     private static ObjectRef? Move(EditorDocument doc, ObjectRef r, int laneDelta, long tickDelta, int laneCount)
     {
         var tab = doc.CurrentTab;
         switch (r.Kind)
         {
-            case ObjectKind.Note:
-                {
-                    if (!tab.Lanes[r.Lane].Notes.Remove(r.Tick)) return null;
-                    int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
-                    long newTick = r.Tick + tickDelta;
-                    tab.Lanes[newLane].Notes.Add(newTick);
-                    MoveSidecarEntries(tab,r.Lane, r.Tick, newLane, newTick);
-                    return new ObjectRef(ObjectKind.Note, newLane, newTick);
-                }
             case ObjectKind.FreezeStart:
             case ObjectKind.FreezeEnd:
             case ObjectKind.FreezeBody:
@@ -1120,14 +1188,39 @@ public sealed class CopyObjectsAction : IEditAction
     {
         int laneCount = doc.CurrentTemplate.KeyCount;
         var created = new List<ObjectRef>();
-        foreach (var r in _originalTargets)
+        var tab = doc.CurrentTab;
+
+        // 2026-08-08追加対応(ユーザー確定仕様): 通常ノートは複製先に既存ノートがあれば複製をパスし、
+        // その原因になった既存ノートを選択対象に加える(Move/Pasteと同じ考え方、なぜ複製されなかった
+        // かが一目で分かるようにする)。複製はMoveと異なり元のノートを削除しないため、Contains判定
+        // だけでよい(先に取り除いてから配置し直す必要が無い)。
+        var blockerRefs = new List<ObjectRef>();
+        foreach (var r in _originalTargets.Where(r => r.Kind == ObjectKind.Note))
+        {
+            if (!tab.Lanes[r.Lane].Notes.Contains(r.Tick)) continue;
+            int newLane = Math.Clamp(r.Lane + _laneDelta, 0, Math.Max(0, laneCount - 1));
+            long newTick = r.Tick + _tickDelta;
+            if (newTick < 0) continue;
+            if (tab.Lanes[newLane].Notes.Contains(newTick))
+            {
+                blockerRefs.Add(new ObjectRef(ObjectKind.Note, newLane, newTick));
+                continue;
+            }
+            tab.Lanes[newLane].Notes.Add(newTick);
+            CopySidecar(tab, r.Lane, r.Tick, newLane, newTick);
+            created.Add(new ObjectRef(ObjectKind.Note, newLane, newTick));
+        }
+
+        foreach (var r in _originalTargets.Where(r => r.Kind != ObjectKind.Note))
         {
             var c = Create(doc, r, _laneDelta, _tickDelta, laneCount);
             if (c is { } cc) created.Add(cc);
         }
+
         _created = created;
         doc.Selection.Clear();
         foreach (var c in created) doc.Selection.Add(c);
+        foreach (var b in blockerRefs) doc.Selection.Add(b);
     }
 
     public void Undo(EditorDocument doc)
@@ -1140,22 +1233,15 @@ public sealed class CopyObjectsAction : IEditAction
 
     /// <summary>rで指定されたオブジェクトの複製を(laneDelta,tickDelta)ずらした位置に作る。
     /// 元のオブジェクトはそのまま残す(MoveObjectsAction.Moveと異なりRemoveしない)。
-    /// 作成後の新ObjectRefを返す(元が見つからない/作成不能なら null)。</summary>
+    /// 作成後の新ObjectRefを返す(元が見つからない/作成不能なら null)。
+    /// 2026-08-08: 通常ノート(ObjectKind.Note)は複製先衝突時に「パスする原因になった既存ノートを
+    /// 選択対象へ加える」処理が必要になったためDo()側で個別に処理するようになり、ここには来ない
+    /// (呼び出し元でKind != Noteへ絞り込み済み)。</summary>
     private static ObjectRef? Create(EditorDocument doc, ObjectRef r, int laneDelta, long tickDelta, int laneCount)
     {
         var tab = doc.CurrentTab;
         switch (r.Kind)
         {
-            case ObjectKind.Note:
-                {
-                    if (!tab.Lanes[r.Lane].Notes.Contains(r.Tick)) return null;
-                    int newLane = Math.Clamp(r.Lane + laneDelta, 0, Math.Max(0, laneCount - 1));
-                    long newTick = r.Tick + tickDelta;
-                    if (newTick < 0) return null;
-                    tab.Lanes[newLane].Notes.Add(newTick);
-                    CopySidecar(tab, r.Lane, r.Tick, newLane, newTick);
-                    return new ObjectRef(ObjectKind.Note, newLane, newTick);
-                }
             case ObjectKind.FreezeStart:
             case ObjectKind.FreezeEnd:
             case ObjectKind.FreezeBody:

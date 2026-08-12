@@ -197,6 +197,159 @@ public class EditActionsTests
         Assert.Empty(doc.Selection); // 移動不能=選択にも入らない
     }
 
+    // =====================================================================
+    // 2026-08-08不具合修正(第三者報告): 移動先/複製先/貼り付け先に既存ノートがある場合、
+    // 重ねて置かず「その部分だけパス」する(複製・貼り付けは見送り、移動はパスしたノートを
+    // 削除する)。
+    // 2026-08-08追加対応(ユーザー確定仕様): 移動がパスされたノートは元の位置へ戻さず削除し、
+    // 「移動した」という結果を直感的に受け取れるようにする。移動後の選択対象は
+    // 「移動が成功したノート」+「パスする原因になった既存ノート」とする。
+    // =====================================================================
+
+    [Fact]
+    public void MoveObjects_Note_SkipsWhenDestinationOccupied_RemovesBlockedNote_NoDuplicate()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96)); // 移動先に既存ノート
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        // 重ねて置かれず、パスされたノート(元は48)は削除される。既存ノート(96)は重複せず1件のまま。
+        Assert.DoesNotContain(48L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes); // 96のみ(48は消え、重複もしていない)
+        Assert.Equal(96L, doc.CurrentTab.Lanes[0].Notes.Single());
+    }
+
+    [Fact]
+    public void MoveObjects_Note_SkippedMove_SelectsBlockingExistingNote_NotTheRemovedOne()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96)); // 移動先に既存ノート(=パスする原因)
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        // パスされて削除された側(48)は選択に残らない。パスする原因になった既存ノート(96)が選択される。
+        Assert.DoesNotContain(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 48);
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 96);
+    }
+
+    [Fact]
+    public void MoveObjects_Note_SkippedMove_UndoRestoresOriginalState_AndSelection()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96));
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+        doc.Undo();
+
+        Assert.Contains(48L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(96L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Equal(2, doc.CurrentTab.Lanes[0].Notes.Count);
+        // Undo後の選択はDo()前の元の対象(48)に戻る
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 48);
+    }
+
+    [Fact]
+    public void MoveObjects_Note_SkippedMove_RestoresColorAndAnnotation_OnUndo()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.CurrentTab.Lanes[0].ColorOverrides.Add(new NColorEntry(48, "#ff0000", null));
+        doc.CurrentTab.Lanes[0].Annotations.Add(new NoteAnnotation(48, "メモ", false));
+        doc.Execute(new PlaceNoteAction(0, 96)); // 移動先に既存ノート
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        // パスされたノートの削除と一緒に、付随データ(色・コメント)も消える(幽霊化を防ぐ)
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Empty(doc.CurrentTab.Lanes[0].Annotations);
+
+        doc.Undo();
+        var color = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal(48, color.Tick);
+        Assert.Equal("#ff0000", color.Color);
+        var annotation = Assert.Single(doc.CurrentTab.Lanes[0].Annotations);
+        Assert.Equal(48, annotation.Tick);
+        Assert.Equal("メモ", annotation.Comment);
+    }
+
+    [Fact]
+    public void MoveObjects_Note_ChainShiftWithinSameSelection_DoesNotFalselyCollide()
+    {
+        // 連続する3音(48,96,144)をまとめて選択し、+48ずらす(96,144,192)。
+        // 行き先が「同じ選択内の他ノートの元位置」であるだけなので衝突扱いにしてはいけない。
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96));
+        doc.Execute(new PlaceNoteAction(0, 144));
+        var targets = new[]
+        {
+            new ObjectRef(ObjectKind.Note, 0, 48),
+            new ObjectRef(ObjectKind.Note, 0, 96),
+            new ObjectRef(ObjectKind.Note, 0, 144),
+        };
+
+        doc.Execute(new MoveObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        Assert.DoesNotContain(48L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(96L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(144L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(192L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Equal(3, doc.CurrentTab.Lanes[0].Notes.Count);
+    }
+
+    [Fact]
+    public void CopyObjects_Note_SkipsWhenDestinationOccupied_OriginalUntouched()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96)); // 複製先に既存ノート
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new CopyObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        Assert.Contains(48L, doc.CurrentTab.Lanes[0].Notes); // 複製元はそのまま残る(Copyの性質)
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes, t => t == 96); // 重ねて複製されていない
+        Assert.Equal(2, doc.CurrentTab.Lanes[0].Notes.Count);
+    }
+
+    [Fact]
+    public void CopyObjects_Note_SkipsWhenDestinationOccupied_SelectsBlockingExistingNote()
+    {
+        // 2026-08-08追加対応: 複製がパスされた場合、その原因になった既存ノート(96)が選択される
+        // (Move/Pasteと同じ考え方、なぜ複製されなかったかが一目で分かるようにする)。
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        doc.Execute(new PlaceNoteAction(0, 96)); // 複製先に既存ノート
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new CopyObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 96);
+    }
+
+    [Fact]
+    public void CopyObjects_Note_DestinationFree_CreatesDuplicate()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceNoteAction(0, 48));
+        var targets = new[] { new ObjectRef(ObjectKind.Note, 0, 48) };
+
+        doc.Execute(new CopyObjectsAction(targets, laneDelta: 0, tickDelta: 48));
+
+        Assert.Contains(48L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Contains(96L, doc.CurrentTab.Lanes[0].Notes);
+        Assert.Equal(2, doc.CurrentTab.Lanes[0].Notes.Count);
+        Assert.Contains(doc.Selection, r => r.Kind == ObjectKind.Note && r.Lane == 0 && r.Tick == 96); // 複製先が選択される
+    }
+
     [Fact]
     public void PlaceTimeSignature_ReplacesExistingAtSameMeasure_AndUndoRestores()
     {

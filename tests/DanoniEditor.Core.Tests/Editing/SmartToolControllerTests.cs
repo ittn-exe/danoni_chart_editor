@@ -173,15 +173,17 @@ public class SmartToolControllerTests
     // --- 6.3.1: Shift+click=freeze place (note lanes only) ---
 
     [Fact]
-    public void ShiftClickEmptyNoteLane_PlacesFreeze_WithSnapLengthDefault()
+    public void ShiftClickEmptyNoteLane_PlacesFreeze_WithQuarterNoteLengthDefault()
     {
+        // 2026-08-08要望対応: 新規フリーズの既定長はスナップ間隔ではなく4分音符(TicksPerBeat)固定。
+        // スナップ分解能を細かくしても既定長が変わらないことを確認する(帯が短すぎて掴みづらい不具合の修正)。
         var (doc, ctrl, layout) = NewScene();
-        doc.Snap.Division = 16; // GridTicks = 12
+        doc.Snap.Division = 16; // GridTicks = 12(この値には影響されないはず)
         var col = layout.NoteColumn(0);
         Click(ctrl, At(col, layout, 96 * T), PointerModifiers.Shift);
         var f = Assert.Single(doc.CurrentTab.Lanes[0].Freezes);
         Assert.Equal(96 * T, f.StartTick);
-        Assert.Equal(96 * T + doc.Snap.GridTicks, f.EndTick);
+        Assert.Equal(96 * T + DanoniEditor.Core.Timing.TimingEngine.TicksPerBeat, f.EndTick);
     }
 
     // --- 6.3.1: click obj=select ---
@@ -1097,6 +1099,89 @@ public class SmartToolControllerTests
         Assert.Contains(snapped, doc.CurrentTab.Lanes[0].Notes);
     }
 
+    // --- 2026-08-08新設の回帰テスト: マイナスフレームへのオブジェクト配置
+    // (ChartProject.AllowNegativeFramePlacement、既定false) ---
+
+    [Fact]
+    public void SnappedTickAt_AllowNegativeFalse_Default_ClampsToZero_SnapEnabled()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Division = 16;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T); // tick0より手前
+
+        Assert.False(doc.Project.AllowNegativeFramePlacement); // 既定OFF
+        Assert.Equal(0, ctrl.SnappedTickAt(pos));
+    }
+
+    [Fact]
+    public void SnappedTickAt_AllowNegativeFalse_Default_ClampsToZero_SnapDisabled()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Enabled = false;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T);
+
+        Assert.True(ctrl.SnappedTickAt(pos) >= 0);
+    }
+
+    [Fact]
+    public void SnappedTickAt_AllowNegativeTrue_ReturnsNegativeTick_SnapEnabled()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Snap.Division = 16;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T);
+
+        long expected = doc.Snap.Snap(layout.YToTick(pos.Y), allowNegative: true);
+        Assert.True(expected < 0); // 前提: このテスト自体が負のtickを検証できていることを確認
+        Assert.Equal(expected, ctrl.SnappedTickAt(pos));
+    }
+
+    [Fact]
+    public void SnappedTickAt_AllowNegativeTrue_ReturnsNegativeTick_SnapDisabled()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Snap.Enabled = false;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T);
+
+        Assert.True(ctrl.SnappedTickAt(pos) < 0);
+    }
+
+    [Fact]
+    public void Click_AllowNegativeTrue_PlacesNoteAtNegativeTick()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Project.AllowNegativeFramePlacement = true;
+        doc.Snap.Division = 16;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T);
+
+        long expectedTick = ctrl.SnappedTickAt(pos);
+        Click(ctrl, pos);
+
+        Assert.Contains(expectedTick, doc.CurrentTab.Lanes[0].Notes);
+        Assert.True(expectedTick < 0);
+    }
+
+    [Fact]
+    public void Click_AllowNegativeFalse_Default_DoesNotPlaceNoteAtNegativeTick()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Snap.Division = 16;
+        var col = layout.NoteColumn(0);
+        var pos = At(col, layout, -500 * T);
+
+        Click(ctrl, pos);
+
+        // マイナスtickではなくtick0に置かれる(フロア処理)
+        Assert.DoesNotContain(doc.CurrentTab.Lanes[0].Notes, t => t < 0);
+        Assert.Contains(0L, doc.CurrentTab.Lanes[0].Notes);
+    }
+
     // =====================================================================
     // Shadowサブモード / FrzHitサブモード(2026-07-24)
     // =====================================================================
@@ -1280,5 +1365,127 @@ public class SmartToolControllerTests
         var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
         Assert.Equal("#ff0000", entry.Color);
         Assert.Null(entry.ShadowColor);
+    }
+
+    // =====================================================================
+    // 色編集モードの右クリック色解除、サブモード別対応(2026-08-08不具合修正)。
+    // 従来はSubModeを見ずに常にColor/BandColorしか解除しようとしなかったため、Shadow(塗りつぶし色)・
+    // FrzHit(ヒット時色)サブモード中の右クリックが何も解除できなかった。
+    // =====================================================================
+
+    [Fact]
+    public void ShadowSubMode_RightClickNote_ClearsShadowColor()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        ctrl.PaintArrowShadowColor = "#111111";
+        var pos = At(layout.NoteColumn(0), layout, 48 * T);
+        Click(ctrl, pos); // まず塗る
+
+        RightClick(ctrl, pos);
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides); // 他フィールドも無いのでエントリごと消える
+    }
+
+    [Fact]
+    public void ShadowSubMode_RightClickFreeze_ClearsShadowColor_ButKeepsOtherFields()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Normal;
+        ctrl.PaintColorCode = "#ff0000";
+        var pos = At(layout.NoteColumn(0), layout, 0);
+        Click(ctrl, pos); // 端点にColorを設定しておく
+
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        ctrl.PaintNormalShadowColor = "#333333";
+        Click(ctrl, pos); // 同じ位置にShadowColorも設定
+
+        RightClick(ctrl, pos); // Shadowサブモードでの右クリック→ShadowColorだけ解除されるはず
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Null(entry.ShadowColor);
+        Assert.Equal("#ff0000", entry.Color); // Normalサブモードで設定したColorは残る
+    }
+
+    [Fact]
+    public void ShadowSubMode_RightClick_NoShadowColorSet_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Normal;
+        ctrl.PaintColorCode = "#ff0000";
+        var pos = At(layout.NoteColumn(0), layout, 48 * T);
+        Click(ctrl, pos);
+
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        RightClick(ctrl, pos); // ShadowColorは未設定なので何もしない
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color); // Colorはそのまま残る(誤って消されない)
+    }
+
+    [Fact]
+    public void FrzHitSubMode_RightClickFreeze_ClearsOnlyEnabledFields()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.CurrentTab.Lanes[0].Freezes.Add(new FreezeNote(0, 96 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.FrzHit;
+        ctrl.HitEnabled = true;
+        ctrl.PaintHitColor = "#ff0000";
+        ctrl.HitBarEnabled = true;
+        ctrl.PaintHitBarColor = "#00ff00";
+        ctrl.HitShadowEnabled = true;
+        ctrl.PaintHitShadowColor = "#0000ff";
+        var pos = At(layout.NoteColumn(0), layout, 0);
+        Click(ctrl, pos); // Hit/HitBar/HitShadowを全て設定
+
+        ctrl.HitBarEnabled = false; // HitBarだけ対象から外す
+        RightClick(ctrl, pos);
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Null(entry.HitColor);
+        Assert.Equal("#00ff00", entry.HitBarColor); // Enabled=falseなので解除対象外、残る
+        Assert.Null(entry.HitShadowColor);
+    }
+
+    [Fact]
+    public void FrzHitSubMode_RightClickNote_DoesNothing()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Normal;
+        ctrl.PaintColorCode = "#ff0000";
+        var pos = At(layout.NoteColumn(0), layout, 48 * T);
+        Click(ctrl, pos);
+
+        ctrl.SubMode = ColorEditSubMode.FrzHit;
+        ctrl.HitEnabled = true;
+        RightClick(ctrl, pos); // ノートはFrzHit対象外なので何もしない
+
+        var entry = Assert.Single(doc.CurrentTab.Lanes[0].ColorOverrides);
+        Assert.Equal("#ff0000", entry.Color);
+    }
+
+    [Fact]
+    public void ResetSelectionColors_ShadowSubMode_ClearsSelectedShadowColors()
+    {
+        var (doc, ctrl, layout) = NewScene();
+        doc.Execute(new PlaceNoteAction(0, 48 * T));
+        ctrl.ColorEditModeEnabled = true;
+        ctrl.SubMode = ColorEditSubMode.Shadow;
+        ctrl.PaintArrowShadowColor = "#111111";
+        Click(ctrl, At(layout.NoteColumn(0), layout, 48 * T));
+
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, 48 * T));
+        Assert.True(ctrl.ResetSelectionColors());
+
+        Assert.Empty(doc.CurrentTab.Lanes[0].ColorOverrides);
     }
 }

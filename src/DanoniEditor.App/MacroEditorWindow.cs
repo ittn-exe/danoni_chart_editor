@@ -222,8 +222,15 @@ internal sealed class MacroEditorWindow : Window
     // =====================================================================
     private sealed class LaneRowPanel : StackPanel
     {
+        private static readonly Brush InsertIndicatorBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x44, 0x44));
+
         private Point _dragStart;
         private int _dragSourceIndex = -1;
+        // 2026-08-08要望対応: 「離した場所と入替え」から「離した位置に挿入」+挿入先を示す縦線オーバーレイへ
+        // 変更(MainWindow.xaml.csの難易度タブ入替と同じ方式)。Children自体はレーンセルのみで構成される
+        // 前提(CurrentOrderOriginalIndices等がChildrenをそのまま走査する)ため、インジケータ用の子要素は
+        // 追加せず、OnRenderで自前描画する(挿入位置は常にセル間の隙間なので他要素と重ならない)。
+        private int _insertIndicatorIndex = -1; // -1 = 非表示
 
         public LaneRowPanel(bool draggable)
         {
@@ -233,8 +240,43 @@ internal sealed class MacroEditorWindow : Window
             AllowDrop = true;
             PreviewMouseLeftButtonDown += OnPreviewMouseLeftButtonDown;
             PreviewMouseMove += OnPreviewMouseMove;
-            PreviewDragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
+            PreviewDragOver += OnPreviewDragOver;
+            DragLeave += (_, _) => HideInsertIndicator();
             Drop += OnDrop;
+        }
+
+        protected override void OnRender(DrawingContext dc)
+        {
+            base.OnRender(dc); // Backgroundの塗りつぶし
+            if (_insertIndicatorIndex < 0) return;
+            double x = ComputeInsertIndicatorX(_insertIndicatorIndex);
+            dc.DrawRectangle(InsertIndicatorBrush, null, new Rect(x - 1, 0, 2, ActualHeight));
+        }
+
+        private double ComputeInsertIndicatorX(int index)
+        {
+            if (Children.Count == 0) return 0;
+            if (index <= 0) return ((FrameworkElement)Children[0]).TranslatePoint(new Point(0, 0), this).X;
+            if (index >= Children.Count)
+            {
+                var last = (FrameworkElement)Children[^1];
+                return last.TranslatePoint(new Point(0, 0), this).X + last.ActualWidth;
+            }
+            return ((FrameworkElement)Children[index]).TranslatePoint(new Point(0, 0), this).X;
+        }
+
+        private void ShowInsertIndicator(int index)
+        {
+            if (_insertIndicatorIndex == index) return;
+            _insertIndicatorIndex = index;
+            InvalidateVisual();
+        }
+
+        private void HideInsertIndicator()
+        {
+            if (_insertIndicatorIndex < 0) return;
+            _insertIndicatorIndex = -1;
+            InvalidateVisual();
         }
 
         public int Count => Children.Count;
@@ -300,16 +342,61 @@ internal sealed class MacroEditorWindow : Window
             int from = _dragSourceIndex;
             _dragSourceIndex = -1;
             DragDrop.DoDragDrop(this, from, DragDropEffects.Move);
+            // DoDragDropはドラッグ操作が終わるまで戻らないため、終了理由によらずここで確実にインジケータを消す
+            // (Drop/DragLeaveの呼び忘れ経路をカバーする保険、MainWindowのタブ入替と同じ考え方)。
+            HideInsertIndicator();
         }
 
+        /// <summary>マウス位置(this基準の座標)から「挿入先index」(0～Children.Count、Countなら末尾へ挿入)を
+        /// 判定する(2026-08-08要望対応、MainWindow.xaml.csのComputeTabInsertIndexと同じ方式)。</summary>
+        private int ComputeInsertIndex(Point posOnPanel, DependencyObject? hitSource)
+        {
+            int count = Children.Count;
+            if (count == 0) return 0;
+
+            var cell = FindCellAncestor(hitSource);
+            if (cell is not null)
+            {
+                int idx = Children.IndexOf(cell);
+                if (idx < 0) return count;
+                double cellLeft = cell.TranslatePoint(new Point(0, 0), this).X;
+                double midX = cellLeft + cell.ActualWidth / 2.0;
+                return posOnPanel.X < midX ? idx : idx + 1;
+            }
+
+            // セルそのものには乗っていない(行の余白部分)。先頭セルとの位置関係で判定する。
+            if (Children[0] is FrameworkElement first && posOnPanel.X < first.TranslatePoint(new Point(0, 0), this).X)
+                return 0;
+            return count;
+        }
+
+        private void OnPreviewDragOver(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(typeof(int)))
+            {
+                e.Effects = DragDropEffects.None;
+                HideInsertIndicator();
+                e.Handled = true;
+                return;
+            }
+            e.Effects = DragDropEffects.Move;
+            int insertIndex = ComputeInsertIndex(e.GetPosition(this), e.OriginalSource as DependencyObject);
+            ShowInsertIndicator(insertIndex);
+            e.Handled = true;
+        }
+
+        /// <summary>2026-08-08要望対応: 「離した場所のセルと入替え」ではなく「離した位置(カーソルがセルの
+        /// 左右どちらの半分にあるか)に挿入」する(MainWindowの難易度タブ入替と同じ方式)。</summary>
         private void OnDrop(object sender, DragEventArgs e)
         {
+            HideInsertIndicator();
             if (!e.Data.GetDataPresent(typeof(int))) return;
             int from = (int)e.Data.GetData(typeof(int));
-            var cell = FindCellAncestor(e.OriginalSource as DependencyObject);
-            if (cell is null) return;
-            int to = Children.IndexOf(cell);
-            if (from < 0 || to < 0 || from >= Children.Count || from == to) return;
+            if (from < 0 || from >= Children.Count) return;
+
+            int rawTarget = ComputeInsertIndex(e.GetPosition(this), e.OriginalSource as DependencyObject);
+            int to = rawTarget > from ? rawTarget - 1 : rawTarget; // fromを取り除いた後のインデックスへ変換
+            if (to == from) return;
 
             var moving = Children[from];
             Children.RemoveAt(from);

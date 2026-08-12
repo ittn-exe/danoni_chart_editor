@@ -25,6 +25,13 @@ public sealed class DosExporter
 
     private static string Num(double v) => v.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>speed/boostの値(2026-08-08要望対応: 小数第2位までの出力に統一)。
+    /// 小数第3位以下(入力欄の丸め誤差や浮動小数点の誤差で発生しうる)を四捨五入で切り詰める。
+    /// Num()と同様、末尾の0は付与しない(1.0→"1"、1.5→"1.5"、1.256→"1.26")。
+    /// BPM/StartNumber等、他のパラメータの精度には影響しない(Numのまま)。</summary>
+    private static string NumValue(double v) =>
+        Math.Round(v, 2, MidpointRounding.AwayFromZero).ToString(CultureInfo.InvariantCulture);
+
     public string Export(ChartProject project) => Export(project, includeEditorMetadata: false);
 
     /// <summary>
@@ -240,7 +247,7 @@ public sealed class DosExporter
         var expanded = Timing.ValueEventSmoothing.ExpandLinkedEvents(events);
         var parts = expanded
             .OrderBy(e => e.Tick)
-            .SelectMany(e => new[] { RoundFrame(engine.TickToFrame(e.Tick) + blankShift).ToString(), Num(e.Value) });
+            .SelectMany(e => new[] { RoundFrame(engine.TickToFrame(e.Tick) + blankShift).ToString(), NumValue(e.Value) });
         AppendParam(sb, name, string.Join(",", parts));
     }
 

@@ -197,10 +197,18 @@ public sealed class ChartCanvas : FrameworkElement
         canvas.InvalidateAll();
     }
 
+    /// <summary>対になるレーンラベルヘッダー領域(2026-08-08、別領域化。MainWindow.xaml.cs側の
+    /// InitializeComponent直後に設定される)。ズーム(Alt+ホイール、ChartLayout.ZoomScale)は
+    /// ラベルバーの文字サイズ・高さにも影響するため、このCanvas自身の再計測・再描画に合わせて
+    /// ヘッダー側も同時に無効化する(InvalidateAll参照)。</summary>
+    public LaneHeaderBar? HeaderBar { get; set; }
+
     private void InvalidateAll()
     {
         InvalidateMeasure();
         InvalidateVisual();
+        HeaderBar?.InvalidateMeasure();
+        HeaderBar?.InvalidateVisual();
     }
 
     /// <summary>現在スクロールで見えている範囲(canvasローカル座標、px)。MainWindowがScrollChangedで更新する。</summary>
@@ -674,11 +682,48 @@ public sealed class ChartCanvas : FrameworkElement
         // 2026-07-25: カーソルライン(最寄りスナップ位置の可視化)のため、ボタン押下の有無に関わらず
         // 常にホバー座標を更新して再描画する(以前はドラッグ中=IsMouseCaptured時のみ再描画していた)。
         _hoverPos = e.GetPosition(this);
+        UpdateMarkerHoverPopup(_hoverPos.Value); // 2026-08-08要望対応: マーカーコメントのホバーポップアップ
         if (IsTimeRangeDragActive) { RsMove(e); return; } // 2026-07-27: 時間範囲選択ドラッグ中
         if (StartNumberEditMode) { SnMove(e); return; }
         if (Controller is null) { InvalidateVisual(); return; }
         if (IsMouseCaptured) Controller.Move(PosOf(e.GetPosition(this)));
+        UpdateCursor(_hoverPos.Value); // 2026-08-08要望対応: 今何ができるか/しているかをカーソル形状で示す
         InvalidateVisual();
+    }
+
+    /// <summary>マウスカーソルの見た目を現在の状態に応じて切り替える(2026-08-08要望対応)。
+    /// ・Ctrl+ドラッグ(移動先への複製、FinishMove参照)中: 通常の矢印カーソルに「+」の付いた
+    ///   コピー系カーソル(WPFの標準カーソルセットに完全一致する「矢印+プラス」は存在しないため、
+    ///   最も近い意味を持つCursors.Crossで代用している)。
+    /// ・フリーズアローの端点(FreezeStart/FreezeEnd、掴むと長さ変更になる部位)のホバー中・
+    ///   リサイズドラッグ確定中: 上下方向矢印(Cursors.SizeNS、リサイズが縦方向であることに対応)。
+    /// ・それ以外: 既定の矢印カーソル。
+    /// StartNumber編集モード・時間範囲選択ドラッグ中はそれぞれ専用の見た目を持つため、
+    /// このメソッドが呼ばれる前に個別のreturnで弾かれている(OnMouseMove参照)。</summary>
+    private void UpdateCursor(Point pos)
+    {
+        if (Controller is null || Document is null) { Cursor = Cursors.Arrow; return; }
+
+        // ドラッグ確定中(閾値超過後): SmartToolController側のプレビューをそのまま見る
+        if (Controller.ResizeFreezePreview is not null) { Cursor = Cursors.SizeNS; return; }
+        if (Controller.MoveObjectsPreview is not null)
+        {
+            Cursor = Keyboard.Modifiers.HasFlag(ModifierKeys.Control) ? Cursors.Cross : Cursors.Arrow;
+            return;
+        }
+
+        // 未ドラッグ時: フリーズ端点にホバーしていれば、掴んだ場合の挙動(長さ変更)を予告する
+        if (!IsMouseCaptured && !Controller.ColorEditModeEnabled && !StartNumberEditMode)
+        {
+            var hit = Document.CurrentLayout.HitTest(Document.CurrentTab, Document.Project, pos.X, pos.Y);
+            if (hit is { Kind: ObjectKind.FreezeStart or ObjectKind.FreezeEnd })
+            {
+                Cursor = Cursors.SizeNS;
+                return;
+            }
+        }
+
+        Cursor = Cursors.Arrow;
     }
 
     /// <summary>マウスがキャンバス外に出たらカーソルラインを消す(2026-07-25)。</summary>
@@ -686,7 +731,35 @@ public sealed class ChartCanvas : FrameworkElement
     {
         base.OnMouseLeave(e);
         _hoverPos = null;
+        MarkerCommentPopup.ScheduleHide(); // 2026-08-08要望対応: キャンバス外に出たら猶予付きでポップアップを閉じる(ピン留め中を除く)
+        Cursor = Cursors.Arrow; // 2026-08-08要望対応: キャンバス外に出たらカーソル形状も既定へ戻す
         InvalidateVisual();
+    }
+
+    /// <summary>マーカーレーン上のマーカーへホバーした際、コメント全文のポップアップを表示する
+    /// (2026-08-08要望対応)。マーカーレーンの表示幅が狭くDrawEventTagのクリップ描画では
+    /// 長いコメントが読み切れないため。当たり判定はChartLayout.HitTestをそのまま再利用する
+    /// (x座標でマーカーレーンかどうかも含めて判定されるため、レーン外なら自然にnullが返る)。
+    /// 2026-08-08b要望対応: ポップアップはマウス追従ではなくマーカーの実座標(anchorPoint、
+    /// マーカーレーンの列位置とtickからのY座標)に固定表示する。ホバーが外れた場合も即座には
+    /// 閉じずScheduleHide(猶予付き消去)を使う(ポップアップ内のボタンを押そうとカーソルを
+    /// 動かした瞬間に消えてしまう問題への対応)。</summary>
+    private void UpdateMarkerHoverPopup(Point pos)
+    {
+        if (Document is null) { MarkerCommentPopup.ScheduleHide(); return; }
+        var hit = Document.CurrentLayout.HitTest(Document.CurrentTab, Document.Project, pos.X, pos.Y);
+        if (hit is { Kind: ObjectKind.Marker } h)
+        {
+            var marker = Document.Project.Markers.FirstOrDefault(m => m.Tick == h.Tick);
+            if (marker is not null)
+            {
+                var col = Document.CurrentLayout.Column(ColumnKind.Marker);
+                var anchorPoint = new Point(col.X + col.Width, Document.CurrentLayout.TickToY(h.Tick));
+                MarkerCommentPopup.Show(this, h.Tick, marker.Comment, anchorPoint);
+                return;
+            }
+        }
+        MarkerCommentPopup.ScheduleHide();
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -699,6 +772,7 @@ public sealed class ChartCanvas : FrameworkElement
         // ここで最新のModifiersOf(e)を渡す(押下時の状態のまま固定しない)。
         Controller.End(PosOf(e.GetPosition(this)), ModifiersOf(e));
         ReleaseMouseCapture();
+        UpdateCursor(e.GetPosition(this)); // 2026-08-08要望対応: ドラッグ確定中の見た目を引きずらないよう解放時点の状態へ戻す
         InvalidateVisual();
     }
 
@@ -708,6 +782,7 @@ public sealed class ChartCanvas : FrameworkElement
         if (Controller is null) return;
         Controller.End(PosOf(e.GetPosition(this)), ModifiersOf(e));
         ReleaseMouseCapture();
+        UpdateCursor(e.GetPosition(this)); // 2026-08-08要望対応
         InvalidateVisual();
     }
 
@@ -761,6 +836,13 @@ public sealed class ChartCanvas : FrameworkElement
             InvalidateAll();
             // 2026-07-26: プロジェクトファイルへズーム率を保存(次回オープン時に復元、ユーザー要望)。
             Document.Project.EditorZoomPxPerTick = layout.PxPerTick;
+            // 2026-08-08: InvalidateAll()は再描画を予約するだけで、この時点ではMeasureOverride/OnRenderが
+            // まだ走っていない。そのため反転(Reverse)基準のキャッシュ(_reverseContentHeight)がPxPerTick変更前の
+            // 値のまま残っており、直後のTickToY呼び出し(下記)がReverse表示時のみ古い基準で計算されてズレる
+            // 不具合があった。MeasureOverride/OnRenderと同じ手順でここでも明示的に基準を更新し、非反転表示と
+            // 挙動を統一する。
+            layout.Reverse = Reverse;
+            layout.RefreshContentHeight(MaxTickInProject(Document, AudioTotalFrames));
 
             if (sv is not null)
             {
@@ -875,31 +957,44 @@ public sealed class ChartCanvas : FrameworkElement
         // 座標変換自体はTopMargin(400px)の余白内であれば負のtickでも問題ないため、この2つの線だけは
         // 0でクランプしていない生のtickMinを使う(グリッド線・ノート等、他の描画には影響させない)。
         long tickMinRaw = (long)Math.Min(tA, tB) - 1;
+        // 2026-08-08不具合修正: マイナスフレーム許容(ChartProject.AllowNegativeFramePlacement)ON時、
+        // SmartToolController側は既にtick<0への配置を許可しているにもかかわらず、本体の描画カリングは
+        // ここまで一律tickMin(0クランプ済み)を使っていたため、配置したノート/フリーズ/speed・boost/
+        // マーカー等がカリング範囲外扱いとなり表示されない不具合があった(グリッド線側は
+        // 2026-08-08時点で既にtickMinRaw対応済みだったが、オブジェクト描画側の対応が漏れていた)。
+        // グリッド線(DrawGridAndMeasureLines)と同じ考え方で、フラグON時のみ0クランプ無しの
+        // tickMinRawをオブジェクト描画のカリング下限として使う。
+        bool allowNegativeFrame = Document.Project.AllowNegativeFramePlacement;
+        long cullTickMin = allowNegativeFrame ? tickMinRaw : tickMin;
 
         DrawWaveform(dc, layout, engine, yTop, yBottom); // 最下層(2026-07-18)。カラム背景は半透明のため透ける
         DrawColumnBackgrounds(dc, layout, yTop, yBottom);
         DrawColumnSeparators(dc, layout, yTop, yBottom);
-        DrawGridAndMeasureLines(dc, layout, engine, Document.Snap, tickMin, tickMax);
+        DrawGridAndMeasureLines(dc, layout, engine, Document.Snap, tickMin, tickMax, tickMinRaw);
         // 2026-08-02要望対応: 再生開始ラインをノート(画像)・強調表示の裏へ回す(グリッド > 再生開始
         // ライン > ノート画像 > 強調表示、の順)。従来はノート・強調表示より後(最前面寄り)に描画しており、
         // 密集した譜面で再生開始ラインがノートを覆い隠して見えづらいとの指摘対応。DrawNotesAndFreezes内で
         // ノート画像→強調表示の順に描く(ヒットフラッシュと同様、同一ノートの中で画像→強調表示の重ね順は
         // 元々維持されている)ため、ここではDrawPlaybackStartLine自体をDrawNotesAndFreezesより前へ移すだけでよい。
         DrawPlaybackStartLine(dc, layout, engine, tickMinRaw, tickMax);
-        DrawLinkedBackgroundNotes(dc, layout, tab, tickMin, tickMax); // 2026-07-26: タブリンクの背景ノート(本体より奥)
-        DrawNotesAndFreezes(dc, layout, tab, project, tickMin, tickMax);
-        DrawValueEvents(dc, layout, tab, project, tickMin, tickMax);
-        DrawMarkers(dc, layout, project, tickMin, tickMax);
-        DrawTimeSignatures(dc, layout, project, engine, tickMin, tickMax);
-        DrawTimeInfoLane(dc, layout, tab, engine, tickMin, tickMax); // 2026-07-23: 時間情報表示レーン(TBD 1-1)
-        DrawWordEntries(dc, layout, tab, tickMin, tickMax); // 2026-07-23: 歌詞レーン(TBD 4)
-        DrawSelectionHighlights(dc, layout, Document, tickMin, tickMax);
+        DrawLinkedBackgroundNotes(dc, layout, tab, cullTickMin, tickMax); // 2026-07-26: タブリンクの背景ノート(本体より奥)
+        DrawNotesAndFreezes(dc, layout, tab, project, cullTickMin, tickMax);
+        DrawLinkedBackgroundValueEvents(dc, layout, tab, cullTickMin, tickMax); // 2026-08-08: タブリンクの背景speed/boost(本体より奥)
+        DrawValueEvents(dc, layout, tab, project, cullTickMin, tickMax);
+        DrawMarkers(dc, layout, project, cullTickMin, tickMax);
+        DrawTimeSignatures(dc, layout, project, engine, tickMin, tickMax); // 拍子は物理小節頭固定のため0クランプのままでよい
+        DrawTimeInfoLane(dc, layout, tab, engine, cullTickMin, tickMax); // 2026-07-23: 時間情報表示レーン(TBD 1-1)
+        DrawWordEntries(dc, layout, tab, cullTickMin, tickMax); // 2026-07-23: 歌詞レーン(TBD 4)
+        DrawSelectionHighlights(dc, layout, Document, cullTickMin, tickMax);
         DrawDragPreview(dc, layout, tab, project);
         DrawPlaybackLine(dc, layout, tickMinRaw, tickMax);
-        DrawTimeRangeSelectionHighlight(dc, layout, tab, tickMin, tickMax); // 2026-07-27: 時間情報レーンの時間範囲選択
+        DrawTimeRangeSelectionHighlight(dc, layout, tab, cullTickMin, tickMax); // 2026-07-27: 時間情報レーンの時間範囲選択
         DrawGuideLine(dc, layout, engine, yTop, yBottom); // StartNumber編集モードのガイド線(2026-07-18)
         DrawCursorLine(dc, layout); // 2026-07-25: マウスホバー位置の最寄りスナップ可視化(最前面寄り)
-        DrawLaneLabels(dc, layout, viewport); // 2026-07-22: レーンラベル(常に最前面)
+        // 2026-08-08: レーンラベルは、譜面本体の描画と同じキャンバス上へのオーバーレイ描画をやめ、
+        // ScrollViewer外の専用領域(LaneHeaderBar、MainWindow.xaml参照)へ分離した。スクロールで
+        // その位置まで来たオブジェクトがラベルの下に隠れて操作できなくなる不具合の対応(要望対応)。
+        // 描画本体はPaintLaneLabelBar(旧DrawLaneLabels)に残し、LaneHeaderBar.OnRenderから呼ぶ。
         DrawPluginOverlays(dc, layout, viewport); // 2026-07-26: プラグインのオーバーレイ描画(最前面)
     }
 
@@ -937,6 +1032,17 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>レーンラベル欄へのノート数リアルタイム表示(2026-07-26、要望対応、既定OFF)。
     /// AppSettings.ShowLaneNoteCountから反映される(MainWindow.ApplyDisplaySettingsToCanvas参照)。</summary>
     public bool ShowLaneNoteCount { get; set; }
+
+    /// <summary>2026-08-08要望対応: 時間情報レーンのフレーム表示にBlankFrameを加算するか
+    /// (環境設定「表示」から適用)。dos.txt出力値と一致させ、勘違いを予防する目的。</summary>
+    public bool ShowFrameWithBlankFrame { get; set; } = true;
+
+    /// <summary>ShowFrameWithBlankFrameがONの場合、内部フレーム値へBlankFrameを加算して返す
+    /// (MainWindow.ToDisplayFrameと対称のロジック)。</summary>
+    private double ToDisplayFrame(double internalFrame)
+        => ShowFrameWithBlankFrame && Document is not null
+            ? internalFrame + Document.Project.BlankFrame
+            : internalFrame;
 
     /// <summary>レーンラベル欄の1行目表示切替(2026-08-02要望対応、既定false=キー表示)。
     /// false: 従来通りKeyAssignLabel(実キー、例"S"、"E/R")を表示。
@@ -1101,10 +1207,16 @@ public sealed class ChartCanvas : FrameworkElement
         }
     }
 
-    private void DrawGridAndMeasureLines(DrawingContext dc, ChartLayout layout, TimingEngine engine, SnapService snap, long tickMin, long tickMax)
+    private void DrawGridAndMeasureLines(DrawingContext dc, ChartLayout layout, TimingEngine engine, SnapService snap, long tickMin, long tickMax, long tickMinRaw)
     {
         double left = layout.Columns[0].X;
         double right = layout.Columns[^1].X + layout.Columns[^1].Width;
+        // 2026-08-08要望対応(再設計版): 「マイナスフレームを許容する」がONの間だけ、サブグリッド線・
+        // 拍線をtick<0領域(tickMinRaw、0でクランプしていない生の下限)まで伸ばす。既定(OFF)では
+        // 従来通りtickMin(0クランプ済み)で打ち切り、見た目を変えない。小節線はtick0起点で前方向へ
+        // 数えるため元々小節番号の概念が無いtick<0には伸ばさない(measureGuardループはそのまま)。
+        bool allowNegative = Document?.Project.AllowNegativeFramePlacement == true;
+        long gridTickMin = allowNegative ? tickMinRaw : tickMin;
 
         // フレーム情報モード中(仕様書7.6、2026-07-17i)は拍・スナップグリッドの代わりに
         // フレーム基準のグリッド線を描く(小節線・拍子はそのまま=「動く側」の確認用)。
@@ -1116,10 +1228,10 @@ public sealed class ChartCanvas : FrameworkElement
         else if (snap.Enabled && snap.GridTicks > 0 && snap.GridTicks < TimingEngine.TicksPerBeat)
         {
             long g = snap.GridTicks;
-            long gridStart = tickMin - (tickMin % g);
+            long gridStart = gridTickMin - (gridTickMin % g);
             for (long t = gridStart; t <= tickMax; t += g)
             {
-                if (t < 0 || t % TimingEngine.TicksPerBeat == 0) continue; // 拍線と重複させない
+                if ((t < 0 && !allowNegative) || t % TimingEngine.TicksPerBeat == 0) continue; // 拍線と重複させない
                 double y = layout.TickToY(t);
                 dc.DrawLine(new Pen(GridLineBrush, 1), new Point(left, y), new Point(right, y));
             }
@@ -1128,10 +1240,10 @@ public sealed class ChartCanvas : FrameworkElement
         // 拍線(medium、4分=48tick間隔)。フレーム情報モード中はフレームグリッドに譲る
         if (Document?.IsFrameEditMode != true)
         {
-            long beatStart = tickMin - (tickMin % TimingEngine.TicksPerBeat);
+            long beatStart = gridTickMin - (gridTickMin % TimingEngine.TicksPerBeat);
             for (long t = beatStart; t <= tickMax; t += TimingEngine.TicksPerBeat)
             {
-                if (t < 0) continue;
+                if (t < 0 && !allowNegative) continue;
                 double y = layout.TickToY(t);
                 dc.DrawLine(new Pen(BeatLineBrush, 1), new Point(left, y), new Point(right, y));
             }
@@ -1293,6 +1405,35 @@ public sealed class ChartCanvas : FrameworkElement
                 DrawMark(f.EndTick);
             }
         }
+    }
+
+    /// <summary>タブリンク機能のspeed/boost版(2026-08-08要望対応)。ノートのゴースト表示
+    /// (DrawLinkedBackgroundNotes)と同様に、リンク中の相手タブのspeed_data/boost_data変化点を、
+    /// 本体のタグ描画(DrawValueEvents)より奥に、LinkedNoteColor由来の固定色で簡易表示する。
+    /// タグ形状自体は本体と同じDrawEventTagをそのまま再利用し(色のみ差し替え)、始点終点の
+    /// オートスムージング線(DrawValueEventLinks)はここでは描かない(あくまで参照表示であり、
+    /// 編集補助であるリンク線までは不要と判断)。ノート同様、DrawingContextへの直接描画のみで
+    /// HitTest/Controller側のデータ構造には一切登録しないため、クリック等の操作対象にはならない。
+    /// 2026-08-08b要望対応: 本体側のタグと見分けづらいとの指摘を受け、(1)マーカー(三角形)を50%半透明にし、
+    /// (2)数値ラベルは同一tickの本体側ラベルと重ならないよう1行上へずらし(shiftLabelUp)、
+    /// (3)半角丸括弧で囲って(相手タブの値であることを一目でわかるように)表示する。</summary>
+    private void DrawLinkedBackgroundValueEvents(DrawingContext dc, ChartLayout layout, DifficultyTab tab, long tickMin, long tickMax)
+    {
+        if (Document is null || tab.LinkedTabId is not { } linkedId) return;
+        var partner = Document.Project.Tabs.FirstOrDefault(t => t.TabId == linkedId);
+        if (partner is null) return;
+
+        var ghostBrush = Freeze(new SolidColorBrush(LinkedNoteColor) { Opacity = 0.5 });
+
+        var speedCol = layout.Column(ColumnKind.Speed);
+        foreach (var e in partner.SpeedEvents)
+            if (e.Tick >= tickMin && e.Tick <= tickMax)
+                DrawEventTag(dc, speedCol, layout.TickToY(e.Tick), ghostBrush, $"({e.Value:0.00})", pointLeft: true, layout.ZoomScale, shiftLabelUp: true);
+
+        var boostCol = layout.Column(ColumnKind.Boost);
+        foreach (var e in partner.BoostEvents)
+            if (e.Tick >= tickMin && e.Tick <= tickMax)
+                DrawEventTag(dc, boostCol, layout.TickToY(e.Tick), ghostBrush, $"({e.Value:0.00})", pointLeft: true, layout.ZoomScale, shiftLabelUp: true);
     }
 
     private void DrawNotesAndFreezes(DrawingContext dc, ChartLayout layout, DifficultyTab tab, ChartProject project, long tickMin, long tickMax)
@@ -1712,7 +1853,7 @@ public sealed class ChartCanvas : FrameworkElement
             double y = layout.TickToY(mTick);
             if (mTick >= tickMin - 4L * TimingEngine.TicksPerBeat * 4)
             {
-                double frame = engine.TickToFrame(mTick);
+                double frame = ToDisplayFrame(engine.TickToFrame(mTick));
                 bool crowded = prevY is double py && Math.Abs(y - py) < requiredHeight;
                 if (crowded)
                     DrawTimeInfoText(dc, x, y, fontSize, Brushes.White, $"#{measure}");
@@ -1744,7 +1885,7 @@ public sealed class ChartCanvas : FrameworkElement
         {
             if (measureHeadTicks.Contains(t)) continue;
             double y = layout.TickToY(t);
-            double frame = engine.TickToFrame(t);
+            double frame = ToDisplayFrame(engine.TickToFrame(t));
             DrawTimeInfoText(dc, x, y, fontSize, Brushes.LightGray, $"{frame:0.#}f");
         }
     }
@@ -1826,18 +1967,36 @@ public sealed class ChartCanvas : FrameworkElement
     private static readonly Brush NormalNoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0x98, 0x00)));
     private static readonly Brush FreezeNoteCountBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x42, 0xA5, 0xF5)));
 
-    private void DrawLaneLabels(DrawingContext dc, ChartLayout layout, Rect viewport)
+    /// <summary>レーンラベルバー(speed/boost/BPM等の見出し)の高さ(px)を計算する。
+    /// 2026-08-08: バーをScrollViewer外の専用領域(LaneHeaderBar)へ分離したことに伴い、
+    /// LaneHeaderBar.MeasureOverrideが自身の必要高さを求めるために呼ぶ(公開化)。</summary>
+    public double MeasureLaneLabelBarHeight()
+    {
+        if (Document is null) return 0;
+        double fontSize = Math.Max(7, 9 * Document.CurrentLayout.ZoomScale);
+        double lineH = fontSize + 3;
+        bool twoLines = KeyboardModeActive || ShowLaneNoteCount;
+        return (twoLines ? lineH * 2 : lineH) + 6;
+    }
+
+    /// <summary>レーンラベルバーの中身を描画する(旧DrawLaneLabels、2026-08-08にLaneHeaderBar用へ改称・公開化)。
+    /// バー自体はもはやオーバーレイではなく専用領域に描かれるため、呼び出し側(LaneHeaderBar.OnRender)が
+    /// 高さぴったりの領域を用意している前提でbarTop=0固定とする。横スクロールに追従させるため、
+    /// 呼び出し側は事前にTranslateTransform(-水平オフセット, 0)を適用したうえで、left/widthには
+    /// (水平オフセット, 見えている幅)をそのまま渡すこと(列のX座標は譜面本体と共通の絶対座標)。</summary>
+    internal void PaintLaneLabelBar(DrawingContext dc, double left, double width)
     {
         if (Document is null) return;
+        var layout = Document.CurrentLayout;
         var template = Document.CurrentTemplate;
         var tab = Document.CurrentTab;
         double fontSize = Math.Max(7, 9 * layout.ZoomScale);
         double lineH = fontSize + 3;
         bool twoLines = KeyboardModeActive || ShowLaneNoteCount;
         double barHeight = (twoLines ? lineH * 2 : lineH) + 6;
-        double barTop = Reverse ? viewport.Bottom - barHeight : viewport.Top;
+        double barTop = 0;
 
-        dc.DrawRectangle(LaneLabelBackgroundBrush, null, new Rect(viewport.Left, barTop, viewport.Width, barHeight));
+        dc.DrawRectangle(LaneLabelBackgroundBrush, null, new Rect(left, barTop, width, barHeight));
 
         foreach (var col in layout.Columns)
         {
@@ -1931,7 +2090,10 @@ public sealed class ChartCanvas : FrameworkElement
     /// </summary>
     /// <summary>fontSizeBase=ZoomScale=1.0時の基準フォントサイズ(pt)。マーカータグは環境設定の
     /// MarkerFontSizeを渡す(2026-07-26)。それ以外(speed/boost/BPM/歌詞)は従来通り既定値9を使う。</summary>
-    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9, bool mirrorShape = false)
+    /// <param name="shiftLabelUp">2026-08-08要望対応: タブリンク相手データの数値表示専用。trueの場合、
+    /// 数値ラベルの描画位置だけを1行分(フォントサイズ相当)上へずらす(タグ本体の位置・形状は変えない)。
+    /// 同一tickに本体側の数値表示があっても重なって読めなくなるのを防ぐため。</param>
+    private static void DrawEventTag(DrawingContext dc, ColumnInfo col, double y, Brush brush, string label, bool pointLeft, double zoomScale, double fontSizeBase = 9, bool mirrorShape = false, bool shiftLabelUp = false)
     {
         const double w = 20, h = 9;
         double cx = col.CenterX;
@@ -1960,6 +2122,9 @@ public sealed class ChartCanvas : FrameworkElement
         if (!string.IsNullOrEmpty(label))
         {
             double fontSize = Math.Max(7, fontSizeBase * zoomScale);
+            // shiftLabelUp時は数値ラベルのY座標のみ1行分(フォントサイズ相当)上へずらす。
+            // タグ本体(三角形、上のDrawGeometry)はyのまま描画済みなので、tick位置の正確さには影響しない。
+            double labelY = shiftLabelUp ? y - fontSize : y;
             var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight, Typeface, fontSize, Brushes.White, 1.0);
 
@@ -1967,14 +2132,14 @@ public sealed class ChartCanvas : FrameworkElement
             {
                 // 左向きタグ(speed/boost/BPM/拍子)はカラムの右側に描く(従来通り、はみ出し先は
                 // ノートレーン側の余白なので問題ない)。
-                dc.DrawText(text, new Point(col.X + col.Width + 2, y - fontSize / 2 - 1));
+                dc.DrawText(text, new Point(col.X + col.Width + 2, labelY - fontSize / 2 - 1));
             }
             else
             {
                 // 右向きタグ(マーカー)はマーカーレーン自身の幅にクリップして収める(2026-07-16h修正:
                 // 以前は無条件にcol右側へ描画しており、隣接する小節レーンへはみ出していた)。
-                dc.PushClip(new RectangleGeometry(new Rect(col.X, y - fontSize, col.Width, fontSize * 2)));
-                dc.DrawText(text, new Point(col.X + 1, y - fontSize / 2 - 1));
+                dc.PushClip(new RectangleGeometry(new Rect(col.X, labelY - fontSize, col.Width, fontSize * 2)));
+                dc.DrawText(text, new Point(col.X + 1, labelY - fontSize / 2 - 1));
                 dc.Pop();
             }
         }

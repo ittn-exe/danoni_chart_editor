@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -176,6 +177,13 @@ public partial class MainWindow : Window
     {
         _instanceId = instanceId;
         InitializeComponent();
+        // 2026-08-08: レーンラベルヘッダー(LaneHeaderBar、ScrollViewer外の専用領域)と対になる
+        // ChartCanvasを相互に結び付ける(ChartCanvas.HeaderBarはズーム変更時の再計測通知用、
+        // LaneHeaderBar.TargetCanvasは描画内容の参照元)。
+        LaneHeaderBar1.TargetCanvas = Canvas;
+        Canvas.HeaderBar = LaneHeaderBar1;
+        LaneHeaderBar2.TargetCanvas = Canvas2;
+        Canvas2.HeaderBar = LaneHeaderBar2;
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
         _macros = LaneSwapMacroFile.LoadAll(AppPaths.SettingsDir); // 2026-07-26g: キー種ごとのs-macro_*.jsonへ分割(旧swap_macro.jsonは自動移行)
         _pluginManager = new Plugins.PluginManager(() => _document); // 2026-07-26: プラグイン対応の土台
@@ -255,6 +263,11 @@ public partial class MainWindow : Window
         PlaybackSpeedCombo.ItemsSource = Enumerable.Range(1, 20).Select(i => Math.Round(i * 0.1, 1)).ToList();
         PlaybackSpeedCombo.SelectedItem = PlaybackSpeedValues_Nearest(_appSettings.PlaybackSpeed);
         _audioPlayer.SpeedRatio = _appSettings.PlaybackSpeed;
+        // 2026-08-08要望対応: 再生速度をプレイテストへ反映するかどうか(既定OFF)
+        ReflectPlaybackSpeedInPlaytestToggle.IsChecked = _appSettings.ReflectPlaybackSpeedInPlaytest;
+        // 2026-08-08c要望対応: プレイテストのスクロール速度を再生速度に関わらず一定に保つかどうか(既定OFF)
+        KeepScrollSpeedInPlaytestToggle.IsChecked = _appSettings.KeepScrollSpeedInPlaytest;
+        UpdateKeepScrollSpeedToggleEnabled(); // 2026-08-08d: 「プレイテストへ反映」OFFの間はグレーアウト
 
         // 2026-07-26: 音量(0〜100%、スライダー+数値入力欄を相互同期)
         _suppressVolumeEvents = true;
@@ -306,7 +319,32 @@ public partial class MainWindow : Window
         RestoreRightPanelWidth(); // 2026-07-29要望対応
         Closed += (_, _) => { SaveWindowPlacement(); SaveRightPanelWidth(); _audioPlayer.Dispose(); }; // 2026-07-26f/2026-07-29
 
+        // 2026-08-08要望対応: 上パネルのボタン/トグルボタン/チェックボックス/コンボボックスをマウス
+        // クリックで操作した後、キーボードショートカット(スナップ切替・Space・Ctrl+P等)がすぐ使える
+        // よう、必ず譜面ビューへフォーカスを戻す。個々のイベントハンドラへ都度Focus呼び出しを
+        // 追加するのではなく、上パネルのBorder(TopPanelBorder)へButtonBase.Click/
+        // Selector.SelectionChangedのバブリングハンドラを1つずつ追加するだけで、現在・将来の
+        // 全ての該当コントロールをまとめてカバーする(CheckBox/ToggleButtonはButtonBaseのClickも
+        // 併せて発火するため、Checked/Unchecked個別のフックは不要)。
+        // なお、初期化時・環境設定ウィンドウ復帰時のコード側でのIsChecked/SelectedItem代入でも
+        // Checked/Unchecked・SelectionChangedは発火するが、Clickはユーザーの物理クリック時にしか
+        // 発火しないため、ここではAddHandlerを初期化完了(_initialized = true)の直前に置くことで、
+        // 起動シーケンス中のコード側同期による意図しないフォーカス移動を避けている
+        // (SelectionChangedはコード代入でも発火するため完全には避けられないが、その時点では
+        // ウィンドウがまだ表示されておらずFocus呼び出しは実害が無い)。
+        TopPanelBorder.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler((_, _) => FocusChartView()));
+        TopPanelBorder.AddHandler(Selector.SelectionChangedEvent, new RoutedEventHandler((_, _) => FocusChartView()));
+
         _initialized = true;
+    }
+
+    /// <summary>2026-08-08要望対応: 上パネル操作後に譜面ビューへフォーカスを戻す。分割ビュー中は
+    /// アクティブペイン側(_activePaneIsSecondary)のCanvasへフォーカスする(ActiveChartScrollViewer
+    /// と同じ判定基準)。</summary>
+    private void FocusChartView()
+    {
+        var canvas = _splitViewEnabled && _activePaneIsSecondary ? Canvas2 : Canvas;
+        canvas.Focus();
     }
 
     // =====================================================================
@@ -420,6 +458,8 @@ public partial class MainWindow : Window
         Canvas.Reverse = _appSettings.ChartViewReverse; // 2026-07-22: 譜面ビューReverse(環境設定のみで切替)
         Canvas.ShowLaneNoteCount = _appSettings.ShowLaneNoteCount; // 2026-07-26
         Canvas.ShowLaneNameLabel = _appSettings.ShowLaneNameLabel; // 2026-08-02
+        Canvas.ShowFrameWithBlankFrame = _appSettings.ShowFrameWithBlankFrame; // 2026-08-08
+        ApplyLaneLabelHeaderPosition(); // 2026-08-08: レーンラベルヘッダーの表示位置(上部/下部/非表示)
         InvalidateChartViews();
     }
 
@@ -551,6 +591,9 @@ public partial class MainWindow : Window
         PlaytestHiSpeedCombo.SelectedItem = PlaytestHiSpeedValues_Nearest(_appSettings.PlaytestHiSpeed);
         PlaytestOffsetBox.Text = _appSettings.PlaytestOffsetFrames.ToString(CultureInfo.InvariantCulture);
         PlaytestScaleCombo.SelectedItem = PlaytestScaleValues.OrderBy(v => Math.Abs(v - _appSettings.PlaytestWindowScale)).First();
+        ReflectPlaybackSpeedInPlaytestToggle.IsChecked = _appSettings.ReflectPlaybackSpeedInPlaytest; // 2026-08-08
+        KeepScrollSpeedInPlaytestToggle.IsChecked = _appSettings.KeepScrollSpeedInPlaytest; // 2026-08-08c
+        UpdateKeepScrollSpeedToggleEnabled(); // 2026-08-08d: 「プレイテストへ反映」OFFの間はグレーアウト
         UpdateMusicUrlLoadButtonState(); // 2026-07-26: 機能ON/OFF切替を「読込」ボタンの活性状態へ即反映
         InvalidateChartViews();
     }
@@ -647,6 +690,23 @@ public partial class MainWindow : Window
             // 表示する仕様のため、開いた時点の実際のファイル名で同期する(ファイルがリネームされていた
             // 場合や、保存時ProjectName同期が無かった旧バージョンで保存されたファイルにも対応)。
             project.ProjectName = Path.GetFileNameWithoutExtension(path);
+
+            // 2026-08-08新設(第三者報告のノート重複不具合対応): 気付かないまま重複ノートを含んだ
+            // 状態で保存されていた過去のプロジェクトを開いた際、ユーザーに解決方法を選ばせる。
+            // EditorDocument化(Undo履歴の起点)より前に素のChartProjectへ直接適用することで、
+            // この修正自体はUndo対象にしない(以後の編集操作と区別する)。
+            var duplicates = DuplicateNoteChecker.FindDuplicates(project);
+            if (duplicates.Count > 0)
+            {
+                // FindDuplicatesは箇所(タブ×レーン×tick)単位で1件ずつ返すため、件数=箇所数
+                var resolution = DuplicateNoteDialog.Ask(this, duplicates.Count);
+                if (resolution == DuplicateNoteResolution.Resolve)
+                    DuplicateNoteChecker.ResolveByRemoving(project, duplicates);
+                else if (resolution == DuplicateNoteResolution.Keep)
+                    DuplicateNoteChecker.ResolveByMarking(project, duplicates);
+                // null(キャンセル)の場合は何もせず、重複を含んだままのprojectをそのまま開く
+            }
+
             AddSession(new EditorDocument(project, _templates), path); // 2026-07-20: 新規プロジェクトタブとして追加
             // 2026-07-26: musicURL設定済みのITTNエディタ形式プロジェクトを開いた際、機能ONなら自動読込を試みる
             // (ローカルAudioFilePathからの復元(ResetAudioForDocument、AddSession内で実行済み)が
@@ -839,6 +899,11 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>dos.txtエクスポート(2026-08-08要望対応: 保存ダイアログのファイル種類欄で
+    /// UTF-8/Shift-JISを選べるようにする)。FilterIndexは1始まりで、Filter文字列の並び順と対応する
+    /// (1番目=UTF-8を既定にし、従来の挙動を変えない)。
+    /// Shift-JISへ変換できない文字(絵文字等)が含まれる場合は事前に確認ダイアログを出し、
+    /// OKなら「?」へ置換して保存する(DosTextEncoding参照、ユーザー確認済みの方針)。</summary>
     private void ExportDos_Click(object sender, RoutedEventArgs e)
     {
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
@@ -850,7 +915,8 @@ public partial class MainWindow : Window
 
         var dlg = new SaveFileDialog
         {
-            Filter = "dos.txt (*.txt)|*.txt",
+            Filter = "dos.txt - UTF-8 (*.txt)|*.txt|dos.txt - Shift-JIS (*.txt)|*.txt",
+            FilterIndex = 1, // 既定はUTF-8(従来通り)
             FileName = "dos.txt",
         };
         if (dlg.ShowDialog(this) != true) return;
@@ -859,7 +925,28 @@ public partial class MainWindow : Window
         {
             var exporter = new DosExporter(_templates.Get);
             var text = exporter.Export(_document.Project, includeEditorMetadata: true);
-            File.WriteAllText(dlg.FileName, text);
+            bool useShiftJis = dlg.FilterIndex == 2;
+
+            if (useShiftJis)
+            {
+                var unmappable = DosTextEncoding.FindUnmappableChars(text);
+                if (unmappable.Count > 0)
+                {
+                    string sample = string.Join(" ", unmappable.Take(20));
+                    string more = unmappable.Count > 20 ? " …" : "";
+                    var confirm = MessageBox.Show(this,
+                        $"Shift-JISへ変換できない文字が{unmappable.Count}種類見つかりましたわ: {sample}{more}\n" +
+                        "該当箇所は「?」に置き換えて保存しますが、よろしいですか？",
+                        "文字コード変換の確認", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                    if (confirm != MessageBoxResult.OK) return;
+                }
+                File.WriteAllBytes(dlg.FileName, DosTextEncoding.EncodeShiftJisWithReplacement(text));
+            }
+            else
+            {
+                File.WriteAllText(dlg.FileName, text); // 従来通りUTF-8(BOM無し)
+            }
+
             StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
             _appSettings.StatDosExportCount++; // 2026-07-26: 統計情報(dosエクスポート回数)
             _appSettings.Save(AppPaths.SettingsFilePath);
@@ -1036,7 +1123,8 @@ public partial class MainWindow : Window
     {
         var fileName = Path.GetFileName(path);
         string text;
-        try { text = File.ReadAllText(path); }
+        bool wasShiftJis;
+        try { (text, wasShiftJis) = DosTextEncoding.ReadAutoDetectText(File.ReadAllBytes(path)); }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -1064,6 +1152,10 @@ public partial class MainWindow : Window
             var project = ChooseImportTargetProject(fileName);
             if (project is null) return; // インポート先の選択をキャンセル
             var warnings = ProjectOperations.ApplyImport(project, result);
+            // 2026-08-09要望対応: 文字コード自動判定でShift-JISと判定された場合のみ、その旨を伝える
+            // (UTF-8として読めた場合は従来通り無言、判定が働いた場合だけ知らせる方針)。
+            if (wasShiftJis)
+                warnings.Insert(0, "文字コードをUTF-8として読み込めなかったため、Shift-JISとして自動判定して読み込みました。");
             FinishTabImport(project, warnings);
         }
         catch (Exception ex)
@@ -1169,7 +1261,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var text = File.ReadAllText(path);
+            var (text, wasShiftJis) = DosTextEncoding.ReadAutoDetectText(File.ReadAllBytes(path));
             var importer = new DosImporter(_templates.Get);
             var options = new DosImportOptions { AutoEstimateTiming = autoEstimate, DefaultBpm = defaultBpm, TimingOverride = timingOverride };
             var result = importer.Import(text, options);
@@ -1177,6 +1269,9 @@ public partial class MainWindow : Window
             int addedTabCount = result.Project.Tabs.Count;
             var warnings = ProjectOperations.ApplyImport(project, result);
             warnings.Add($"タイミング情報の出所: {result.TimingSource} / 最大スナップ誤差: {result.MaxSnapErrorFrames:F2}フレーム");
+            // 2026-08-09要望対応: 文字コード自動判定でShift-JISと判定された場合のみその旨を伝える。
+            if (wasShiftJis)
+                warnings.Insert(0, "文字コードをUTF-8として読み込めなかったため、Shift-JISとして自動判定して読み込みました。");
             FinishTabImport(project, warnings, addedTabCount);
         }
         catch (Exception ex)
@@ -2036,7 +2131,11 @@ public partial class MainWindow : Window
         var newTab = DifficultyTab.CreateFor(template, c.DifficultyName);
         _document.Project.Tabs.Add(newTab);
         _document.NotifyTabsChanged(_document.Project.Tabs.Count - 1);
-        OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+        // 2026-08-08: 予防的統一(進捗まとめ2-1/5-3)。従来はOpenDocument(_document)のみを呼んでおり
+        // SmartToolControllerが毎回作り直されていた。実害は無いと調査済みだったが、「色編集状態は
+        // 再適用される」「ドラッグ中には呼ばれない」という暗黙の前提に支えられた構造だったため、
+        // D&D並び替え(DifficultyTabControl_Drop)と同じくコントローラを使い回す形へ揃える。
+        OpenDocument(_document, _controller); // タブ一覧・各右パネルをまとめて再構築する
     }
 
     /// <summary>「タブを複製」ボタン(2026-07-26要望対応)。選択中のタブをノート・ゲージ設定等ごと
@@ -2061,7 +2160,8 @@ public partial class MainWindow : Window
         clone.DifficultyName = $"{clone.DifficultyName} のコピー";
         tabs.Insert(idx + 1, clone);
         _document.NotifyTabsChanged(idx + 1);
-        OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+        // 2026-08-08: 予防的統一(進捗まとめ2-1/5-3)。理由はAddDifficultyTab_Clickのコメント参照。
+        OpenDocument(_document, _controller); // タブ一覧・各右パネルをまとめて再構築する
     }
 
     private void CloseCurrentTab_Click(object sender, RoutedEventArgs e)
@@ -2099,7 +2199,8 @@ public partial class MainWindow : Window
         // 指したまま残ってしまう(タブを閉じるとクラッシュする不具合の原因)。
         // NotifyTabsChangedは値の異同に関わらず無条件でキャッシュ等を作り直すため、これを使う。
         _document.NotifyTabsChanged(Math.Min(idx, tabs.Count - 1));
-        OpenDocument(_document); // タブ一覧・各右パネルをまとめて再構築する
+        // 2026-08-08: 予防的統一(進捗まとめ2-1/5-3)。理由はAddDifficultyTab_Clickのコメント参照。
+        OpenDocument(_document, _controller); // タブ一覧・各右パネルをまとめて再構築する
     }
 
     /// <summary>指定インデックスのタブの「dosロック」(ExcludeFromDosExport)を切り替える
@@ -2113,7 +2214,8 @@ public partial class MainWindow : Window
         if (idx < 0 || idx >= tabs.Count) return;
 
         tabs[idx].ExcludeFromDosExport = !tabs[idx].ExcludeFromDosExport;
-        OpenDocument(_document); // タブ一覧の[×]表示を更新するため作り直す
+        // 2026-08-08: 予防的統一(進捗まとめ2-1/5-3)。理由はAddDifficultyTab_Clickのコメント参照。
+        OpenDocument(_document, _controller); // タブ一覧の[×]表示を更新するため作り直す
     }
 
     /// <summary>難易度タブ行の右クリックメニュー(2026-08-02要望対応)。タブの上で右クリックした場合は
@@ -2432,13 +2534,35 @@ public partial class MainWindow : Window
         row.Children.Add(box);
         if (enabled)
         {
-            var historyBtn = new Button { Content = "履歴", Width = 36, Margin = new Thickness(4, 0, 0, 0) };
-            historyBtn.Click += (_, _) => ColorHistoryPicker.Show(_appSettings, historyBtn, hex =>
+            // 2026-08-08: 「履歴」ボタンを統合カラーピッカー(履歴+お気に入り+HSV視覚選択+RGB/HEX入力、
+            // ColorPickerPopup)の呼び出しへ置き換え、隣に「☆登録」ボタン(現在値をお気に入りへ追加)を
+            // 新設した(進捗まとめ5-2、お気に入りの色機能)。押しても見た目の変化が分かりづらいとの
+            // 指摘を受け、登録成功時に「OK」を2秒間表示する(TransientOkFeedback)。
+            var pickerBtn = new Button { Content = "色", Width = 28, Margin = new Thickness(4, 0, 0, 0) };
+            pickerBtn.Click += (_, _) => ColorPickerPopup.Show(_appSettings, pickerBtn, box.Text, hex =>
             {
                 box.Text = hex;
                 ColorField_LostFocus(box, new RoutedEventArgs());
             });
-            row.Children.Add(historyBtn);
+            row.Children.Add(pickerBtn);
+
+            var favBtn = new Button { Content = "☆登録", Width = 44, Margin = new Thickness(4, 0, 0, 0) };
+            var favOkText = new TextBlock
+            {
+                Text = "OK", Foreground = Brushes.Green, FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0),
+                Visibility = Visibility.Collapsed,
+            };
+            favBtn.Click += (_, _) =>
+            {
+                if (FavoriteColorPicker.Register(_appSettings, box.Text))
+                {
+                    _appSettings.Save(AppPaths.SettingsFilePath);
+                    TransientOkFeedback.Show(favOkText);
+                }
+            };
+            row.Children.Add(favBtn);
+            row.Children.Add(favOkText);
         }
         parent.Children.Add(row);
     }
@@ -2835,6 +2959,7 @@ public partial class MainWindow : Window
         MusicUrlBox.Text = p.MusicUrl;
         TuningBox.Text = p.Tuning;
         FrzAttemptBox.Text = p.FrzAttempt.ToString(CultureInfo.InvariantCulture);
+        AllowNegativeFramePlacementCheck.IsChecked = p.AllowNegativeFramePlacement; // 2026-08-08要望対応(再設計版)
 
         var tab = _document.CurrentTab;
         DifficultyNameBox.Text = tab.DifficultyName;
@@ -2895,6 +3020,18 @@ public partial class MainWindow : Window
             DifficultyTabControl.Items.Refresh(); // DifficultyTabはINotifyPropertyChanged非対応のため明示リフレッシュ
         }
         _document.NotifyChanged();
+    }
+
+    /// <summary>2026-08-08要望対応(再設計版): 「マイナスフレームを許容する」チェックボックス。
+    /// ONの間、譜面ビューのクリック配置・ペーストでtick&lt;0(frame&lt;0)への配置が可能になる
+    /// (SmartToolController.SnappedTickAt/Paste/PasteWithLaneMapping参照、BPMイベントは対象外)。
+    /// 新規配置の可否のみを切り替える設定で、既にtick&lt;0にあるオブジェクトへは影響しない。</summary>
+    private void AllowNegativeFramePlacementCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPropertyPanelEvents || _document is null) return;
+        _document.Project.AllowNegativeFramePlacement = AllowNegativeFramePlacementCheck.IsChecked == true;
+        _document.NotifyChanged();
+        InvalidateChartViews();
     }
 
     /// <summary>
@@ -3069,7 +3206,7 @@ public partial class MainWindow : Window
         {
             case ObjectKind.Note:
                 ObjectKindText.Text = "ノート";
-                ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
                 ShowAnnotationFields();
                 break;
 
@@ -3080,10 +3217,10 @@ public partial class MainWindow : Window
                     var f = tab.Lanes[r.Lane].Freezes.FirstOrDefault(x => x.StartTick == r.Tick);
                     ObjectKindText.Text = "フリーズアロー";
                     ObjectFrameLabel.Text = "Frame(開始)";
-                    ObjectFrameBox.Text = f is null ? "-" : FormatFrame(engine.TickToFrame(f.StartTick));
+                    ObjectFrameBox.Text = f is null ? "-" : FormatFrame(ToDisplayFrame(engine.TickToFrame(f.StartTick)));
                     ObjectEndFrameLabel.Visibility = Visibility.Visible;
                     ObjectEndFrameBox.Visibility = Visibility.Visible;
-                    ObjectEndFrameBox.Text = f is null ? "-" : FormatFrame(engine.TickToFrame(f.EndTick));
+                    ObjectEndFrameBox.Text = f is null ? "-" : FormatFrame(ToDisplayFrame(engine.TickToFrame(f.EndTick)));
                     ShowAnnotationFields();
                     break;
                 }
@@ -3092,7 +3229,7 @@ public partial class MainWindow : Window
                 {
                     var ev = tab.SpeedEvents.FirstOrDefault(x => x.Tick == r.Tick);
                     ObjectKindText.Text = "速度変更(speed_data)";
-                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                    ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
                     ObjectValueBox.Text = (ev?.Value ?? 0).ToString(CultureInfo.InvariantCulture);
@@ -3104,7 +3241,7 @@ public partial class MainWindow : Window
                 {
                     var ev = tab.BoostEvents.FirstOrDefault(x => x.Tick == r.Tick);
                     ObjectKindText.Text = "ブースト変更(boost_data)";
-                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                    ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
                     ObjectValueBox.Text = (ev?.Value ?? 0).ToString(CultureInfo.InvariantCulture);
@@ -3117,7 +3254,7 @@ public partial class MainWindow : Window
                     var ev = _document.Project.BpmEvents.FirstOrDefault(x => x.Tick == r.Tick);
                     bool isFixed = r.Tick == 0;
                     ObjectKindText.Text = isFixed ? "BPM変更(曲頭・移動/削除不可)" : "BPM変更";
-                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                    ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
                     ObjectFrameBox.IsEnabled = !isFixed;
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
@@ -3129,7 +3266,7 @@ public partial class MainWindow : Window
                 {
                     var m = _document.Project.Markers.FirstOrDefault(x => x.Tick == r.Tick);
                     ObjectKindText.Text = "マーカー";
-                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                    ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
                     ObjectCommentLabel.Visibility = Visibility.Visible;
                     ObjectCommentBox.Visibility = Visibility.Visible;
                     ObjectCommentBox.Text = m?.Comment ?? "";
@@ -3141,7 +3278,7 @@ public partial class MainWindow : Window
                     var lane = tab.WordLanes[r.Lane];
                     var w = lane.Entries.FirstOrDefault(x => x.Tick == r.Tick);
                     ObjectKindText.Text = $"歌詞({lane.Name}{(lane.IsReverse ? "・Reverse専用" : "")})";
-                    ObjectFrameBox.Text = FormatFrame(engine.TickToFrame(r.Tick));
+                    ObjectFrameBox.Text = FormatFrame(ToDisplayFrame(engine.TickToFrame(r.Tick)));
 
                     ObjectWordPositionLabel.Visibility = Visibility.Visible;
                     ObjectWordPositionBox.Visibility = Visibility.Visible;
@@ -3195,6 +3332,21 @@ public partial class MainWindow : Window
 
     private static string FormatFrame(double frame) => frame.ToString("0.##", CultureInfo.InvariantCulture);
 
+    /// <summary>2026-08-08要望対応: 「フレーム数をblankFrame込みの値で表示する」設定がONの場合、
+    /// 内部フレーム値へ右パネルBlankFrameを加算した値を返す(dos.txt出力値と一致させるため)。
+    /// OFFの場合は内部フレーム値をそのまま返す(従来動作)。</summary>
+    private double ToDisplayFrame(double internalFrame)
+        => _appSettings.ShowFrameWithBlankFrame && _document is not null
+            ? internalFrame + _document.Project.BlankFrame
+            : internalFrame;
+
+    /// <summary>ToDisplayFrameの逆変換。ObjectFrameBox等、blankFrame込みで表示している値を
+    /// ユーザーが編集した際、内部フレーム値へ戻すために使う(対称性を保つ)。</summary>
+    private double ToInternalFrame(double displayFrame)
+        => _appSettings.ShowFrameWithBlankFrame && _document is not null
+            ? displayFrame - _document.Project.BlankFrame
+            : displayFrame;
+
     /// <summary>フリーズの選択参照を、リサイズ後の実際の開始tickへ更新する(ResizeFreezeActionはSelectionを
     /// 更新しないため、③タブが古いtickを指したままにならないよう明示的に合わせる)。</summary>
     private void ReselectFreeze(int lane, long newStartTick)
@@ -3207,7 +3359,8 @@ public partial class MainWindow : Window
     private void ObjectFrame_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
-        if (!TryParseDouble(ObjectFrameBox.Text, out var frame)) { RefreshSelectedObjectPanel(); return; }
+        if (!TryParseDouble(ObjectFrameBox.Text, out var displayFrame)) { RefreshSelectedObjectPanel(); return; }
+        double frame = ToInternalFrame(displayFrame);
 
         var engine = _document.Project.CreateTimingEngine();
         long newTick = _document.Snap.Snap(engine.FrameToTick(frame));
@@ -3234,7 +3387,8 @@ public partial class MainWindow : Window
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
         if (r.Kind is not (ObjectKind.FreezeStart or ObjectKind.FreezeEnd or ObjectKind.FreezeBody)) return;
-        if (!TryParseDouble(ObjectEndFrameBox.Text, out var frame)) { RefreshSelectedObjectPanel(); return; }
+        if (!TryParseDouble(ObjectEndFrameBox.Text, out var displayFrame)) { RefreshSelectedObjectPanel(); return; }
+        double frame = ToInternalFrame(displayFrame);
 
         var f = _document.CurrentTab.Lanes[r.Lane].Freezes.FirstOrDefault(x => x.StartTick == r.Tick);
         if (f is null) { RefreshSelectedObjectPanel(); return; }
@@ -3764,6 +3918,7 @@ public partial class MainWindow : Window
             ChartScrollViewer.ViewportWidth, ChartScrollViewer.ViewportHeight);
         Canvas.UpdateViewport(rect);
         Minimap.InvalidateVisual(); // 2026-07-26: 現在の表示範囲インジケータを最新化
+        LaneHeaderBar1.UpdateHorizontalOffset(rect.Left); // 2026-08-08: ヘッダーの列位置を横スクロールに追従させる
     }
 
     /// <summary>分割ビュー(2026-07-26要望対応)の右ペイン(Canvas2)用スクロール連動。左ペインとは
@@ -3775,6 +3930,7 @@ public partial class MainWindow : Window
             ChartScrollViewer2.ViewportWidth, ChartScrollViewer2.ViewportHeight);
         Canvas2.UpdateViewport(rect);
         Minimap2.InvalidateVisual(); // 2026-07-26b: 右ペイン用ミニマップの表示範囲インジケータを最新化
+        LaneHeaderBar2.UpdateHorizontalOffset(rect.Left); // 2026-08-08: ヘッダーの列位置を横スクロールに追従させる
     }
 
     /// <summary>2026-08-01要望対応: 譜面ビュー内でもスクロールバー等、ChartCanvas自身が
@@ -3849,6 +4005,42 @@ public partial class MainWindow : Window
         UpdateActivePaneIndicator();
     }
 
+    /// <summary>レーンラベルヘッダー(LaneHeaderBar)の表示位置を環境設定(AppSettings.LaneLabelHeaderPosition:
+    /// "top"/"bottom"/"hidden")へ合わせて左右ペインへ適用する(2026-08-08要望対応)。
+    /// ScrollViewerと同じGrid内の別行(Row0=上部、Row2=下部)へLaneHeaderBarを配置し、使わない側の行高は
+    /// 0にする(RowDefinition自体は常に両方存在させ、Grid.SetRowで配置行だけ切り替える方式)。</summary>
+    private void ApplyLaneLabelHeaderPosition()
+    {
+        ApplyLaneLabelHeaderPositionForPane(LaneHeaderBar1, ChartPane1HeaderTopRow, ChartPane1HeaderBottomRow);
+        ApplyLaneLabelHeaderPositionForPane(LaneHeaderBar2, ChartPane2HeaderTopRow, ChartPane2HeaderBottomRow);
+    }
+
+    private void ApplyLaneLabelHeaderPositionForPane(LaneHeaderBar bar, RowDefinition topRow, RowDefinition bottomRow)
+    {
+        switch (_appSettings.LaneLabelHeaderPosition)
+        {
+            case "bottom":
+                Grid.SetRow(bar, 2);
+                bar.Visibility = Visibility.Visible;
+                topRow.Height = new GridLength(0);
+                bottomRow.Height = GridLength.Auto;
+                break;
+            case "hidden":
+                bar.Visibility = Visibility.Collapsed;
+                topRow.Height = new GridLength(0);
+                bottomRow.Height = new GridLength(0);
+                break;
+            default: // "top"(既定)
+                Grid.SetRow(bar, 0);
+                bar.Visibility = Visibility.Visible;
+                topRow.Height = GridLength.Auto;
+                bottomRow.Height = new GridLength(0);
+                break;
+        }
+        bar.InvalidateMeasure();
+        bar.InvalidateVisual();
+    }
+
     /// <summary>キーボードモード中のカーソル追従スクロール(ScrollKeyboardCursorIntoView)が対象とする
     /// ScrollViewer。分割OFF、またはアクティブペインが左の間は従来通りChartScrollViewer、分割ON中に
     /// 右ペインをアクティブにしている間だけChartScrollViewer2を返す(2026-07-26要望対応:
@@ -3884,9 +4076,16 @@ public partial class MainWindow : Window
     private void InvalidateChartViews()
     {
         Canvas.InvalidateVisual();
+        // 2026-08-08: レーンラベルヘッダー(LaneHeaderBar)は別領域化に伴い専用のMeasureOverrideを持つため、
+        // (ShowLaneNoteCount等のトグルで1行/2行表示が切り替わり高さが変わる場合があるので)
+        // VisualだけでなくMeasureも合わせて無効化しておく(再計測コスト自体は軽微)。
+        LaneHeaderBar1.InvalidateMeasure();
+        LaneHeaderBar1.InvalidateVisual();
         if (!_splitViewEnabled) return;
         SyncCanvas2FromCanvas();
         Canvas2.InvalidateVisual();
+        LaneHeaderBar2.InvalidateMeasure();
+        LaneHeaderBar2.InvalidateVisual();
     }
 
     /// <summary>Canvas2(右ペイン)の表示設定・参照をCanvas(左ペイン)から丸ごとコピーする。
@@ -3927,6 +4126,7 @@ public partial class MainWindow : Window
         Canvas2.MarkerFontSize = Canvas.MarkerFontSize;
         Canvas2.ShowLaneNoteCount = Canvas.ShowLaneNoteCount;
         Canvas2.ShowLaneNameLabel = Canvas.ShowLaneNameLabel;
+        Canvas2.ShowFrameWithBlankFrame = Canvas.ShowFrameWithBlankFrame;
         Canvas2.ShowWaveform = Canvas.ShowWaveform;
         Canvas2.Waveform = Canvas.Waveform;
         Canvas2.AudioTotalFrames = Canvas.AudioTotalFrames;
@@ -4357,8 +4557,8 @@ public partial class MainWindow : Window
         if (_document is not null && tab?.TimeRangeSelectionStartTick is { } stTick && tab.TimeRangeSelectionEndTick is { } etTick)
         {
             var engine = _document.Project.CreateTimingEngine();
-            LoopStartFrameText.Text = $"{engine.TickToFrame(Math.Min(stTick, etTick)):0.#}F";
-            LoopEndFrameText.Text = $"{engine.TickToFrame(Math.Max(stTick, etTick)):0.#}F";
+            LoopStartFrameText.Text = $"{ToDisplayFrame(engine.TickToFrame(Math.Min(stTick, etTick))):0.#}F";
+            LoopEndFrameText.Text = $"{ToDisplayFrame(engine.TickToFrame(Math.Max(stTick, etTick))):0.#}F";
             LoopPlaybackToggle.IsEnabled = true;
         }
         else
@@ -4793,11 +4993,30 @@ public partial class MainWindow : Window
                     ColorHistoryPicker.Record(_appSettings, box.Text);
                     _appSettings.Save(AppPaths.SettingsFilePath);
                 };
-                var historyBtn = new Button { Content = "履歴", Width = 40, Margin = new Thickness(4, 0, 0, 0) };
-                historyBtn.Click += (_, _) => ColorHistoryPicker.Show(_appSettings, historyBtn, hex => box.Text = hex);
+                // 2026-08-08: 「履歴」ボタンを統合カラーピッカー(ColorPickerPopup)呼び出しへ置き換え、
+                // 隣に「☆登録」ボタンを新設(理由・OKフィードバックの経緯はAddColorFieldのコメント参照)。
+                var pickerBtn = new Button { Content = "色", Width = 32, Margin = new Thickness(4, 0, 0, 0) };
+                pickerBtn.Click += (_, _) => ColorPickerPopup.Show(_appSettings, pickerBtn, box.Text, hex => box.Text = hex);
+                var favBtn = new Button { Content = "☆登録", Width = 44, Margin = new Thickness(4, 0, 0, 0) };
+                var favOkText = new TextBlock
+                {
+                    Text = "OK", Foreground = Brushes.Green, FontWeight = FontWeights.Bold,
+                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0),
+                    Visibility = Visibility.Collapsed,
+                };
+                favBtn.Click += (_, _) =>
+                {
+                    if (FavoriteColorPicker.Register(_appSettings, box.Text))
+                    {
+                        _appSettings.Save(AppPaths.SettingsFilePath);
+                        TransientOkFeedback.Show(favOkText);
+                    }
+                };
 
                 row.Children.Add(box);
-                row.Children.Add(historyBtn);
+                row.Children.Add(pickerBtn);
+                row.Children.Add(favBtn);
+                row.Children.Add(favOkText);
             }
 
             if (!solid && _nColorColors.Count > 1)
@@ -4986,20 +5205,69 @@ public partial class MainWindow : Window
         }
     }
 
-    private void NColorHitHistoryButton_Click(object sender, RoutedEventArgs e) =>
-        ColorHistoryPicker.Show(_appSettings, NColorHitHistoryButton, hex => { NColorHitColorBox.Text = hex; });
+    // 2026-08-08: 「履歴」ボタンを統合カラーピッカー(ColorPickerPopup)呼び出しへ置き換え、
+    // 各色欄に「☆登録」ボタン(現在値をお気に入りへ追加)を新設した(進捗まとめ5-2、お気に入りの色機能)。
+    // 押しても見た目の変化が分かりづらいとの指摘を受け、登録成功時に「OK」を2秒間表示する
+    // (TransientOkFeedback)。
+    private void NColorHitPickerButton_Click(object sender, RoutedEventArgs e) =>
+        ColorPickerPopup.Show(_appSettings, NColorHitPickerButton, NColorHitColorBox.Text, hex => { NColorHitColorBox.Text = hex; });
 
-    private void NColorHitBarHistoryButton_Click(object sender, RoutedEventArgs e) =>
-        ColorHistoryPicker.Show(_appSettings, NColorHitBarHistoryButton, hex => { NColorHitBarColorBox.Text = hex; });
+    private void NColorHitFavoriteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FavoriteColorPicker.Register(_appSettings, NColorHitColorBox.Text))
+        {
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            TransientOkFeedback.Show(NColorHitFavoriteOkText);
+        }
+    }
 
-    private void NColorHitShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
-        ColorHistoryPicker.Show(_appSettings, NColorHitShadowHistoryButton, hex => { NColorHitShadowColorBox.Text = hex; });
+    private void NColorHitBarPickerButton_Click(object sender, RoutedEventArgs e) =>
+        ColorPickerPopup.Show(_appSettings, NColorHitBarPickerButton, NColorHitBarColorBox.Text, hex => { NColorHitBarColorBox.Text = hex; });
 
-    private void NColorArrowShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
-        ColorHistoryPicker.Show(_appSettings, NColorArrowShadowHistoryButton, hex => { NColorArrowShadowColorBox.Text = hex; });
+    private void NColorHitBarFavoriteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FavoriteColorPicker.Register(_appSettings, NColorHitBarColorBox.Text))
+        {
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            TransientOkFeedback.Show(NColorHitBarFavoriteOkText);
+        }
+    }
 
-    private void NColorNormalShadowHistoryButton_Click(object sender, RoutedEventArgs e) =>
-        ColorHistoryPicker.Show(_appSettings, NColorNormalShadowHistoryButton, hex => { NColorNormalShadowColorBox.Text = hex; });
+    private void NColorHitShadowPickerButton_Click(object sender, RoutedEventArgs e) =>
+        ColorPickerPopup.Show(_appSettings, NColorHitShadowPickerButton, NColorHitShadowColorBox.Text, hex => { NColorHitShadowColorBox.Text = hex; });
+
+    private void NColorHitShadowFavoriteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FavoriteColorPicker.Register(_appSettings, NColorHitShadowColorBox.Text))
+        {
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            TransientOkFeedback.Show(NColorHitShadowFavoriteOkText);
+        }
+    }
+
+    private void NColorArrowShadowPickerButton_Click(object sender, RoutedEventArgs e) =>
+        ColorPickerPopup.Show(_appSettings, NColorArrowShadowPickerButton, NColorArrowShadowColorBox.Text, hex => { NColorArrowShadowColorBox.Text = hex; });
+
+    private void NColorArrowShadowFavoriteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FavoriteColorPicker.Register(_appSettings, NColorArrowShadowColorBox.Text))
+        {
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            TransientOkFeedback.Show(NColorArrowShadowFavoriteOkText);
+        }
+    }
+
+    private void NColorNormalShadowPickerButton_Click(object sender, RoutedEventArgs e) =>
+        ColorPickerPopup.Show(_appSettings, NColorNormalShadowPickerButton, NColorNormalShadowColorBox.Text, hex => { NColorNormalShadowColorBox.Text = hex; });
+
+    private void NColorNormalShadowFavoriteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FavoriteColorPicker.Register(_appSettings, NColorNormalShadowColorBox.Text))
+        {
+            _appSettings.Save(AppPaths.SettingsFilePath);
+            TransientOkFeedback.Show(NColorNormalShadowFavoriteOkText);
+        }
+    }
 
     private void NColorHitColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorHitColorBox.Text);
     private void NColorHitBarColorBox_LostFocus(object sender, RoutedEventArgs e) => RecordNColorHistory(NColorHitBarColorBox.Text);
@@ -5250,7 +5518,7 @@ public partial class MainWindow : Window
         if (_document is null) return "-";
         var engine = _document.Project.CreateTimingEngine();
         long t = (long)Math.Round(tick);
-        double frame = engine.TickToFrame(t);
+        double frame = ToDisplayFrame(engine.TickToFrame(t));
         return $"{t}t / {frame:0.0}f / {frame / 60.0:0.00}s";
     }
 
@@ -5260,7 +5528,8 @@ public partial class MainWindow : Window
         if (_document?.CurrentTab.PlaybackStartFrame is { } f)
         {
             var engine = _document.Project.CreateTimingEngine();
-            StartFramePosText.Text = $"{(long)Math.Round(engine.FrameToTick(f))}t / {f:0.0}f / {f / 60.0:0.00}s";
+            double displayFrame = ToDisplayFrame(f);
+            StartFramePosText.Text = $"{(long)Math.Round(engine.FrameToTick(f))}t / {displayFrame:0.0}f / {displayFrame / 60.0:0.00}s";
         }
         else
         {
@@ -5304,7 +5573,7 @@ public partial class MainWindow : Window
             .Select(m =>
             {
                 var (measureIndex, _) = engine.TickToMeasurePosition(m.Tick);
-                double frame = engine.TickToFrame(m.Tick);
+                double frame = ToDisplayFrame(engine.TickToFrame(m.Tick));
                 var comment = string.IsNullOrEmpty(m.Comment) ? "(コメント無し)" : m.Comment;
                 return new MarkerListEntry(m.Tick, $"小節{measureIndex + 1} / {frame:0.0}f: {comment}");
             })
@@ -5509,6 +5778,37 @@ public partial class MainWindow : Window
         _suppressPlaybackSpeedComboEvent = false;
     }
 
+    /// <summary>「プレイテストへ反映」トグル(2026-08-08要望対応)。既定OFF=プレイテストは常に等倍(1.0倍)で
+    /// 再生し、目視テスト側の「再生速度」欄の設定に影響されない。ONの間だけ、プレイテスト開始時
+    /// (StartPlaytest)に_appSettings.PlaybackSpeedの値をそのまま渡す。</summary>
+    private void ReflectPlaybackSpeedInPlaytestToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateKeepScrollSpeedToggleEnabled(); // 2026-08-08d: 親トグルの状態が変わるたびに追従させる(_initializedガードより前に行う)
+        if (!_initialized) return;
+        _appSettings.ReflectPlaybackSpeedInPlaytest = ReflectPlaybackSpeedInPlaytestToggle.IsChecked == true;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>「スクロール速度を維持」トグル(2026-08-08c要望対応)。既定OFF。ONの間、プレイテストの
+    /// スクロール速度計算に(1/再生速度)を追加で乗算し、再生速度を変えても見た目のスクロール速度が
+    /// 変わらないようにする(PlaytestWindowコンストラクタ参照)。</summary>
+    private void KeepScrollSpeedInPlaytestToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized) return;
+        _appSettings.KeepScrollSpeedInPlaytest = KeepScrollSpeedInPlaytestToggle.IsChecked == true;
+        _appSettings.Save(AppPaths.SettingsFilePath);
+    }
+
+    /// <summary>2026-08-08d要望対応: 「スクロール速度を維持」は「プレイテストへ反映」がONの間しか
+    /// 意味を持たない(OFFの間はプレイテストの再生速度が常に1.0倍固定のため、(1/再生速度)=1倍で
+    /// 何の効果も出ない)。効果の無いトグルを押せてしまうと紛らわしいため、UI上も「プレイテストへ反映」が
+    /// ONの時だけ操作可能にする(OFFの間はグレーアウト。チェック状態自体は保持し、再度ONにした際に
+    /// 元の設定へ戻るようにする)。</summary>
+    private void UpdateKeepScrollSpeedToggleEnabled()
+    {
+        KeepScrollSpeedInPlaytestToggle.IsEnabled = ReflectPlaybackSpeedInPlaytestToggle.IsChecked == true;
+    }
+
     /// <summary>音量(0〜100%)を確定させる共通処理(2026-07-26)。スライダー・数値入力欄どちらの
     /// 変更でも呼ばれ、もう片方への反映・MediaPlayer.Volumeへの適用・設定保存をまとめて行う。</summary>
     private void ApplyVolumePercent(double percent)
@@ -5563,12 +5863,13 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>タイトルバー表示: 「プロジェクト名 (*) - ダンおに譜面エディタ」(2026-07-19b、未解決事項§2-6)</summary>
+    /// <summary>タイトルバー表示: 「プロジェクト名 (*) - IDE (ITTN-DANONI-EDITOR)」(2026-07-19b、
+    /// 未解決事項§2-6。2026-08-08: タイトルバー表記を「IDE (ITTN-DANONI-EDITOR)」へ変更)。</summary>
     private void UpdateWindowTitle()
     {
         var name = _document?.Project.ProjectName ?? "";
         var star = _document?.IsModified == true ? " *" : "";
-        Title = string.IsNullOrEmpty(name) ? "ダンおに譜面エディタ" : $"{name}{star} - ダンおに譜面エディタ";
+        Title = string.IsNullOrEmpty(name) ? "IDE (ITTN-DANONI-EDITOR)" : $"{name}{star} - IDE (ITTN-DANONI-EDITOR)";
     }
 
     /// <summary>未保存の変更がある場合の終了確認(未解決事項§2-6、環境設定でON/OFF可、2026-07-19b)</summary>
@@ -5636,7 +5937,9 @@ public partial class MainWindow : Window
             _appSettings.PlaytestAutoPlay,
             _appSettings.PlaytestQuitKeyDelete,
             _appSettings.PlaytestQuitKeyEscape,
-            _appSettings.PlaybackSpeed,
+            // 2026-08-08要望対応: 「プレイテストへ反映」トグルがOFFの間は、目視テスト側の再生速度設定に
+            // 関わらずプレイテストは常に等倍(1.0倍)で再生する。ONの時のみ実際の設定値を渡す。
+            _appSettings.ReflectPlaybackSpeedInPlaytest ? _appSettings.PlaybackSpeed : 1.0,
             _appSettings.PlaybackVolume, // 2026-07-21: UIの音量設定をプレイテストにも反映
             _appSettings) // 2026-07-26: ウィンドウ幅設定(環境設定「プレイテスト」)の解決に使う
         { Owner = this };

@@ -87,7 +87,13 @@ public sealed class TimingEngine
                 return starts[i] + (double)span / TicksPerBeat * (FramesPerMinute / _bpmEvents[i].Bpm);
             }
         }
-        return starts[0];
+        // 2026-08-08要望対応: tick<0(先頭BPMイベントより手前)は従来starts[0]を無条件に返しており、
+        // どれだけ負のtickであっても同一フレームに潰れてしまっていた(speed/boostをtick<0へ配置しても
+        // dos.txt上で正しい負のフレームにならない不具合)。FrameToTick(このメソッドの逆変換)は元々
+        // 先頭区間を負方向へ正しく線形外挿する実装になっているため、それと対称になるよう
+        // 先頭区間(tick0)の式をspanが負のまま適用する形にする。
+        long span0 = tick - _bpmEvents[0].Tick;
+        return starts[0] + (double)span0 / TicksPerBeat * (FramesPerMinute / _bpmEvents[0].Bpm);
     }
 
     /// <summary>絶対フレーム→拍位置(tick)。TickToFrameの逆変換(端数は実数tickで返す)。

@@ -207,6 +207,20 @@ public sealed class AppSettings
     /// (ボタン・チェックボックス・ショートカットキーは用意しない、2026-07-22ユーザー確定仕様)。</summary>
     public bool ChartViewReverse { get; set; } = false;
 
+    /// <summary>レーンラベルヘッダー(speed/boost/BPM等の見出しバー)の表示位置(2026-08-08要望対応)。
+    /// 従来はChartCanvas上に「常に最前面」でオーバーレイ描画しており、スクロールでその位置まで来た
+    /// オブジェクトがラベルの下へ完全に隠れて操作できなくなる不具合があったため、ScrollViewer外の
+    /// 専用領域(LaneHeaderBar)へ分離した。ChartViewReverse(進行方向の反転)とは独立した設定。
+    /// "top"(既定)=常に上部固定、"bottom"=常に下部固定、"hidden"=非表示。</summary>
+    public string LaneLabelHeaderPosition { get; set; } = "top";
+
+    /// <summary>2026-08-08要望対応: フレーム数の各種表示(上部パネル・右パネルのオブジェクトFrame欄・
+    /// マーカー一覧・譜面ビュー上のフレームラベル等)に、右パネルBlankFrameの値を加算した値で表示するか。
+    /// 既定ON。dos.txtエクスポート値(内部フレーム+blankFrame)と表示上の数値を一致させ、
+    /// 「マイナスフレームに置いたはずのオブジェクトが別のフレーム値で出力される」といった
+    /// blankFrame起因の勘違いを予防する目的。</summary>
+    public bool ShowFrameWithBlankFrame { get; set; } = true;
+
     // =====================================================================
     // 目視テスト: 自動でスタート位置(再生開始ライン)へ戻る機能(2026-07-29要望対応、既定OFF)。
     // 再生開始ラインから指定した小節数/秒数が経過すると、自動的に再生開始ラインの位置へ戻る
@@ -259,6 +273,18 @@ public sealed class AppSettings
     /// <summary>再生速度(目視テスト・プレイテスト共通、2026-07-23)。0.1〜2.0、0.1刻み。
     /// MediaPlayer.SpeedRatioへそのまま渡す(ピッチ補正は行わない)。</summary>
     public double PlaybackSpeed { get; set; } = 1.0;
+
+    /// <summary>2026-08-08要望対応: 「再生速度」欄の設定をプレイテストの再生倍率にも反映するかどうか。
+    /// 既定false(OFF)=プレイテストは常に等倍(1.0倍)で再生し、目視テスト側の再生速度設定に影響されない。
+    /// true(ON)の場合のみ、プレイテスト開始時にPlaybackSpeedの値をそのまま渡す(MainWindow.StartPlaytest参照)。</summary>
+    public bool ReflectPlaybackSpeedInPlaytest { get; set; } = false;
+
+    /// <summary>2026-08-08c要望対応: 「ノートのスクロール速度だけは再生速度に関わらず一定にしたい」との
+    /// 要望対応。既定false(OFF)。true(ON)の場合、プレイテストのスクロール速度計算(_baseScrollSpeed)に
+    /// (1/再生速度)を追加で乗算し、再生速度を変えても見た目のスクロール速度が変わらないようにする
+    /// (PlaytestWindowコンストラクタ参照)。ReflectPlaybackSpeedInPlaytestがOFFの間は再生速度自体が
+    /// 常に1.0倍のため、この設定の値は実質的に影響しない。</summary>
+    public bool KeepScrollSpeedInPlaytest { get; set; } = false;
 
     /// <summary>音楽再生時の音量(2026-07-26)。0.0〜1.0(MediaPlayer.Volumeへそのまま渡す)。
     /// 上部パネルのスライダー+数値入力欄(0〜100%表示)で変更する。</summary>
@@ -446,6 +472,16 @@ public sealed class AppSettings
     /// <summary>色コード使用履歴(新しい順)</summary>
     public List<string> ColorHistory { get; set; } = [];
 
+    // =====================================================================
+    // お気に入りの色(2026-08-08新設)
+    // ColorHistoryと異なり自動記録・自動削除は行わない。色欄の「☆登録」ボタン(FavoriteColorPicker.
+    // Register)からユーザーが明示的に追加し、環境設定「カラーピッカー」カテゴリの一覧から明示的に
+    // 削除する運用のため、上限件数は設けない(ユーザー確定仕様)。
+    // =====================================================================
+
+    /// <summary>お気に入りの色(登録順)</summary>
+    public List<string> FavoriteColors { get; set; } = [];
+
     // 2026-07-26: レーン入替マクロ(仕様書11章)は settings.json ではなく独立した、
     // キー種ごとの s-macro_キー種.json(同じ./settingsフォルダ内)で管理する(2026-07-26g)。
     // LaneSwapMacroFile.LoadAll/SaveAll参照。
@@ -593,6 +629,7 @@ public sealed class AppSettings
     {
         var c = (AppSettings)MemberwiseClone();
         c.ColorHistory = [.. ColorHistory];
+        c.FavoriteColors = [.. FavoriteColors];
         c.RecentFiles = [.. RecentFiles];
         c.KeyMacros = [.. KeyMacros.Select(m => new KeyMacroDefinition
         {

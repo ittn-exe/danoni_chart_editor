@@ -62,6 +62,14 @@ internal sealed class TemplateEditorWindow : Window
     private bool _suppressPatternComboEvent;
 
     private readonly TabControl _laneTabs = new();
+    // 2026-08-08要望対応: レーンタブのD&D並び替えを「離した場所と入替え」から「離した位置(左右どちらの
+    // 半分か)に挿入」+挿入先を示す縦線オーバーレイへ変更(MainWindow.xaml.csの難易度タブ入替と同じ方式)。
+    private readonly Border _laneTabsInsertIndicator = new()
+    {
+        Width = 2, Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x44, 0x44)),
+        HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Stretch,
+        Visibility = Visibility.Collapsed, IsHitTestVisible = false,
+    };
     private readonly PreviewStripElement _previewStrip;
     private readonly StackPanel _fujiLaneNumStrip = new() { Orientation = Orientation.Horizontal };
     private readonly TextBlock _error = new() { Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
@@ -119,7 +127,8 @@ internal sealed class TemplateEditorWindow : Window
         _laneTabs.AllowDrop = true;
         _laneTabs.PreviewMouseLeftButtonDown += LaneTabs_PreviewMouseLeftButtonDown;
         _laneTabs.PreviewMouseMove += LaneTabs_PreviewMouseMove;
-        _laneTabs.PreviewDragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
+        _laneTabs.PreviewDragOver += LaneTabs_PreviewDragOver;
+        _laneTabs.DragLeave += (_, _) => HideLaneTabsInsertIndicator();
         _laneTabs.Drop += LaneTabs_Drop;
         _laneTabs.SelectionChanged += (_, _) => _removeLaneButton.IsEnabled = _laneTabs.SelectedItem is not null;
 
@@ -230,7 +239,10 @@ internal sealed class TemplateEditorWindow : Window
         laneButtonsPanel.Children.Add(_removeLaneButton);
         DockPanel.SetDock(laneButtonsPanel, Dock.Top);
         centerPanel.Children.Add(laneButtonsPanel);
-        centerPanel.Children.Add(_laneTabs);
+        var laneTabsHost = new Grid();
+        laneTabsHost.Children.Add(_laneTabs);
+        laneTabsHost.Children.Add(_laneTabsInsertIndicator);
+        centerPanel.Children.Add(laneTabsHost);
         root.Children.Add(centerPanel);
 
         Content = root;
@@ -738,16 +750,83 @@ internal sealed class TemplateEditorWindow : Window
         int from = _tabDragSourceIndex;
         _tabDragSourceIndex = -1;
         DragDrop.DoDragDrop(_laneTabs, from, DragDropEffects.Move);
+        // DoDragDropはドラッグ操作が終わるまで戻らないため、終了理由によらずここで確実にインジケータを消す
+        // (Drop/DragLeaveの呼び忘れ経路をカバーする保険、MainWindowのタブ入替と同じ考え方)。
+        HideLaneTabsInsertIndicator();
     }
 
+    /// <summary>マウス位置(_laneTabs基準の座標)から「挿入先index」(0～Items.Count、Countなら末尾へ挿入)を
+    /// 判定する(2026-08-08要望対応、MainWindow.xaml.csのComputeTabInsertIndexと同じ方式)。</summary>
+    private int ComputeLaneTabInsertIndex(Point posOnTabControl, DependencyObject? hitSource)
+    {
+        int count = _laneTabs.Items.Count;
+        if (count == 0) return 0;
+
+        var item = FindTabItemAncestor(hitSource);
+        if (item is not null)
+        {
+            int idx = _laneTabs.ItemContainerGenerator.IndexFromContainer(item);
+            if (idx < 0) return count;
+            double itemLeft = item.TranslatePoint(new Point(0, 0), _laneTabs).X;
+            double midX = itemLeft + item.ActualWidth / 2.0;
+            return posOnTabControl.X < midX ? idx : idx + 1;
+        }
+
+        // TabItemそのものには乗っていない(タブ行の余白部分)。先頭・末尾タブとの位置関係で判定する。
+        if (_laneTabs.ItemContainerGenerator.ContainerFromIndex(0) is TabItem first &&
+            posOnTabControl.X < first.TranslatePoint(new Point(0, 0), _laneTabs).X)
+            return 0;
+        return count;
+    }
+
+    private void ShowLaneTabsInsertIndicator(int insertIndex)
+    {
+        int count = _laneTabs.Items.Count;
+        double x;
+        if (count == 0) { HideLaneTabsInsertIndicator(); return; }
+        if (insertIndex <= 0)
+            x = _laneTabs.ItemContainerGenerator.ContainerFromIndex(0) is TabItem first
+                ? first.TranslatePoint(new Point(0, 0), _laneTabs).X : 0;
+        else if (insertIndex >= count)
+            x = _laneTabs.ItemContainerGenerator.ContainerFromIndex(count - 1) is TabItem last
+                ? last.TranslatePoint(new Point(0, 0), _laneTabs).X + last.ActualWidth : 0;
+        else
+            x = _laneTabs.ItemContainerGenerator.ContainerFromIndex(insertIndex) is TabItem mid
+                ? mid.TranslatePoint(new Point(0, 0), _laneTabs).X : 0;
+
+        _laneTabsInsertIndicator.Margin = new Thickness(x - _laneTabsInsertIndicator.Width / 2.0, 0, 0, 0);
+        _laneTabsInsertIndicator.Visibility = Visibility.Visible;
+    }
+
+    private void HideLaneTabsInsertIndicator() => _laneTabsInsertIndicator.Visibility = Visibility.Collapsed;
+
+    private void LaneTabs_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(int)))
+        {
+            e.Effects = DragDropEffects.None;
+            HideLaneTabsInsertIndicator();
+            e.Handled = true;
+            return;
+        }
+        e.Effects = DragDropEffects.Move;
+        int insertIndex = ComputeLaneTabInsertIndex(e.GetPosition(_laneTabs), e.OriginalSource as DependencyObject);
+        ShowLaneTabsInsertIndicator(insertIndex);
+        e.Handled = true;
+    }
+
+    /// <summary>2026-08-08要望対応: 「離した場所のタブと入替え」ではなく「離した位置(カーソルがタブの
+    /// 左右どちらの半分にあるか)に挿入」する(MainWindowの難易度タブ入替と同じ方式)。</summary>
     private void LaneTabs_Drop(object sender, DragEventArgs e)
     {
+        HideLaneTabsInsertIndicator();
         if (!e.Data.GetDataPresent(typeof(int))) return;
         int from = (int)e.Data.GetData(typeof(int));
-        var item = FindTabItemAncestor(e.OriginalSource as DependencyObject);
-        if (item is null) return;
-        int to = _laneTabs.Items.IndexOf(item);
-        if (from < 0 || to < 0 || from >= _laneTabs.Items.Count || from == to) return;
+        if (from < 0 || from >= _laneTabs.Items.Count) return;
+
+        int rawTarget = ComputeLaneTabInsertIndex(e.GetPosition(_laneTabs), e.OriginalSource as DependencyObject);
+        int to = rawTarget > from ? rawTarget - 1 : rawTarget; // fromを取り除いた後のインデックスへ変換
+        if (to == from) return;
 
         var moving = _laneTabs.Items[from];
         _laneTabs.Items.RemoveAt(from);

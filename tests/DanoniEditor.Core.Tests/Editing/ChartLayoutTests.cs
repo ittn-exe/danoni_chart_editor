@@ -187,4 +187,39 @@ public class ChartLayoutTests
             col.X, layout.TickToY(300 * T), col.X + col.Width, layout.TickToY(-10 * T)).ToList();
         Assert.Contains(refs, r => r.Kind == ObjectKind.Bpm && r.Tick == 96 * T);
     }
+
+    // =====================================================================
+    // SnapService.Snap(2026-08-08新設の回帰テスト): allowNegative引数(マイナスフレームへの
+    // オブジェクト配置機能、ChartProject.AllowNegativeFramePlacement)。
+    // =====================================================================
+
+    [Fact]
+    public void Snap_AllowNegativeFalse_Default_FloorsNegativeTickToZero()
+    {
+        var snap = new SnapService { Division = 16 }; // GridTicks = 420
+        Assert.Equal(0, snap.Snap(-1000));
+        Assert.Equal(0, snap.Snap(-1000, allowNegative: false));
+    }
+
+    [Fact]
+    public void Snap_AllowNegativeTrue_RoundsToNearestGridTick_WithoutFlooring()
+    {
+        var snap = new SnapService { Division = 16 }; // GridTicks = 4*1680/16 = 420
+        // -1000は-840(-2グリッド)と-1260(-3グリッド)の中間より-840寄り(-1000/420≈-2.38→四捨五入で-2)
+        Assert.Equal(-840, snap.Snap(-1000, allowNegative: true));
+    }
+
+    [Fact]
+    public void Snap_AllowNegativeTrue_SnapDisabled_RoundsWithoutFlooring()
+    {
+        var snap = new SnapService { Enabled = false };
+        Assert.Equal(-1000, snap.Snap(-1000, allowNegative: true));
+    }
+
+    [Fact]
+    public void Snap_PositiveTick_UnaffectedByAllowNegative()
+    {
+        var snap = new SnapService { Division = 16 };
+        Assert.Equal(snap.Snap(500), snap.Snap(500, allowNegative: true));
+    }
 }

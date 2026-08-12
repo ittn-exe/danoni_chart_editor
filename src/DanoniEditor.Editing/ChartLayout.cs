@@ -42,7 +42,10 @@ public sealed class ChartLayout
     // 2026-07-26: 「0小節目頭を画面中央までスクロールできるようにしたい」との要望対応で24→400へ拡大。
     // tick0の描画位置(RawTickToY(0)=TopMargin)がそのままスクロール可能範囲の先頭側の余白にもなるため、
     // ここを広げるだけで先頭を画面中央付近まで持ってこられるようになる(一般的なウィンドウ高さを想定した値)。
-    public const double TopMargin = 400;
+    // 2026-08-08要望対応: 「マイナスフレームへのオブジェクト配置」機能でtick<0領域に実際に
+    // ノート・speed/boost等を置いて作業できるようにするため、400→1000へさらに拡大した
+    // (tick<0はこの余白の範囲内でのみスクロール・描画・配置が可能なため、広いほど作業できる範囲が増える)。
+    public const double TopMargin = 1000;
     public const double BaseNoteSize = 34;
 
     /// <summary>1tickあたりのピクセル数(Shift+スクロールで可変、仕様書4.3)</summary>
@@ -308,9 +311,13 @@ public sealed class SnapService
 
     public long GridTicks => 4L * TimingEngine.TicksPerBeat / Division; // 1小節(4拍)をN分割
 
-    public long Snap(double tick)
+    /// <summary>allowNegative(2026-08-08要望対応、既定false): trueの間はtick&lt;0を0へ切り上げない
+    /// (「マイナスフレームへのオブジェクト配置」機能用)。既存の呼び出し箇所は既定値のままなので
+    /// 挙動は変わらない。SmartToolController.SnappedTickAtがChartProject.AllowNegativeFramePlacement
+    /// の状態に応じてこの引数を渡す。</summary>
+    public long Snap(double tick, bool allowNegative = false)
     {
-        if (tick < 0) tick = 0;
+        if (!allowNegative && tick < 0) tick = 0;
         if (!Enabled) return (long)Math.Round(tick);
         long g = GridTicks;
         return (long)Math.Round(tick / g) * g;
