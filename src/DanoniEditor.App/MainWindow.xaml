@@ -631,7 +631,13 @@
                          オブジェクトがラベルの下に隠れてしまう不具合があった。表示位置(上部/下部/非表示)は
                          環境設定「表示」で選べる(ApplyLaneLabelHeaderPosition参照)。RowDefinitionの高さは
                          そちらで動的に切り替える(既定は上部固定=Row0がAuto、Row2が0)。 -->
-                    <Grid>
+                    <!-- 2026-08-09要望対応: ChartCanvasの実描画幅(層構成上の列合計、Note数やWordレーン有無で
+                         決まる)がペインの表示幅より狭い場合、BPMレーンより右の余白部分はChartCanvas/
+                         ScrollViewerどちらの描画範囲にも含まれず、既定(背景未設定=ヒットテスト対象外)の
+                         ままだとクリックしても奥のGridまで貫通してどこにもフォーカスが移らなかった
+                         (レーンラベルヘッダーと同種の「取りこぼし領域」)。Background="Transparent"で
+                         このGrid自体をヒットテスト可能にした上で、PreviewMouseDownでCanvasへ委譲する。 -->
+                    <Grid Background="Transparent" PreviewMouseDown="ChartPane1HostGrid_PreviewMouseDown">
                         <Grid.RowDefinitions>
                             <RowDefinition x:Name="ChartPane1HeaderTopRow" Height="Auto"/>
                             <RowDefinition Height="*"/>
@@ -651,7 +657,9 @@
                               VerticalAlignment="Stretch" Background="#CCCCCC" ResizeBehavior="PreviousAndNext"
                               Cursor="SizeWE" Visibility="Collapsed" ToolTip="ドラッグで分割の幅を調整"/>
                 <Border x:Name="ChartPane2Border" Grid.Column="3" Visibility="Collapsed" BorderThickness="0" BorderBrush="Transparent">
-                    <Grid>
+                    <!-- 2026-08-09要望対応: ChartPane1側と同じ「グリッド外の余白でフォーカスが取りこぼされる」
+                         不具合の対策(詳細はChartPane1側のコメント参照)。 -->
+                    <Grid Background="Transparent" PreviewMouseDown="ChartPane2HostGrid_PreviewMouseDown">
                         <Grid.RowDefinitions>
                             <RowDefinition x:Name="ChartPane2HeaderTopRow" Height="Auto"/>
                             <RowDefinition Height="*"/>

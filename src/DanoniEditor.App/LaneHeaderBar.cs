@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace DanoniEditor.App;
@@ -29,6 +30,20 @@ public sealed class LaneHeaderBar : FrameworkElement
         if (_horizontalOffset == offset) return;
         _horizontalOffset = offset;
         InvalidateVisual();
+    }
+
+    /// <summary>2026-08-09要望対応: 「右パネルの入力欄で編集後、譜面ビュー内のグリッド外をクリックしても
+    /// フォーカスが戻らずBackSpace等のショートカットが効かない」不具合の修正。本クラスは
+    /// ScrollViewer外の専用領域(譜面ビュー上部/下部の見出しバー)で、Focusable=falseかつ独自の
+    /// マウス処理を何も持たないため、ここをクリックしてもWPFの既定動作(フォーカス可能要素への
+    /// 自動フォーカス移動)が働かず、右パネルのTextBoxにフォーカスが残ったままになっていた
+    /// (MainWindow_PreviewKeyDownのtextInputFocused判定に引っかかり、ClearPlaybackStartLine等の
+    /// ショートカットが無視される)。ここも「譜面ビューの一部」としてクリックを扱い、対になる
+    /// ChartCanvasへ明示的にフォーカスを委譲する。</summary>
+    protected override void OnMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseDown(e);
+        TargetCanvas?.Focus();
     }
 
     protected override Size MeasureOverride(Size availableSize)

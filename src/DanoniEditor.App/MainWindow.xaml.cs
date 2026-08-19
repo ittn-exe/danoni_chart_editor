@@ -184,6 +184,22 @@ public partial class MainWindow : Window
         Canvas.HeaderBar = LaneHeaderBar1;
         LaneHeaderBar2.TargetCanvas = Canvas2;
         Canvas2.HeaderBar = LaneHeaderBar2;
+        // 2026-08-09要望対応: 難易度タブ/プロジェクトタブが増えた際、標準TabPanelの折り返しで
+        // 2行目以降が高さ固定のDockPanel(Height=28)内に隠れてしまう不具合の対策。折り返しを許さず、
+        // タブ数に応じて各タブの幅を動的に縮小し常に1行へ収める(AdjustTabHeaderWidths参照)。
+        // タブ数変化(ItemContainerGenerator.StatusChanged)・幅変化(SizeChanged)の両方で再計算する。
+        ProjectTabControl.SizeChanged += (_, _) => AdjustTabHeaderWidths(ProjectTabControl);
+        ProjectTabControl.ItemContainerGenerator.StatusChanged += (_, _) =>
+        {
+            if (ProjectTabControl.ItemContainerGenerator.Status == GeneratorStatus.ContainersGenerated)
+                AdjustTabHeaderWidths(ProjectTabControl);
+        };
+        DifficultyTabControl.SizeChanged += (_, _) => AdjustTabHeaderWidths(DifficultyTabControl);
+        DifficultyTabControl.ItemContainerGenerator.StatusChanged += (_, _) =>
+        {
+            if (DifficultyTabControl.ItemContainerGenerator.Status == GeneratorStatus.ContainersGenerated)
+                AdjustTabHeaderWidths(DifficultyTabControl);
+        };
         _templates = preloadedTemplates ?? new TemplateRepository(FindTemplateDir());
         _macros = LaneSwapMacroFile.LoadAll(AppPaths.SettingsDir); // 2026-07-26g: キー種ごとのs-macro_*.jsonへ分割(旧swap_macro.jsonは自動移行)
         _pluginManager = new Plugins.PluginManager(() => _document); // 2026-07-26: プラグイン対応の土台
@@ -1478,6 +1494,34 @@ public partial class MainWindow : Window
     /// <summary>プロジェクトタブの表示ラベル(未保存マーカー"*")をDocument.Changedのたびに更新する。
     /// ProjectSession.TabLabelはDifficultyTab等と同じくINotifyPropertyChanged非対応のため明示リフレッシュ。</summary>
     private void RefreshProjectTabBarLabelOnly() => ProjectTabControl.Items.Refresh();
+
+    /// <summary>2026-08-09要望対応: 難易度タブ/プロジェクトタブを常に1行へ収める。標準TabPanelは
+    /// 幅が足りないと2行目以降へ折り返すが、ヘッダー行の高さが固定(DockPanel Height=28)のため
+    /// 2行目が見えなくなってしまう不具合があった。折り返しを起こさせないよう、タブ数と使える幅から
+    /// 1タブあたりの幅を計算し、全TabItemへ明示的に設定する(タブが少ない間は自然な見た目を保つよう
+    /// 上限MaxTabWidthも設ける)。TabItemのコンテナはItemsSource差し替え直後にはまだ生成されていない
+    /// ことがあるため、呼び出し側はItemContainerGenerator.StatusChanged(ContainersGenerated)と
+    /// SizeChangedの両方から呼ぶ(タブ数変化・ヘッダー幅変化のどちらにも追随するため)。</summary>
+    private const double MaxTabHeaderWidth = 150;
+
+    private static void AdjustTabHeaderWidths(TabControl tabControl)
+    {
+        int count = tabControl.Items.Count;
+        if (count == 0) return;
+        double available = tabControl.ActualWidth;
+        if (available <= 0) return; // レイアウト確定前。後続のSizeChanged/StatusChangedで再計算される
+
+        // タブ間の枠線・余白ぶんの安全マージンを差し引いた上で均等割りし、既定の最大幅(MaxTabHeaderWidth)
+        // でも頭打ちにする(タブが少ない間は不必要に幅いっぱいへ間延びさせない)。
+        double perTab = Math.Max(1, Math.Floor((available - 8) / count) - 4);
+        double width = Math.Min(MaxTabHeaderWidth, perTab);
+
+        for (int i = 0; i < count; i++)
+        {
+            if (tabControl.ItemContainerGenerator.ContainerFromIndex(i) is TabItem item)
+                item.Width = width;
+        }
+    }
 
     // =====================================================================
     // マルチプロジェクトタブ(仕様書TBD#10、2026-07-20)
@@ -3125,8 +3169,17 @@ public partial class MainWindow : Window
             ObjectNoSelectionText.Visibility = Visibility.Visible;
             ObjectMultiSelectText.Visibility = Visibility.Collapsed;
             ObjectDetailPanel.Visibility = Visibility.Collapsed;
+            // 2026-08-09要望対応: ③→①への自動復帰も、下の①→③方向(2026-08-01対応)と同じくWPF標準の
+            // タブ切替に伴う自動フォーカス移動(新しく表示されたタブの先頭フォーカス可能コントロールへ
+            // 自動的にフォーカスが移ってしまう)の対象だが、従来はこちらの方向にだけ対策が漏れていた。
+            // グリッドをクリックして選択解除すると、直後のこのタブ自動復帰でフォーカスが①タブのTextBox等へ
+            // 奪われ、ショートカットキーが効かなくなる不具合があった。実際にタブを切り替える場合のみ
+            // (=このifブロックへ入った場合のみ)Canvasへ明示的に戻す。
             if (ObjectTabPinCheck.IsChecked != true && PropertyTabControl.SelectedIndex == ObjectTabIndex)
+            {
                 PropertyTabControl.SelectedIndex = ProjectTabIndex; // 選択解除→プロジェクトタブへ自動復帰(仕様書6.4.3)
+                Keyboard.Focus(Canvas);
+            }
             return;
         }
 
@@ -3944,6 +3997,16 @@ public partial class MainWindow : Window
 
     /// <summary>右ペイン(Canvas2)用。ChartScrollViewer_PreviewMouseDown参照。</summary>
     private void ChartScrollViewer2_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas2);
+
+    /// <summary>2026-08-09要望対応: ChartCanvasの実描画幅(レーン列合計)がペインの表示幅より狭い場合、
+    /// BPMレーンより右の余白部分はChartCanvas/ScrollViewerどちらの描画範囲にも含まれず、既定のままだと
+    /// クリックしてもフォーカスがどこにも移らなかった(MainWindow.xaml側でこのGridにBackground=
+    /// "Transparent"を設定してヒットテスト可能にした上で、ここへ委譲させている)。
+    /// ChartScrollViewer_PreviewMouseDownと同じ「Canvasへ明示的にフォーカスを戻す」役割。</summary>
+    private void ChartPane1HostGrid_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas);
+
+    /// <summary>右ペイン(Canvas2)用。ChartPane1HostGrid_PreviewMouseDown参照。</summary>
+    private void ChartPane2HostGrid_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas2);
 
     /// <summary>2026-08-01要望対応: 右パネル(PropertyTabControl)のタブをマウスクリックで切り替えると、
     /// WPF標準の挙動により新しく表示されたタブ内の先頭フォーカス可能コントロール(TextBox等)へ
