@@ -70,6 +70,11 @@ public sealed class CollabSessionController : IAsyncDisposable
 
     private readonly List<ParticipantInfo> _roster = [];
 
+    /// <summary>現在の参加者一覧のスナップショット(自分自身は含まない。RosterChangedイベントと
+    /// 同じ内容)。2026-09-21: 参加者一覧パネル(5ステップ計画Step5)が、イベント発火を待たずに
+    /// 現在の状態を随時取得できるようにするため新設。</summary>
+    public IReadOnlyList<ParticipantInfo> Roster => _roster;
+
     public CollabSessionController(Dispatcher dispatcher)
     {
         _dispatcher = dispatcher;

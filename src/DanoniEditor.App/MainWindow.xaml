@@ -148,6 +148,16 @@
                 <Separator/>
                 <MenuItem x:Name="CollabDisconnectMenuItem" Header="切断(_D)" Click="CollabDisconnect_Click" IsEnabled="False"/>
             </MenuItem>
+            <!-- 2026-09-21要望対応: 右パネルのタブをフローティング→×ボタンで非表示にした後、
+                 再表示する手段がAvalonDock導入(5ステップ計画Step4)で失われていたため新設。
+                 チェック付きメニューで各タブの表示状態を切替できるようにする(項目はSubmenuOpenedの
+                 たびに、プラグインパネル動的追加分も含めて作り直す。RecentFilesMenu_SubmenuOpenedと
+                 同じ動的構築パターン)。 -->
+            <MenuItem Header="表示(_V)">
+                <MenuItem x:Name="RightPanelViewMenu" Header="右パネル(_R)" SubmenuOpened="RightPanelViewMenu_SubmenuOpened">
+                    <MenuItem Header="(読み込み中)"/>
+                </MenuItem>
+            </MenuItem>
         </Menu>
         <!-- 2026-08-02要望対応: FHD(1920x1080)環境だと上パネルが画面幅に見切れるとの指摘対応で
              「ピッチで指定...」より後ろの項目を2段目へ折り返した。行数が増えるため高さは固定値を
@@ -676,6 +686,29 @@
                                           SelectionChanged="PreviewScaleCombo_SelectionChanged"/>
                             </StackPanel>
                             <Border x:Name="PreviewHostBorder" BorderBrush="Black" BorderThickness="1" HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </xcad:LayoutAnchorable>
+                <!-- 2026-09-21: 5ステップ計画Step5(参加者一覧パネル)。CollabSessionControllerが
+                     保持する現在のロスター(自分自身+他参加者)を一覧表示する。共同編集セッション中
+                     以外は簡単な案内文のみ表示。 -->
+                <xcad:LayoutAnchorable x:Name="ParticipantsTabItem" Title="参加者一覧" CanClose="False">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="共同編集の参加者" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <TextBlock x:Name="ParticipantsNotConnectedText" Text="共同編集セッションに接続していません"
+                                       Foreground="Gray" TextWrapping="Wrap"/>
+                            <ListBox x:Name="ParticipantsListBox" Visibility="Collapsed" BorderThickness="0" Background="Transparent">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2">
+                                            <Ellipse Width="10" Height="10" Fill="{Binding ColorBrush}"
+                                                     Stroke="Gray" StrokeThickness="0.5" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </StackPanel>
                     </ScrollViewer>
                 </xcad:LayoutAnchorable>

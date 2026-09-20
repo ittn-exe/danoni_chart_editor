@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -26,6 +27,7 @@ public partial class MainWindow : Window
     /// 追従をまとめて担う。コンストラクタで一度だけ生成し、_document切替のたびにNotifyDocumentChangedを
     /// 呼んで最新状態を追従させる。</summary>
     private readonly Plugins.PluginManager _pluginManager;
+    private readonly List<LayoutAnchorable> _pluginPanelAnchorables = new(); // 2026-09-21: 表示メニューの並び順固定用(AvalonDock内部走査順に依存しないための独自追跡)
     private EditorDocument? _document;
     private SmartToolController? _controller;
     /// <summary>SKB操作モード(キーボード操作、2026-07-21)のコントローラ。ドキュメント切替のたびに
@@ -337,6 +339,7 @@ public partial class MainWindow : Window
 
         RefreshMacroList(); // 2026-07-26: レーン入替マクロ一覧(プロジェクト未オープンでも表示できる)
         RefreshLinkPanel(); // 2026-07-26: タブリンクパネルも同様に初期化する
+        RefreshParticipantsPanel(); // 2026-09-21: 参加者一覧パネル(5ステップ計画Step5)も同様に初期化する
 
         // 2026-07-26: プラグイン対応の土台。./pluginsフォルダを読み込み、パネル系プラグインは
         // 右パネルへタブとして追加、オーバーレイ系プラグインは譜面ビューへ登録する。
@@ -345,7 +348,9 @@ public partial class MainWindow : Window
         {
             try
             {
-                PropertyAnchorablePane.Children.Add(new LayoutAnchorable { Title = panelPlugin.PanelTitle, Content = panelPlugin.CreatePanel(), CanClose = false });
+                var pluginAnchorable = new LayoutAnchorable { Title = panelPlugin.PanelTitle, Content = panelPlugin.CreatePanel(), CanClose = false };
+                PropertyAnchorablePane.Children.Add(pluginAnchorable);
+                _pluginPanelAnchorables.Add(pluginAnchorable); // 2026-09-21: 表示メニューの並び順固定用
             }
             catch (Exception ex)
             {
@@ -930,6 +935,7 @@ public partial class MainWindow : Window
             collab.StartHost(_document, dlg.Port, dlg.DisplayName);
             _collab = collab;
             SetCollabMenuState(active: true);
+            RefreshParticipantsPanel();
         }
         catch (Exception ex)
         {
@@ -956,6 +962,7 @@ public partial class MainWindow : Window
             await collab.JoinAsync(_document, dlg.HostAddress, dlg.Port, dlg.DisplayName);
             _collab = collab;
             SetCollabMenuState(active: true);
+            RefreshParticipantsPanel();
         }
         catch (Exception ex)
         {
@@ -979,6 +986,8 @@ public partial class MainWindow : Window
         if (_splitViewEnabled) Canvas2.CollabSession = collab;
 
         collab.StatusChanged += text => CollabStatusText.Text = text;
+        // 2026-09-21: 参加者一覧パネル(5ステップ計画Step5)。ロスターが変化するたびに再描画する。
+        collab.RosterChanged += _ => RefreshParticipantsPanel();
         collab.RemoteEditApplied += () =>
         {
             InvalidateChartViews();
@@ -993,7 +1002,36 @@ public partial class MainWindow : Window
             SetCollabMenuState(active: false);
             CollabStatusText.Text = "共同編集: 未接続";
             InvalidateChartViews(); // 切断直後、表示済みの所有者アイコンを消すために再描画する
+            RefreshParticipantsPanel(); // 2026-09-21: 参加者一覧パネルも「未接続」表示へ戻す
         };
+    }
+
+    /// <summary>参加者一覧パネルの表示用ラッパー(2026-09-21、5ステップ計画Step5)。「表示名」+
+    /// 「識別色のブラシ」をまとめる(色はCollabHost.ResolveColorが割り当てるParticipantInfo.Colorを
+    /// そのまま使う。ノート所有者アイコンと同じ色になる)。</summary>
+    private sealed record ParticipantRow(string Label, Brush ColorBrush);
+
+    /// <summary>右パネル「参加者一覧」タブの中身を、現在のCollabSessionController.Self/Rosterから
+    /// 作り直す(2026-09-21、5ステップ計画Step5)。共同編集セッション未接続時は案内文のみ表示する。
+    /// 自分自身はRoster(自分以外の一覧)には含まれないため、Selfを別途先頭に足す。</summary>
+    private void RefreshParticipantsPanel()
+    {
+        ParticipantsListBox.Items.Clear();
+
+        if (_collab is null)
+        {
+            ParticipantsNotConnectedText.Visibility = Visibility.Visible;
+            ParticipantsListBox.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ParticipantsNotConnectedText.Visibility = Visibility.Collapsed;
+        ParticipantsListBox.Visibility = Visibility.Visible;
+
+        if (_collab.Self is { } self)
+            ParticipantsListBox.Items.Add(new ParticipantRow($"{self.DisplayName} (自分)", SafeColorBrush(self.Color)));
+        foreach (var p in _collab.Roster)
+            ParticipantsListBox.Items.Add(new ParticipantRow(p.DisplayName, SafeColorBrush(p.Color)));
     }
 
     private void SetCollabMenuState(bool active)
@@ -1062,6 +1100,7 @@ public partial class MainWindow : Window
             await collab.JoinViaRendezvousAsync(_document, dlg.HelperAddress, dlg.HelperPort, dlg.SessionCode, dlg.DisplayName);
             _collab = collab;
             SetCollabMenuState(active: true);
+            RefreshParticipantsPanel();
         }
         catch (Exception ex)
         {
@@ -4400,6 +4439,40 @@ public partial class MainWindow : Window
     private void PropertyDockingManager_ActiveContentChanged(object? sender, EventArgs e)
     {
         Dispatcher.BeginInvoke(new Action(() => Keyboard.Focus(Canvas)), DispatcherPriority.Input);
+    }
+
+    /// <summary>2026-09-21要望対応: 右パネルのタブをフローティング(切り離し)した状態で閉じる(×)と、
+    /// AvalonDockの既定挙動ではCanClose="False"のため完全には削除されず「非表示(Hidden)」状態になるが、
+    /// 再表示する手段がUI上に無かった。「表示」メニュー内の「右パネル」サブメニューを開くたびに、
+    /// 現在ドッキング中・フローティング中・非表示中を問わず全ての右パネルタブ(固定10個+プラグイン
+    /// パネル動的追加分)を洗い出してチェック付きメニュー項目を作り直す(RecentFilesMenu_SubmenuOpenedと
+    /// 同じ動的構築パターン)。チェックはIsVisibleと連動し、クリックでShow()/Hide()を切り替える。
+    /// 2026-09-21追記(並び順固定要望対応): 当初DockingManager.Layout.Descendents()/Hiddenを走査する
+    /// 実装だったが、この走査順はドッキング中・フローティング中・非表示中のどれかで変わりうるため、
+    /// 表示状態を切り替えるたびにメニューの並びが変わってしまう不具合があった。固定10タブは
+    /// XAML宣言順の配列、プラグインパネルは追加時に記録した_pluginPanelAnchorablesを使い、
+    /// AvalonDock内部の走査順に一切依存しない固定順で列挙する。</summary>
+    private void RightPanelViewMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+    {
+        RightPanelViewMenu.Items.Clear();
+
+        LayoutAnchorable[] fixedOrder =
+        {
+            ProjectPropertyPane, ColorSettingsPane, ObjectPropertyPane, OtherPropertyPane,
+            ColorEditTabItem, MacroTabItem, MarkerTabItem, LinkTabItem,
+            AnalysisTabItem, PreviewTabItem, ParticipantsTabItem,
+        };
+
+        foreach (var anchorable in fixedOrder.Concat(_pluginPanelAnchorables))
+        {
+            var item = new MenuItem { Header = anchorable.Title, IsCheckable = true, IsChecked = anchorable.IsVisible };
+            item.Click += (_, _) =>
+            {
+                if (anchorable.IsVisible) anchorable.Hide();
+                else anchorable.Show();
+            };
+            RightPanelViewMenu.Items.Add(item);
+        }
     }
 
     // =====================================================================
