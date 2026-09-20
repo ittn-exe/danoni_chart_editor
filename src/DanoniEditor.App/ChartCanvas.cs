@@ -9,6 +9,7 @@ using DanoniEditor.Core.Audio;
 using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Timing;
 using DanoniEditor.Editing;
+using DanoniEditor.App.Collab;
 using DanoniEditor.App.Plugins;
 using DanoniEditor.PluginContracts;
 
@@ -600,6 +601,12 @@ public sealed class ChartCanvas : FrameworkElement
     /// <summary>マウス操作の受け皿(仕様書6.3.1)。MainWindowがEditorDocumentと紐付けて生成する。</summary>
     public SmartToolController? Controller { get; set; }
 
+    /// <summary>共同編集セッション(2026-09-20、ノート所有者アイコン用)。非nullの間、各ノート/フリーズ
+    /// 始点の左上に置いた参加者の識別色で丸アイコンを重ね描きする(共同編集セッションが無い、または
+    /// 未追跡のセルではnullが返るため何も描かれない)。MainWindow側で共同編集の開始/切断に合わせて
+    /// 設定/クリアする(Document/Controllerと同じ、単純なCLRプロパティとしての受け渡し)。</summary>
+    public CollabSessionController? CollabSession { get; set; }
+
     /// <summary>マウスホバー中の座標(2026-07-25、カーソルライン表示用)。キャンバス外に出るとnull。</summary>
     private Point? _hoverPos;
 
@@ -629,6 +636,10 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
+        // 2026-09-07要望対応: マーカーへホバー中にポップアップが開いたままだと、ドラッグ開始直後の
+        // マウスキャプチャや後続のクリック判定に干渉し「マーカー付近でドラッグ・右クリックが
+        // 効かなくなる」不具合の原因になりうるため、新しい操作を始める前に必ず閉じておく。
+        MarkerCommentPopup.HideImmediately();
         if (StartNumberEditMode) { SnDown(e); return; } // 2026-07-18: 専用モード(通常編集無効)
         if (Controller is null) return;
         Focus();
@@ -655,6 +666,8 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseRightButtonDown(e);
+        // 2026-09-07要望対応: 左クリック側と同様、既存のマーカーホバーポップアップを閉じてから始める。
+        MarkerCommentPopup.HideImmediately();
         if (StartNumberEditMode) { e.Handled = true; return; } // モード中は右クリック編集も無効(2026-07-18)
         if (Controller is null) return;
         Focus();
@@ -668,6 +681,7 @@ public sealed class ChartCanvas : FrameworkElement
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
+        if (e.ChangedButton == MouseButton.Middle) MarkerCommentPopup.HideImmediately(); // 2026-09-07要望対応
         if (StartNumberEditMode) return; // モード中は中ボタン配置も無効(2026-07-18)
         if (e.ChangedButton != MouseButton.Middle || Controller is null) return;
         Focus();
@@ -681,13 +695,24 @@ public sealed class ChartCanvas : FrameworkElement
         base.OnMouseMove(e);
         // 2026-07-25: カーソルライン(最寄りスナップ位置の可視化)のため、ボタン押下の有無に関わらず
         // 常にホバー座標を更新して再描画する(以前はドラッグ中=IsMouseCaptured時のみ再描画していた)。
-        _hoverPos = e.GetPosition(this);
-        UpdateMarkerHoverPopup(_hoverPos.Value); // 2026-08-08要望対応: マーカーコメントのホバーポップアップ
+        // 2026-09-07修正: 座標はローカル変数posへ一度だけ取得し、以降はposを使い回す。
+        // 従来は_hoverPos(フィールド)を都度読み直していたが、UpdateMarkerHoverPopupが新規に
+        // ポップアップを開いた際、WPFがこのキャンバスへOnMouseLeaveを再入的に発火させ、そちらで
+        // _hoverPosがnullへ戻される場合があった(ポップアップがカーソル直下付近に出るため)。
+        // その結果、同じOnMouseMove内で後続の_hoverPos.Value読み出しが
+        // 「Nullable object must have a value」で例外になっていた(マーカーレーンへの新規配置時に
+        // 必ず再現する不具合)。
+        var pos = e.GetPosition(this);
+        _hoverPos = pos;
+        // 2026-09-07要望対応: ドラッグ中(マウスボタン押下中、IsMouseCaptured)は新しくポップアップを
+        // 開いたり内容を切り替えたりしない。ドラッグ経路がマーカーレーン付近を通っただけでポップアップが
+        // 開き、そのままドラッグ操作や後続のクリックへ干渉する不具合があったため。
+        if (!IsMouseCaptured) UpdateMarkerHoverPopup(pos); // 2026-08-08要望対応: マーカーコメントのホバーポップアップ
         if (IsTimeRangeDragActive) { RsMove(e); return; } // 2026-07-27: 時間範囲選択ドラッグ中
         if (StartNumberEditMode) { SnMove(e); return; }
         if (Controller is null) { InvalidateVisual(); return; }
         if (IsMouseCaptured) Controller.Move(PosOf(e.GetPosition(this)));
-        UpdateCursor(_hoverPos.Value); // 2026-08-08要望対応: 今何ができるか/しているかをカーソル形状で示す
+        UpdateCursor(pos); // 2026-08-08要望対応: 今何ができるか/しているかをカーソル形状で示す
         InvalidateVisual();
     }
 
@@ -1018,7 +1043,7 @@ public sealed class ChartCanvas : FrameworkElement
         foreach (var plugin in OverlayPlugins)
         {
             try { plugin.RenderOverlay(dc, transform, chart); }
-            catch (Exception ex) { PluginLog.Write($"{plugin.Id}: RenderOverlayで例外が発生しましたわ({ex.Message})"); }
+            catch (Exception ex) { PluginLog.Write($"{plugin.Id}: RenderOverlayで例外が発生しました({ex.Message})"); }
         }
     }
 
@@ -1351,6 +1376,20 @@ public sealed class ChartCanvas : FrameworkElement
         dc.DrawImage(CommentIcon, new Rect(cx + size, y - size, size, size));
     }
 
+    /// <summary>共同編集: ノート所有者アイコン(設計メモ6.4節、2026-09-20実装)。指定色で塗った小さな丸を
+    /// ノート(またはフリーズ始点)の左上コーナーへ重ね描きし、「誰がこのセルを置いたか」を一目で
+    /// わかるようにする。警告/即時適用/コメントの各アイコン(ノート中心から1アイコン分離れた位置に
+    /// 表示)とは違い、これはノート本体の左上コーナーぎりぎりに小さく添える(常時表示されうる情報のため、
+    /// 他のノートやアイコンと重なりにくい最小限の主張にとどめている)。白い縁取りを1pxつけて、
+    /// 背景やノート画像の色と被っても視認できるようにする。</summary>
+    private static void DrawCollabOwnerOverlay(DrawingContext dc, double cx, double y, double noteSize, string ownerColorHex)
+    {
+        var color = TryParseColor(ownerColorHex, Colors.White);
+        double radius = Math.Max(3, noteSize * 0.16);
+        var center = new Point(cx - noteSize / 2 + radius, y - noteSize / 2 + radius);
+        dc.DrawEllipse(Freeze(new SolidColorBrush(color)), new Pen(Brushes.White, 1), center, radius, radius);
+    }
+
     /// <summary>タブリンク機能(2026-07-26要望対応)。リンク中の相手タブ(非アクティブタブ)のノート・
     /// フリーズを、本体のノート描画より奥に、固定色・縮小サイズで簡易表示する。2026-07-26b要望対応:
     /// ノートは(ベクター丸ではなく)各レーンのノート画像をLinkedNoteColorで着色して表示し
@@ -1440,6 +1479,9 @@ public sealed class ChartCanvas : FrameworkElement
     {
         // 強調グリッド用ブラシ(ShowNoteImages=false時のみ使用、レンダー1回につき1個を使い回す)
         var highlightBrush = Freeze(new SolidColorBrush(HighlightLineColor));
+        // 2026-09-20: 共同編集セッション中のみ、ノート所有者アイコン(設計メモ6.4節)の問い合わせに使う
+        // タブ番号を1回だけ求めておく(CollabSessionController側のAPIがtabIndexを要求するため)。
+        int collabTabIndex = CollabSession is not null ? project.Tabs.IndexOf(tab) : -1;
 
         for (int i = 0; i < tab.Lanes.Count; i++)
         {
@@ -1573,6 +1615,13 @@ public sealed class ChartCanvas : FrameworkElement
                 // 2026-07-30要望対応: コメントお知らせフラグ(ShowIcon)ONのフリーズは始点側へアイコンを重ねる
                 if (commentIconTicks is not null && commentIconTicks.Contains(f.StartTick))
                     DrawCommentIconOverlay(dc, cx, y1, layout.NoteSize);
+                // 2026-09-20: 共同編集中、このフリーズを置いた参加者の識別色で所有者アイコンを重ねる
+                if (CollabSession is not null)
+                {
+                    var freezeOwnerColor = CollabSession.GetFreezeOwnerColor(collabTabIndex, i, f.StartTick);
+                    if (freezeOwnerColor is not null)
+                        DrawCollabOwnerOverlay(dc, cx, y1, layout.NoteSize, freezeOwnerColor);
+                }
             }
 
             foreach (var t in tab.Lanes[i].Notes)
@@ -1622,6 +1671,13 @@ public sealed class ChartCanvas : FrameworkElement
                 // 2026-07-30要望対応: コメントお知らせフラグ(ShowIcon)ONのノートはアイコンを重ねる
                 if (commentIconTicks is not null && commentIconTicks.Contains(t))
                     DrawCommentIconOverlay(dc, cx, y, layout.NoteSize);
+                // 2026-09-20: 共同編集中、このノートを置いた参加者の識別色で所有者アイコンを重ねる
+                if (CollabSession is not null)
+                {
+                    var noteOwnerColor = CollabSession.GetNoteOwnerColor(collabTabIndex, i, t);
+                    if (noteOwnerColor is not null)
+                        DrawCollabOwnerOverlay(dc, cx, y, layout.NoteSize, noteOwnerColor);
+                }
             }
         }
     }
@@ -1779,6 +1835,7 @@ public sealed class ChartCanvas : FrameworkElement
                 DrawEventTag(dc, boostCol, layout.TickToY(e.Tick), BoostBrush, e.Value.ToString("0.00"), pointLeft: true, layout.ZoomScale);
 
         var bpmCol = layout.Column(ColumnKind.Bpm);
+        DrawBpmEventLinks(dc, layout, bpmCol, project.BpmEvents, BpmBrush, tickMin, tickMax);
         foreach (var e in project.BpmEvents)
             if (e.Tick >= tickMin && e.Tick <= tickMax)
                 DrawEventTag(dc, bpmCol, layout.TickToY(e.Tick), BpmBrush, e.Bpm.ToString("0.##"), pointLeft: true, layout.ZoomScale);
@@ -1816,6 +1873,32 @@ public sealed class ChartCanvas : FrameworkElement
         double left = col.X + 5;
         double right = col.X + col.Width - 5;
         return left + (right - left) * (v / 2.0);
+    }
+
+    /// <summary>2026-08-23要望対応: BPMの「始点終点リンク(直線ランプ)」の可視化。
+    /// speed/boostのDrawValueEventLinksと異なり、BPM列は値(BPM)をX座標へマッピングする軸を
+    /// 持たない(BpmEventのタグは常に列中央に表示される、値の範囲がspeed/boostの0.0〜2.0のような
+    /// 決まった幅を持たないため)。そのため、リンク区間は列中央を通る縦の直線で表現する
+    /// (「この2点はランプでつながっている」ことだけを示す、値の大小は直線の傾きでは表現しない)。</summary>
+    private static void DrawBpmEventLinks(DrawingContext dc, ChartLayout layout, ColumnInfo col,
+        List<BpmEvent> events, Brush brush, long tickMin, long tickMax)
+    {
+        if (events.Count < 2) return;
+        var sorted = events.OrderBy(e => e.Tick).ToList();
+        var linkPen = new Pen(brush, 2.0);
+        double x = col.X + col.Width / 2;
+
+        for (int i = 0; i + 1 < sorted.Count; i++)
+        {
+            if (sorted[i].LinkGridDivision is null) continue;
+            var a = sorted[i];
+            var b = sorted[i + 1];
+            if (b.Tick < tickMin || a.Tick > tickMax) continue;
+
+            var p1 = new Point(x, layout.TickToY(a.Tick));
+            var p2 = new Point(x, layout.TickToY(b.Tick));
+            dc.DrawLine(linkPen, p1, p2);
+        }
     }
 
     /// <summary>マーカーコメントの表示方式(仕様書7.4: 全文/先頭数文字、環境設定から適用、2026-07-19b)</summary>

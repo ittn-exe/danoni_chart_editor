@@ -139,7 +139,7 @@ internal sealed class PreferencesWindow : Window
     private readonly TextBox _recentFilesLimit = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 自動保存・クラッシュ復旧(2026-07-25) ---
-    private readonly CheckBox _autoSaveEnabled = new() { Content = "自動保存を有効にする(クラッシュ復旧用、通常の保存とは別領域に保存されますわ)" };
+    private readonly CheckBox _autoSaveEnabled = new() { Content = "自動保存を有効にする(クラッシュ復旧用、通常の保存とは別領域に保存されます)" };
     private readonly TextBox _autoSaveInterval = new() { Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
 
     // --- 譜面ビューReverse(2026-07-22、環境設定のみで切替) ---
@@ -309,7 +309,7 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("ショートカットキー", section: true));
         p.Children.Add(new TextBlock
         {
-            Text = "一覧から変更したい操作をダブルクリックすると、次に押したキーがそのまま新しい割り当てになりますわ。既に他の操作へ割り当て済みのキーを選んだ場合は、警告した上で入れ替えいたします。",
+            Text = "一覧から変更したい操作をダブルクリックすると、次に押したキーがそのまま新しい割り当てになります。既に他の操作へ割り当て済みのキーを選んだ場合は、警告した上で入れ替えいたします。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         });
@@ -383,7 +383,7 @@ internal sealed class PreferencesWindow : Window
     private void BeginKeyboardShortcutCapture(KeyboardModeShortcutId id)
     {
         _capturingKeyboardShortcutId = id;
-        _keyboardShortcutCaptureStatus.Text = $"「{KeyboardModeShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してくださいまし(Escapeで取消、修飾キーは無視されます)";
+        _keyboardShortcutCaptureStatus.Text = $"「{KeyboardModeShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してください(Escapeで取消、修飾キーは無視されます)";
     }
 
     private void CancelKeyboardShortcutCapture()
@@ -395,7 +395,7 @@ internal sealed class PreferencesWindow : Window
     private void BeginShortcutCapture(ShortcutId id)
     {
         _capturingShortcutId = id;
-        _shortcutCaptureStatus.Text = $"「{ShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してくださいまし(Escapeで取消)";
+        _shortcutCaptureStatus.Text = $"「{ShortcutDefaults.All[id].DisplayName}」: 割り当てたいキーを押してください(Escapeで取消)";
     }
 
     private void CancelShortcutCapture()
@@ -433,7 +433,7 @@ internal sealed class PreferencesWindow : Window
             var conflictName = ShortcutDefaults.All[cid].DisplayName;
             var result = MessageBox.Show(
                 this,
-                $"「{newBinding.DisplayText()}」は既に「{conflictName}」に割り当てられていますわ。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{ShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
+                $"「{newBinding.DisplayText()}」は既に「{conflictName}」に割り当てられています。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{ShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
                 "ショートカットキーの衝突",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
@@ -477,7 +477,7 @@ internal sealed class PreferencesWindow : Window
             var conflictName = KeyboardModeShortcutDefaults.All[cid].DisplayName;
             var result = MessageBox.Show(
                 this,
-                $"「{key}」は既に(キーボードモード中の)「{conflictName}」に割り当てられていますわ。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{KeyboardModeShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
+                $"「{key}」は既に(キーボードモード中の)「{conflictName}」に割り当てられています。\n入れ替えてよろしいですか?(「{conflictName}」には元の「{KeyboardModeShortcutDefaults.All[id].DisplayName}」のキーを割り当てます)",
                 "ショートカットキーの衝突",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
@@ -976,16 +976,16 @@ internal sealed class PreferencesWindow : Window
         {
             if (_templateList.SelectedItem is not TemplateListEntry entry) return;
             var dir = AppPaths.FindAssetDir("template");
-            if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+            if (dir is null) { _error.Text = "templateフォルダが見つかりません"; return; }
             KeyTemplate template;
             try { template = KeyTemplate.Load(entry.Path); }
-            catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗いたしましたの: {ex.Message}"; return; }
+            catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗いたしました: {ex.Message}"; return; }
             new CustomKeyExportWindow(template, dir) { Owner = this }.ShowDialog();
         };
         _templateImportButton.Click += (_, _) =>
         {
             var dir = AppPaths.FindAssetDir("template");
-            if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+            if (dir is null) { _error.Text = "templateフォルダが見つかりません"; return; }
             var win = new CustomKeyImportWindow(dir) { Owner = this };
             if (win.ShowDialog() != true || win.SavedPath is null) return;
             RefreshTemplateList();
@@ -1021,7 +1021,7 @@ internal sealed class PreferencesWindow : Window
     private void OpenTemplateEditor(string? path, DanoniEditor.Core.Import.ImportFieldStatus? pendingIssues = null)
     {
         var dir = AppPaths.FindAssetDir("template");
-        if (dir is null) { _error.Text = "templateフォルダが見つかりませんの"; return; }
+        if (dir is null) { _error.Text = "templateフォルダが見つかりません"; return; }
         var win = new TemplateEditorWindow(dir, path, pendingIssues) { Owner = this };
         if (win.ShowDialog() != true) return;
 
@@ -1065,7 +1065,7 @@ internal sealed class PreferencesWindow : Window
         p.Children.Add(Label("キーマクロ", section: true));
         p.Children.Add(new TextBlock
         {
-            Text = "Ctrl+Shift+数字キーへ割り当てる、複数の機能を順番に実行するマクロですわ。レーン入替マクロと同じく、手順を自分で組み立てる形になっております。選べる手順は今後の要望に応じて増やしていく予定ですわ。",
+            Text = "Ctrl+Shift+数字キーへ割り当てる、複数の機能を順番に実行するマクロです。レーン入替マクロと同じく、手順を自分で組み立てる形になっております。選べる手順は今後の要望に応じて増やしていく予定です。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         });
@@ -1153,7 +1153,7 @@ internal sealed class PreferencesWindow : Window
             double value = 0;
             if (needsValue && (!double.TryParse(valueBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) || value < 0))
             {
-                _error.Text = "キーマクロの値は0以上の数値で入力してくださいませ。";
+                _error.Text = "キーマクロの値は0以上の数値で入力してください。";
                 return;
             }
             _error.Text = "";
@@ -1501,75 +1501,75 @@ internal sealed class PreferencesWindow : Window
     {
         _error.Text = "";
         if (_showImages.IsChecked != true && _showGrid.IsChecked != true)
-        { _error.Text = "ノート画像と強調グリッドの両方をOFFにはできませんの(どちらかはONにしてくださいまし)"; return false; }
+        { _error.Text = "ノート画像と強調グリッドの両方をOFFにはできません(どちらかはONにしてください)"; return false; }
         if (_ptQuitDelete.IsChecked != true && _ptQuitEscape.IsChecked != true)
-        { _error.Text = "プレイテストの中断キーは最低1つはcheckedにしてくださいまし"; return false; }
+        { _error.Text = "プレイテストの中断キーは最低1つはcheckedにしてください"; return false; }
         if (!TryNonNegativeInt(_ptStartupWaitMs.Text, out var ptWait))
-        { _error.Text = "プレイテスト起動時ウェイトは0以上の整数(ms)で入力してくださいまし"; return false; }
+        { _error.Text = "プレイテスト起動時ウェイトは0以上の整数(ms)で入力してください"; return false; }
         if (!TryPositive(_gridWidth.Text, out var gw))
-        { _error.Text = "強調グリッドの太さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "強調グリッドの太さは正の数値で入力してください"; return false; }
         if (!TryColor(_gridColor.Text))
-        { _error.Text = "強調グリッドの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "強調グリッドの色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_startLineWidth.Text, out var sw))
-        { _error.Text = "再生開始ラインの太さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "再生開始ラインの太さは正の数値で入力してください"; return false; }
         if (!TryColor(_startLineColor.Text))
-        { _error.Text = "再生開始ラインの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "再生開始ラインの色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_cursorLineWidth.Text, out var clw))
-        { _error.Text = "カーソルライン(細い線)の太さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "カーソルライン(細い線)の太さは正の数値で入力してください"; return false; }
         if (!TryColor(_cursorLineColor.Text))
-        { _error.Text = "カーソルライン(細い線)の色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "カーソルライン(細い線)の色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_cursorHighlightWidth.Text, out var chw))
-        { _error.Text = "カーソルライン(強調帯)の太さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "カーソルライン(強調帯)の太さは正の数値で入力してください"; return false; }
         if (!TryColor(_cursorHighlightColor.Text))
-        { _error.Text = "カーソルライン(強調帯)の色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "カーソルライン(強調帯)の色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_macroRangeWidth.Text, out var mrw))
-        { _error.Text = "マクロ範囲マーカーの太さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "マクロ範囲マーカーの太さは正の数値で入力してください"; return false; }
         if (!TryColor(_macroRangeColor.Text))
-        { _error.Text = "マクロ範囲マーカーの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "マクロ範囲マーカーの色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_linkedNoteSizeRatio.Text, out var lnsr))
-        { _error.Text = "タブリンク背景ノートのサイズ比率は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "タブリンク背景ノートのサイズ比率は正の数値で入力してください"; return false; }
         if (!TryColor(_linkedNoteColor.Text))
-        { _error.Text = "タブリンク背景ノートの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "タブリンク背景ノートの色は #RRGGBB 形式で入力してください"; return false; }
         if (!TryPositive(_linkedHighlightWidthRatio.Text, out var lhwr))
-        { _error.Text = "タブリンク強調表示バーの幅比率は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "タブリンク強調表示バーの幅比率は正の数値で入力してください"; return false; }
         if (!TryPositive(_linkedHighlightHeight.Text, out var lhh))
-        { _error.Text = "タブリンク強調表示バーの高さは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "タブリンク強調表示バーの高さは正の数値で入力してください"; return false; }
         if (!TryColor(_linkedHighlightColor.Text))
-        { _error.Text = "タブリンク強調表示バーの色は #RRGGBB 形式で入力してくださいまし"; return false; }
+        { _error.Text = "タブリンク強調表示バーの色は #RRGGBB 形式で入力してください"; return false; }
         if (!double.TryParse(_ptOffset.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var ofs))
-        { _error.Text = "調整オフセットは数値で入力してくださいまし"; return false; }
+        { _error.Text = "調整オフセットは数値で入力してください"; return false; }
         if (!TryPositive(_ptWidthPx.Text, out var ptWidthPx))
-        { _error.Text = "プレイテストのウィンドウ幅は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "プレイテストのウィンドウ幅は正の数値で入力してください"; return false; }
         if (!int.TryParse(_markerHeadChars.Text, out var headChars) || headChars < 1)
-        { _error.Text = "マーカー先頭表示の文字数は1以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "マーカー先頭表示の文字数は1以上の整数で入力してください"; return false; }
         if (!TryPositive(_timeInfoFontSize.Text, out var timeInfoFontSize))
-        { _error.Text = "時間情報レーンの文字サイズは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "時間情報レーンの文字サイズは正の数値で入力してください"; return false; }
         if (!TryPositive(_markerFontSize.Text, out var markerFontSize))
-        { _error.Text = "マーカーレーンの文字サイズは正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "マーカーレーンの文字サイズは正の数値で入力してください"; return false; }
         if (!int.TryParse(_defStartFrame.Text, out var defSf) || defSf < 0)
-        { _error.Text = "startFrameは0以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "startFrameは0以上の整数で入力してください"; return false; }
         if (!int.TryParse(_defBlankFrame.Text, out var defBf) || defBf < 0)
-        { _error.Text = "blankFrameは0以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "blankFrameは0以上の整数で入力してください"; return false; }
         if (!int.TryParse(_defFrzAttempt.Text, out var defFa) || defFa < 0)
-        { _error.Text = "frzAttemptは0以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "frzAttemptは0以上の整数で入力してください"; return false; }
         if (!TryPositive(_defBpm.Text, out var defBpm))
-        { _error.Text = "BPM初期値は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "BPM初期値は正の数値で入力してください"; return false; }
         if (!int.TryParse(_undoSize.Text, out var undoSize) || undoSize < 1)
-        { _error.Text = "Undo履歴件数は1以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "Undo履歴件数は1以上の整数で入力してください"; return false; }
         if (!TryPositive(_autoSaveInterval.Text, out var autoSaveInterval))
-        { _error.Text = "自動保存の間隔は正の数値(分)で入力してくださいまし"; return false; }
+        { _error.Text = "自動保存の間隔は正の数値(分)で入力してください"; return false; }
         if (!int.TryParse(_colorHistLimit.Text, out var colorLimit) || colorLimit < 1)
-        { _error.Text = "色履歴の上限件数は1以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "色履歴の上限件数は1以上の整数で入力してください"; return false; }
         if (!int.TryParse(_recentFilesLimit.Text, out var recentLimit) || recentLimit < 1)
-        { _error.Text = "最近開いたファイルの保持件数は1以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "最近開いたファイルの保持件数は1以上の整数で入力してください"; return false; }
         if (!TryPositive(_kbdThreshold.Text, out var kbdThreshold))
-        { _error.Text = "同時押し判定の閾値は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "同時押し判定の閾値は正の数値で入力してください"; return false; }
         if (_musicUrlEnabled.IsChecked == true && string.IsNullOrWhiteSpace(_musicUrlFolder.Text))
-        { _error.Text = "musicURLからの楽曲取得をONにする場合、楽曲フォルダを指定してくださいまし"; return false; }
+        { _error.Text = "musicURLからの楽曲取得をONにする場合、楽曲フォルダを指定してください"; return false; }
         if (!int.TryParse(_vtAutoReturnMeasures.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vtAutoReturnMeasures) || vtAutoReturnMeasures < 1)
-        { _error.Text = "目視テスト自動復帰の小節数は1以上の整数で入力してくださいまし"; return false; }
+        { _error.Text = "目視テスト自動復帰の小節数は1以上の整数で入力してください"; return false; }
         if (!TryPositive(_vtAutoReturnSeconds.Text, out var vtAutoReturnSeconds))
-        { _error.Text = "目視テスト自動復帰の秒数は正の数値で入力してくださいまし"; return false; }
+        { _error.Text = "目視テスト自動復帰の秒数は正の数値で入力してください"; return false; }
 
         _work.ShowNoteImages = _showImages.IsChecked == true;
         _work.ShowHighlightGrid = _showGrid.IsChecked == true;

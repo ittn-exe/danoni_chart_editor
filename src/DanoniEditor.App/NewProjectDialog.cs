@@ -66,18 +66,18 @@ internal static class NewProjectDialog
         {
             if (keyTypeCombo.SelectedItem is not string keyTypeId || string.IsNullOrWhiteSpace(keyTypeId))
             {
-                errorText.Text = "キー種を選択してくださいませ。";
+                errorText.Text = "キー種を選択してください。";
                 return;
             }
             if (string.IsNullOrWhiteSpace(nameBox.Text))
             {
-                errorText.Text = "難易度名を入力してくださいませ。";
+                errorText.Text = "難易度名を入力してください。";
                 return;
             }
             double bpm = defaultBpm;
             if (bpmBox is not null && (!double.TryParse(bpmBox.Text, out bpm) || bpm <= 0))
             {
-                errorText.Text = "BPMは正の数で入力してくださいませ。";
+                errorText.Text = "BPMは正の数で入力してください。";
                 return;
             }
             result = new Choice(keyTypeId, nameBox.Text, bpm);

@@ -6,6 +6,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using AvalonDock.Layout;
 using DanoniEditor.Core.Analysis;
 using DanoniEditor.Core.Export;
 using DanoniEditor.Core.Import;
@@ -69,6 +70,17 @@ public partial class MainWindow : Window
     private EditorDocument? _selectionSubscribedDoc;
     private string? _currentFilePath;
 
+    /// <summary>共同編集セッション(2026-09-20、共同編集 設計メモ参照)。null=未接続。
+    /// ホスト/ゲストいずれか一方のみ同時に持てる(CollabSessionController側で保証)。
+    /// 現状はアクティブなセッション(_document)固定で開始し、セッション中のプロジェクトタブ切替は
+    /// 未対応(フェーズ1 MVPの範囲外)。</summary>
+    private Collab.CollabSessionController? _collab;
+
+    /// <summary>仲介ヘルパー(2026-09-20、設計メモ4.2節、CGNAT対応)。null=待機していない。
+    /// 共同編集セッション本体(_collab)とは独立したライフサイクルを持つ
+    /// (自分がホスト/ゲストのいずれであっても、あるいはどちらでもなくても待機できる)。</summary>
+    private DanoniEditor.Collab.Rendezvous.RendezvousHelperServer? _rendezvousHelper;
+
     /// <summary>レーン入替マクロ一覧(仕様書11章、2026-07-26)。settings.jsonとは独立した、
     /// キー種ごとの"s-macro_キー種.json"(AppPaths.SettingsDir内)で管理する(2026-07-26g)。</summary>
     private readonly List<LaneSwapMacro> _macros;
@@ -115,6 +127,19 @@ public partial class MainWindow : Window
     /// <summary>Spaceキーで開始する目視テスト中か(2026-07-17f)。目視テスト中のみ
     /// 追従スクロールと終了時のスクロール復帰が働く。</summary>
     private bool _visualTestActive;
+
+    /// <summary>直近1回分の目視テスト開始試行の診断情報(2026-09-07要望対応、「Spaceで開始しても
+    /// 無音・再生位置ラインが動かない」不具合の切り分け用)。StartVisualTest()のたびに上書きされる。
+    /// 「設定 > 環境報告作成」に含めることで、コード修正無しに次回発生時の内部状態を確認できる。</summary>
+    private VisualTestDiagnostics? _lastVisualTestDiag;
+
+    // --- WASAPI出力の自動復旧(2026-09-13要望対応、PlaybackTimer_Tick参照) ---
+    // 2026-09-13: 当初800msにしていたが、判定を「完全一致」(下記PlaybackTimer_Tick参照)に変更した
+    // ことで誤検知の懸念(極端なスロー再生時に僅かな進みを誤差として無視してしまう問題)が無くなった
+    // ため、DispatcherTimerの間隔(33ms)の1回分のブレで誤発動しない程度の余裕を見つつ250msへ短縮した。
+    private static readonly TimeSpan StallRecoveryThreshold = TimeSpan.FromMilliseconds(250);
+    private double _lastTickPositionSeconds = -1;
+    private DateTime _lastTickPositionChangedUtc = DateTime.MinValue;
 
     // --- DAWループ再生(2026-07-29要望対応、既定OFF)。時間情報レーンの範囲選択(TimeRangeSelection
     // StartTick/EndTick)をそのままループ区間として使う。目視テスト専用(要望原文通り、プレイテストは対象外)。 ---
@@ -177,6 +202,10 @@ public partial class MainWindow : Window
     {
         _instanceId = instanceId;
         InitializeComponent();
+        // 2026-09-21: 5ステップ計画Step4(AvalonDock導入)。LayoutAnchorableはFrameworkElementでは
+        // ないためXAML上でVisibility属性を宣言できない。従来のTabItem Visibility="Collapsed"
+        // (未解禁時は分析タブ自体を隠す、2026-07-26要望対応)と同じ既定状態をここで明示する。
+        AnalysisTabItem.Hide();
         // 2026-08-08: レーンラベルヘッダー(LaneHeaderBar、ScrollViewer外の専用領域)と対になる
         // ChartCanvasを相互に結び付ける(ChartCanvas.HeaderBarはズーム変更時の再計測通知用、
         // LaneHeaderBar.TargetCanvasは描画内容の参照元)。
@@ -316,17 +345,17 @@ public partial class MainWindow : Window
         {
             try
             {
-                PropertyTabControl.Items.Add(new TabItem { Header = panelPlugin.PanelTitle, Content = panelPlugin.CreatePanel() });
+                PropertyAnchorablePane.Children.Add(new LayoutAnchorable { Title = panelPlugin.PanelTitle, Content = panelPlugin.CreatePanel(), CanClose = false });
             }
             catch (Exception ex)
             {
-                Plugins.PluginLog.Write($"{panelPlugin.Id}: CreatePanelで例外が発生しましたわ({ex.Message})");
+                Plugins.PluginLog.Write($"{panelPlugin.Id}: CreatePanelで例外が発生しました({ex.Message})");
             }
         }
         Canvas.OverlayPlugins = _pluginManager.OverlayPlugins;
         if (_pluginManager.LoadErrors.Count > 0)
         {
-            MessageBox.Show(this, string.Join("\n", _pluginManager.LoadErrors), "プラグインの読み込みで問題がありましたわ",
+            MessageBox.Show(this, string.Join("\n", _pluginManager.LoadErrors), "プラグインの読み込みで問題がありました",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
@@ -547,7 +576,7 @@ public partial class MainWindow : Window
     {
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         if (_gaugeEditorWindow is { IsLoaded: true })
@@ -572,7 +601,7 @@ public partial class MainWindow : Window
     {
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "編集できません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         if (_wordLaneManagerWindow is { IsLoaded: true })
@@ -630,14 +659,14 @@ public partial class MainWindow : Window
             var exePath = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exePath))
             {
-                MessageBox.Show(this, "実行ファイルのパスを取得できませんでしたわ。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, "実行ファイルのパスを取得できませんでした。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
             System.Diagnostics.Process.Start(exePath);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"新しいウィンドウの起動に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"新しいウィンドウの起動に失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -734,7 +763,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"読み込みに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -780,7 +809,7 @@ public partial class MainWindow : Window
     {
         if (!File.Exists(path))
         {
-            MessageBox.Show(this, $"ファイルが見つかりませんでしたわ:\n{path}", "最近開いたファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, $"ファイルが見つかりませんでした:\n{path}", "最近開いたファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
             _appSettings.RecentFiles.Remove(path);
             _appSettings.Save(AppPaths.SettingsFilePath);
             return;
@@ -799,7 +828,7 @@ public partial class MainWindow : Window
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから保存する(CommitPendingEdits参照)
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "保存できません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "保存できません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -844,7 +873,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"保存に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"保存に失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -865,18 +894,202 @@ public partial class MainWindow : Window
 
         try
         {
-            var text = DiagnosticsReport.Build(_appSettings, _pluginManager);
+            var text = DiagnosticsReport.Build(_appSettings, _pluginManager, _lastVisualTestDiag);
             File.WriteAllText(dlg.FileName, text);
             StatusText.Text = $"環境報告を書き出しました: {Path.GetFileName(dlg.FileName)}";
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"環境報告の書き出しに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"環境報告の書き出しに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
     /// <summary>設定メニュー「バージョン情報」(2026-07-31)</summary>
     private void OpenAbout_Click(object sender, RoutedEventArgs e) => new AboutWindow { Owner = this }.ShowDialog();
+
+    // =====================================================================
+    // 共同編集(2026-09-20、共同編集 設計メモ参照。フェーズ1 MVP・簡易版:双方向スナップショット送信)
+    // =====================================================================
+
+    private void CollabStartHost_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        if (_collab is not null)
+        {
+            MessageBox.Show(this, "既に共同編集セッションが開始されています。先に切断してください。", "共同編集", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Collab.CollabHostStartDialog(this, Environment.UserName);
+        if (dlg.ShowDialog() != true) return;
+
+        var collab = new Collab.CollabSessionController(Dispatcher);
+        AttachCollabUiHandlers(collab);
+        try
+        {
+            collab.StartHost(_document, dlg.Port, dlg.DisplayName);
+            _collab = collab;
+            SetCollabMenuState(active: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"ホストの開始に失敗しました: {ex.Message}", "共同編集", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void CollabJoin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        if (_collab is not null)
+        {
+            MessageBox.Show(this, "既に共同編集セッションが開始されています。先に切断してください。", "共同編集", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Collab.CollabJoinDialog(this, Environment.UserName);
+        if (dlg.ShowDialog() != true) return;
+
+        var collab = new Collab.CollabSessionController(Dispatcher);
+        AttachCollabUiHandlers(collab);
+        try
+        {
+            await collab.JoinAsync(_document, dlg.HostAddress, dlg.Port, dlg.DisplayName);
+            _collab = collab;
+            SetCollabMenuState(active: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"接続に失敗しました: {ex.Message}", "共同編集", MessageBoxButton.OK, MessageBoxImage.Error);
+            await collab.DisposeAsync();
+        }
+    }
+
+    private async void CollabDisconnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (_collab is null) return;
+        await _collab.DisconnectAsync();
+    }
+
+    private void AttachCollabUiHandlers(Collab.CollabSessionController collab)
+    {
+        // 2026-09-20: ノート所有者アイコン(設計メモ6.4節)用に、ChartCanvas側へセッション自体への
+        // 参照を渡しておく(Document/Controllerと同じ受け渡し方。Canvas2(右ペイン)は分割ビューON時のみ
+        // SyncCanvas2FromCanvasで追従するため、開始直後の1回はここで明示的にコピーしておく)。
+        Canvas.CollabSession = collab;
+        if (_splitViewEnabled) Canvas2.CollabSession = collab;
+
+        collab.StatusChanged += text => CollabStatusText.Text = text;
+        collab.RemoteEditApplied += () =>
+        {
+            InvalidateChartViews();
+            Minimap.InvalidateVisual();
+            if (_splitViewEnabled) Minimap2.InvalidateVisual();
+        };
+        collab.Disconnected += () =>
+        {
+            _collab = null;
+            Canvas.CollabSession = null;
+            Canvas2.CollabSession = null;
+            SetCollabMenuState(active: false);
+            CollabStatusText.Text = "共同編集: 未接続";
+            InvalidateChartViews(); // 切断直後、表示済みの所有者アイコンを消すために再描画する
+        };
+    }
+
+    private void SetCollabMenuState(bool active)
+    {
+        CollabStartHostMenuItem.IsEnabled = !active;
+        CollabJoinMenuItem.IsEnabled = !active;
+        CollabDisconnectMenuItem.IsEnabled = active;
+        RendezvousJoinMenuItem.IsEnabled = !active;
+        RendezvousAcceptMenuItem.IsEnabled = active && _collab is not null && _collab.IsHosting;
+    }
+
+    // --- 仲介ヘルパー機能(2026-09-20、設計メモ4.2節、CGNAT対応) ---
+
+    private void RendezvousHelperStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (_rendezvousHelper is not null)
+        {
+            MessageBox.Show(this, "既に仲介ヘルパーとして待機中です。先に停止してください。", "仲介ヘルパー", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Collab.RendezvousHelperStartDialog(this);
+        if (dlg.ShowDialog() != true) return;
+
+        try
+        {
+            var helper = new DanoniEditor.Collab.Rendezvous.RendezvousHelperServer(dlg.Port);
+            helper.Start();
+            _rendezvousHelper = helper;
+            RendezvousHelperStartMenuItem.IsEnabled = false;
+            RendezvousHelperStopMenuItem.IsEnabled = true;
+            CollabStatusText.Text = $"仲介ヘルパー: 待機中(ポート{helper.Port})";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"仲介ヘルパーの開始に失敗しました: {ex.Message}", "仲介ヘルパー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void RendezvousHelperStop_Click(object sender, RoutedEventArgs e)
+    {
+        if (_rendezvousHelper is null) return;
+        await _rendezvousHelper.DisposeAsync();
+        _rendezvousHelper = null;
+        RendezvousHelperStartMenuItem.IsEnabled = true;
+        RendezvousHelperStopMenuItem.IsEnabled = false;
+        CollabStatusText.Text = _collab is null ? "共同編集: 未接続" : CollabStatusText.Text;
+    }
+
+    private async void RendezvousJoin_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        if (_collab is not null)
+        {
+            MessageBox.Show(this, "既に共同編集セッションが開始されています。先に切断してください。", "共同編集", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Collab.RendezvousJoinDialog(this, Environment.UserName);
+        if (dlg.ShowDialog() != true) return;
+
+        var collab = new Collab.CollabSessionController(Dispatcher);
+        AttachCollabUiHandlers(collab);
+        try
+        {
+            await collab.JoinViaRendezvousAsync(_document, dlg.HelperAddress, dlg.HelperPort, dlg.SessionCode, dlg.DisplayName);
+            _collab = collab;
+            SetCollabMenuState(active: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"仲介ヘルパー経由の接続に失敗しました: {ex.Message}", "共同編集", MessageBoxButton.OK, MessageBoxImage.Error);
+            await collab.DisposeAsync();
+        }
+    }
+
+    private async void RendezvousAccept_Click(object sender, RoutedEventArgs e)
+    {
+        if (_collab is null || !_collab.IsHosting)
+        {
+            MessageBox.Show(this, "ホストとして開始していない状態では使用できません。", "仲介ヘルパー", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new Collab.RendezvousAcceptDialog(this);
+        if (dlg.ShowDialog() != true) return;
+
+        try
+        {
+            await _collab.AcceptViaRendezvousAsync(dlg.HelperAddress, dlg.HelperPort, dlg.SessionCode);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"仲介ヘルパー経由の参加受け入れに失敗しました: {ex.Message}", "共同編集", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     /// <summary>キーマクロ(Ctrl+Shift+1〜9、2026-07-26要望対応)の実行。指定スロットに登録された
     /// 手順を先頭から順に実行する。未登録スロットは何もしない。</summary>
@@ -925,7 +1138,7 @@ public partial class MainWindow : Window
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -951,7 +1164,7 @@ public partial class MainWindow : Window
                     string sample = string.Join(" ", unmappable.Take(20));
                     string more = unmappable.Count > 20 ? " …" : "";
                     var confirm = MessageBox.Show(this,
-                        $"Shift-JISへ変換できない文字が{unmappable.Count}種類見つかりましたわ: {sample}{more}\n" +
+                        $"Shift-JISへ変換できない文字が{unmappable.Count}種類見つかりました: {sample}{more}\n" +
                         "該当箇所は「?」に置き換えて保存しますが、よろしいですか？",
                         "文字コード変換の確認", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
                     if (confirm != MessageBoxResult.OK) return;
@@ -969,7 +1182,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -980,7 +1193,7 @@ public partial class MainWindow : Window
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -999,7 +1212,77 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>合作用途(2026-08-22要望対応): カレント難易度タブ1つだけを対象に、dos.txtのデータ行
+    /// (note/freeze/ncolor/speed/boost/word_data)のみをテキストとして書き出す。既存dos.txtへの
+    /// 手動貼り付け用スニペットのため、プロジェクト共通ヘッダーやJSラッパーは含まない。
+    /// サフィックス番号(dataName{N}_data等の{N}部分)はDosSuffixExportDialogで都度選ばせる
+    /// (単体タブ出力のためプロジェクト内の並び順から自動採番できないことによる)。</summary>
+    private void ExportCurrentTabDos_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
+        if (_document is null)
+        {
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var choice = DosSuffixExportDialog.Ask(this);
+        if (choice is null) return; // キャンセル
+
+        var tab = _document.CurrentTab;
+        string text;
+        try
+        {
+            var exporter = new DosExporter(_templates.Get);
+            text = exporter.ExportSingleTab(_document.Project, tab, choice.Value.SuffixNumber);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        string suffixLabel = choice.Value.SuffixNumber?.ToString() ?? "";
+        var dlg = new SaveFileDialog
+        {
+            Filter = "dos.txt - UTF-8 (*.txt)|*.txt|dos.txt - Shift-JIS (*.txt)|*.txt",
+            FilterIndex = 1, // 既定はUTF-8(従来通り)
+            FileName = $"{_document.Project.ProjectName}_{tab.DifficultyName}_dos{suffixLabel}.txt",
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            bool useShiftJis = dlg.FilterIndex == 2;
+            if (useShiftJis)
+            {
+                var unmappable = DosTextEncoding.FindUnmappableChars(text);
+                if (unmappable.Count > 0)
+                {
+                    string sample = string.Join(" ", unmappable.Take(20));
+                    string more = unmappable.Count > 20 ? " …" : "";
+                    var confirm = MessageBox.Show(this,
+                        $"Shift-JISへ変換できない文字が{unmappable.Count}種類見つかりました: {sample}{more}\n" +
+                        "該当箇所は「?」に置き換えて保存しますが、よろしいですか？",
+                        "文字コード変換の確認", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                    if (confirm != MessageBoxResult.OK) return;
+                }
+                File.WriteAllBytes(dlg.FileName, DosTextEncoding.EncodeShiftJisWithReplacement(text));
+            }
+            else
+            {
+                File.WriteAllText(dlg.FileName, text); // 従来通りUTF-8(BOM無し)
+            }
+
+            StatusText.Text = $"エクスポートしました: {Path.GetFileName(dlg.FileName)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1010,23 +1293,45 @@ public partial class MainWindow : Window
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var round = GridMismatchPolicyDialog.Ask(this, "SKBエディタへエクスポート");
-        if (round is null) return; // キャンセル
-
+        // 2026-09-07要望対応: 「グリッドに乗らないオブジェクトの扱い」ダイアログは、実際に丸め・削除の
+        // 対象が存在する場合のみ表示する。まず既定(丸める)でエクスポートを試み、警告(=丸め・削除が
+        // 発生した対象)が1件も無ければそのままダイアログを出さずに使う。1件でもあれば従来通り
+        // ダイアログで選ばせ、「削除する」が選ばれた場合のみその設定で再実行する
+        // (「丸める」ならこの時点の結果をそのまま使い回せるため再実行は不要)。
         SkbExportResult result;
         try
         {
             result = SkbExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
-                new SkbExportOptions { RoundMisalignedBpmEvents = round.Value });
+                new SkbExportOptions { RoundMisalignedBpmEvents = true, RoundMisalignedPositions = true });
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            var round = GridMismatchPolicyDialog.Ask(this, "SKBエディタへエクスポート");
+            if (round is null) return; // キャンセル
+
+            if (round == false)
+            {
+                try
+                {
+                    result = SkbExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
+                        new SkbExportOptions { RoundMisalignedBpmEvents = false, RoundMisalignedPositions = false });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
         }
 
         var dlg = new SaveFileDialog
@@ -1043,13 +1348,13 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"保存に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"保存に失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
         if (result.Warnings.Count > 0)
             MessageBox.Show(this,
-                "エクスポートは完了いたしましたが、以下の点をご確認くださいまし。\n\n" +
+                "エクスポートは完了いたしましたが、以下の点をご確認ください。\n\n" +
                 string.Join("\n\n", result.Warnings.Select(w => "・" + w)),
                 "エクスポート完了(要確認)", MessageBoxButton.OK, MessageBoxImage.Information);
     }
@@ -1061,23 +1366,41 @@ public partial class MainWindow : Window
         CommitPendingEdits(); // 2026-08-06: 入力途中の値を確定してから出力する(CommitPendingEdits参照)
         if (_document is null)
         {
-            MessageBox.Show(this, "プロジェクトが開かれていませんわ。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "プロジェクトが開かれていません。", "エクスポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var round = GridMismatchPolicyDialog.Ask(this, "FUJIエディタへエクスポート");
-        if (round is null) return; // キャンセル
-
+        // 2026-09-07要望対応: SKB側と同じく、丸め・削除の対象が実際に存在する場合のみダイアログを出す。
         FujiExportResult result;
         try
         {
             result = FujiExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
-                new FujiExportOptions { RoundMisalignedPositions = round.Value });
+                new FujiExportOptions { RoundMisalignedPositions = true });
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"エクスポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            var round = GridMismatchPolicyDialog.Ask(this, "FUJIエディタへエクスポート");
+            if (round is null) return; // キャンセル
+
+            if (round == false)
+            {
+                try
+                {
+                    result = FujiExporter.Export(_document.Project, _document.CurrentTab, _document.CurrentTemplate,
+                        new FujiExportOptions { RoundMisalignedPositions = false });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"エクスポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
         }
 
         var dlg = new SaveFileDialog
@@ -1094,13 +1417,13 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"保存に失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"保存に失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
         if (result.Warnings.Count > 0)
             MessageBox.Show(this,
-                "エクスポートは完了いたしましたが、以下の点をご確認くださいまし。\n\n" +
+                "エクスポートは完了いたしましたが、以下の点をご確認ください。\n\n" +
                 string.Join("\n\n", result.Warnings.Select(w => "・" + w)),
                 "エクスポート完了(要確認)", MessageBoxButton.OK, MessageBoxImage.Information);
     }
@@ -1143,7 +1466,7 @@ public partial class MainWindow : Window
         try { (text, wasShiftJis) = DosTextEncoding.ReadAutoDetectText(File.ReadAllBytes(path)); }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"読み込みに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
@@ -1176,7 +1499,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"FUJIインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"FUJIインポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1195,7 +1518,7 @@ public partial class MainWindow : Window
         try { text = File.ReadAllText(path); }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"読み込みに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
         ImportSkbText(text, Path.GetFileName(path));
@@ -1213,7 +1536,7 @@ public partial class MainWindow : Window
             var result = importer.Import(text);
 
             var name = SimplePrompt.Ask(this, "難易度名の指定",
-                $"インポート中のデータ: {displayName}\n\nSKB形式には難易度名が保存されていないため、手動で入力してくださいませ。", "Normal");
+                $"インポート中のデータ: {displayName}\n\nSKB形式には難易度名が保存されていないため、手動で入力してください。", "Normal");
             if (!string.IsNullOrWhiteSpace(name)) result.Tab.DifficultyName = name;
 
             var project = ChooseImportTargetProject(displayName);
@@ -1223,7 +1546,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"SKBインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"SKBインポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1292,7 +1615,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"dos.txtインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"dos.txtインポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1320,7 +1643,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"タブファイルのインポートに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"タブファイルのインポートに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1620,7 +1943,7 @@ public partial class MainWindow : Window
         if (_document.IsModified)
         {
             var name = string.IsNullOrWhiteSpace(_document.Project.ProjectName) ? "Untitled" : _document.Project.ProjectName;
-            var confirm = MessageBox.Show(this, $"「{name}」に未保存の変更がありますわ。閉じてよろしいですか?",
+            var confirm = MessageBox.Show(this, $"「{name}」に未保存の変更があります。閉じてよろしいですか?",
                 "プロジェクトを閉じる", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes) return;
         }
@@ -1724,7 +2047,7 @@ public partial class MainWindow : Window
     {
         if (_document is null)
         {
-            MessageBox.Show(this, "先にプロジェクトを作成/読み込みしてくださいませ。", "音楽ファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "先にプロジェクトを作成/読み込みしてください。", "音楽ファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         var dlg = new OpenFileDialog { Filter = "音楽ファイル (*.mp3;*.wav;*.wma;*.ogg)|*.mp3;*.wav;*.wma;*.ogg|すべてのファイル (*.*)|*.*" };
@@ -1749,7 +2072,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"音楽ファイルの読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"音楽ファイルの読み込みに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1795,7 +2118,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(baseFolder) || !Directory.Exists(baseFolder))
         {
             if (!autoTriggered)
-                MessageBox.Show(this, "環境設定でmusicURL取得用の楽曲フォルダを指定してくださいまし。",
+                MessageBox.Show(this, "環境設定でmusicURL取得用の楽曲フォルダを指定してください。",
                     "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -1804,15 +2127,15 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(musicUrl) || musicUrl == "noname")
         {
             if (!autoTriggered)
-                MessageBox.Show(this, "musicURLが未設定ですわ。", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this, "musicURLが未設定です。", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         var path = Path.Combine(baseFolder, musicUrl);
         if (!File.Exists(path))
         {
-            if (autoTriggered) StatusText.Text = $"musicURLからの自動読込に失敗しましたわ(ファイルが見つかりません: {path})";
-            else MessageBox.Show(this, $"ファイルが見つかりませんでしたわ:\n{path}", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (autoTriggered) StatusText.Text = $"musicURLからの自動読込に失敗しました(ファイルが見つかりません: {path})";
+            else MessageBox.Show(this, $"ファイルが見つかりませんでした:\n{path}", "musicURLからの読込", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
 
@@ -1858,7 +2181,7 @@ public partial class MainWindow : Window
             try { bytes = File.ReadAllBytes(path); }
             catch (Exception ex)
             {
-                MessageBox.Show(this, $"読み込みに失敗しましたわ: {Path.GetFileName(path)}\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, $"読み込みに失敗しました: {Path.GetFileName(path)}\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
                 continue;
             }
 
@@ -1896,7 +2219,7 @@ public partial class MainWindow : Window
             {
                 var names = string.Join("\n", deferredAudio.Select(a => Path.GetFileName(a.Path)));
                 MessageBox.Show(this,
-                    $"先にプロジェクトを作成/読み込みしてくださいませ。以下の楽曲ファイルは読み込めませんでした:\n{names}",
+                    $"先にプロジェクトを作成/読み込みしてください。以下の楽曲ファイルは読み込めませんでした:\n{names}",
                     "音楽ファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             else
@@ -1912,8 +2235,8 @@ public partial class MainWindow : Window
         if (unknown.Count > 0)
         {
             MessageBox.Show(this,
-                $"以下のファイルは形式を判別できませんでしたわ:\n{string.Join("\n", unknown)}\n\n" +
-                "ファイルメニューの個別インポート機能をお使いくださいませ。",
+                $"以下のファイルは形式を判別できませんでした:\n{string.Join("\n", unknown)}\n\n" +
+                "ファイルメニューの個別インポート機能をお使いください。",
                 "判別できないファイル", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -1929,7 +2252,7 @@ public partial class MainWindow : Window
             var bytes = Core.Audio.Base64MusicDecoder.DecodeToBytes(content);
             if (bytes is null)
             {
-                MessageBox.Show(this, $"楽曲データ(BASE64)のデコードに失敗しましたわ: {Path.GetFileName(path)}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, $"楽曲データ(BASE64)のデコードに失敗しました: {Path.GetFileName(path)}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
             var ext = Core.Audio.Base64MusicDecoder.GuessExtension(bytes);
@@ -1939,7 +2262,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"楽曲データ(BASE64)の読み込みに失敗しましたわ: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"楽曲データ(BASE64)の読み込みに失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2026,7 +2349,7 @@ public partial class MainWindow : Window
         {
             var pathLabel = slot.LastKnownPath ?? "(未保存の新規プロジェクト)";
             var r = MessageBox.Show(this,
-                $"前回、正常に終了しなかった形跡がありますわ。\n\n" +
+                $"前回、正常に終了しなかった形跡があります。\n\n" +
                 $"プロジェクト: {slot.ProjectName}\n元のファイル: {pathLabel}\n" +
                 $"自動保存日時: {slot.SavedAtUtc.ToLocalTime():yyyy/MM/dd HH:mm}\n\n" +
                 "前回の続きから復元しますか?",
@@ -2044,7 +2367,7 @@ public partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, $"復元に失敗しましたわ: {ex.Message}", "クラッシュ復旧", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show(this, $"復元に失敗しました: {ex.Message}", "クラッシュ復旧", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, slot.SlotId);
@@ -2053,15 +2376,57 @@ public partial class MainWindow : Window
 
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
     {
+        // 2026-09-07要望対応: 診断情報(タイマー自体が回っているかの確認用、後段のnullチェックより前で数える)
+        if (_lastVisualTestDiag is { } diagInvoked) diagInvoked.TickInvokedCount++;
+
         if (_document is null || _audioPlayer.Duration is null) return;
         var pos = _audioPlayer.Position;
+
+        // 2026-09-07要望対応: 診断情報(実処理まで進んだ回数・再生位置の推移を記録)
+        if (_lastVisualTestDiag is { } diag)
+        {
+            diag.TickProcessedCount++;
+            diag.FirstTickPositionSeconds ??= pos.TotalSeconds;
+            diag.LatestPositionSeconds = pos.TotalSeconds;
+            diag.LatestSampledAtUtc = DateTime.UtcNow;
+            diag.LatestOutputState = _audioPlayer.DiagOutputState;
+            diag.LatestPlayingFlag = _audioPlayer.DiagIsPlayingFlag;
+        }
+
+        // 2026-09-13要望対応: WASAPI出力の自動復旧(スタック検知)。_playingフラグ・WASAPI出力状態は
+        // 「再生中」のままなのに、内部の読み取りカーソルだけが進まなくなる不具合(NAudioのイベント同期
+        // 起因と見られる、環境報告の診断情報で確認済み)への対策。再生位置が一定時間(StallRecoveryThreshold)
+        // 変化しなければ、出力デバイスストリームだけを作り直して同じ位置から再生を再開する
+        // (音声データ自体・_framePosは変更しない、_output=WasapiOutインスタンスのみ再構築)。
+        if (_visualTestActive)
+        {
+            // 2026-09-13: 「前回サンプル値と完全一致しているか」で判定する(僅かな誤差を許容するあいまいな
+            // 比較にすると、極端なスロー再生(PlaybackSpeedを小さくした場合)で1Tickあたりの進みが
+            // その許容誤差を下回り、正常再生中でも「進んでいない」と誤検知しうるため)。本当に音声が
+            // 進んでいれば、どれほど微小でも_framePosの値自体は毎回変化するため、完全一致判定でも
+            // 実際の停止だけを正しく検知できる。
+            if (_lastTickPositionSeconds < 0 || pos.TotalSeconds != _lastTickPositionSeconds)
+            {
+                _lastTickPositionSeconds = pos.TotalSeconds;
+                _lastTickPositionChangedUtc = DateTime.UtcNow;
+            }
+            else if (DateTime.UtcNow - _lastTickPositionChangedUtc >= StallRecoveryThreshold)
+            {
+                _audioPlayer.RecoverOutput();
+                _audioPlayer.Position = TimeSpan.FromSeconds(pos.TotalSeconds);
+                _audioPlayer.Play();
+                if (_lastVisualTestDiag is { } diagRecover) diagRecover.AutoRecoveryCount++;
+                StatusText.Text = "目視テストの音声出力が停止していたため、自動的に復旧しました。";
+                _lastTickPositionChangedUtc = DateTime.UtcNow; // 復旧直後に連続で再判定しないようリセット
+            }
+        }
 
         // 2026-07-26: 曲の末尾に到達した場合、音が止まった後も再生位置ラインとスクロールが同じ位置に
         // 固定されたまま(無音で)残り続けてしまう(前段のstartFrame超過チェックとは別経路で同じ症状に
         // なりうるため、こちらでも保険として自動終了させる)。
         if (_visualTestActive && pos.TotalSeconds >= _audioPlayer.Duration.Value.TotalSeconds - 0.05)
         {
-            StopVisualTest(returnToStart: true);
+            StopVisualTest(returnToStart: true, reason: "自動(曲の末尾到達)");
             return;
         }
 
@@ -2114,7 +2479,7 @@ public partial class MainWindow : Window
                     return; // 次のTickで巻き戻し後の位置を反映させる
                 }
 
-                StopVisualTest(returnToStart: true);
+                StopVisualTest(returnToStart: true, reason: "自動(自動復帰設定)");
                 return;
             }
         }
@@ -2223,7 +2588,7 @@ public partial class MainWindow : Window
         var tabs = _document.Project.Tabs;
         if (tabs.Count <= 1)
         {
-            MessageBox.Show(this, "最後の1タブは閉じられませんわ。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "最後の1タブは閉じられません。", "確認", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (idx < 0 || idx >= tabs.Count) return;
@@ -3145,14 +3510,10 @@ public partial class MainWindow : Window
     // 右パネル③: 選択中オブジェクトのプロパティ(仕様書6.4.3)
     // =====================================================================
 
-    /// <summary>タブindex: 0=プロジェクト, 1=色設定, 2=オブジェクト, 3=その他(XAMLの並び順と対応)</summary>
-    private const int ObjectTabIndex = 2;
-    private const int ProjectTabIndex = 0;
-
     private void AutoSwitchToObjectTab()
     {
         if (ObjectTabPinCheck.IsChecked == true) return; // ピン留め中は自動切替しない(仕様書6.4.3)
-        PropertyTabControl.SelectedIndex = ObjectTabIndex;
+        ObjectPropertyPane.IsActive = true;
     }
 
     /// <summary>Document.Changed購読(選択状態を含む変化全般)のたびに呼ばれ、③タブの表示を同期する。</summary>
@@ -3175,9 +3536,9 @@ public partial class MainWindow : Window
             // グリッドをクリックして選択解除すると、直後のこのタブ自動復帰でフォーカスが①タブのTextBox等へ
             // 奪われ、ショートカットキーが効かなくなる不具合があった。実際にタブを切り替える場合のみ
             // (=このifブロックへ入った場合のみ)Canvasへ明示的に戻す。
-            if (ObjectTabPinCheck.IsChecked != true && PropertyTabControl.SelectedIndex == ObjectTabIndex)
+            if (ObjectTabPinCheck.IsChecked != true && ObjectPropertyPane.IsActive)
             {
-                PropertyTabControl.SelectedIndex = ProjectTabIndex; // 選択解除→プロジェクトタブへ自動復帰(仕様書6.4.3)
+                ProjectPropertyPane.IsActive = true; // 選択解除→プロジェクトタブへ自動復帰(仕様書6.4.3)
                 Keyboard.Focus(Canvas);
             }
             return;
@@ -3187,7 +3548,7 @@ public partial class MainWindow : Window
         {
             _currentPropertyObject = null;
             ObjectNoSelectionText.Visibility = Visibility.Collapsed;
-            ObjectMultiSelectText.Text = $"{sel.Count}個のオブジェクトを選択中(複数選択時は個別編集非対応。移動・削除はキャンバス上の操作をご利用くださいませ)";
+            ObjectMultiSelectText.Text = $"{sel.Count}個のオブジェクトを選択中(複数選択時は個別編集非対応。移動・削除はキャンバス上の操作をご利用ください)";
             ObjectMultiSelectText.Visibility = Visibility.Visible;
             ObjectDetailPanel.Visibility = Visibility.Collapsed;
             // 2026-07-26: 複数選択時は右パネルを自動切替しない(単体オブジェクトクリック時のみ切替える方針)。
@@ -3204,7 +3565,7 @@ public partial class MainWindow : Window
         // 既にオブジェクトタブが表示されていた場合(=プロパティ編集のコミット等による再描画)は
         // このWPFの自動フォーカス移動自体が起こらないため、ここでの判定・復帰処理は不要
         // (毎回復帰させるとTabキーでのフィールド間移動や、Enter確定後の継続編集を妨げてしまう)。
-        bool objectTabAlreadyShowing = PropertyTabControl.SelectedIndex == ObjectTabIndex
+        bool objectTabAlreadyShowing = ObjectPropertyPane.IsActive
             && ObjectDetailPanel.Visibility == Visibility.Visible;
 
         ObjectNoSelectionText.Visibility = Visibility.Collapsed;
@@ -3312,6 +3673,7 @@ public partial class MainWindow : Window
                     ObjectValueLabel.Visibility = Visibility.Visible;
                     ObjectValueBox.Visibility = Visibility.Visible;
                     ObjectValueBox.Text = (ev?.Bpm ?? 120).ToString(CultureInfo.InvariantCulture);
+                    ShowValueEventLinkFields(ValueEventKind.Bpm, r.Tick);
                     break;
                 }
 
@@ -3500,8 +3862,10 @@ public partial class MainWindow : Window
             case ObjectKind.Bpm:
                 if (v > 0)
                 {
+                    // 2026-08-23: リンク設定(LinkGridDivision)を削除→再配置後も保持する(speed/boostと同様)。
+                    var link = _document.Project.BpmEvents.FirstOrDefault(x => x.Tick == r.Tick)?.LinkGridDivision;
                     _document.Execute(new CompositeEditAction(
-                        [new DeleteValueEventAction(ValueEventKind.Bpm, r.Tick), new PlaceValueEventAction(ValueEventKind.Bpm, r.Tick, v)],
+                        [new DeleteValueEventAction(ValueEventKind.Bpm, r.Tick), new PlaceValueEventAction(ValueEventKind.Bpm, r.Tick, v, link)],
                         "BPM変更値編集"));
                 }
                 else RefreshSelectedObjectPanel();
@@ -3520,15 +3884,25 @@ public partial class MainWindow : Window
     private static int GridDivisionToComboIndex(int div) => div switch { 4 => 0, 8 => 1, 16 => 2, 32 => 3, _ => 1 };
     private static int ComboIndexToGridDivision(int idx) => idx switch { 0 => 4, 1 => 8, 2 => 16, _ => 32 };
 
-    /// <summary>③タブでspeed/boostマーカーを選択した際、「前の同種マーカーとのリンク」「次の同種マーカーとの
+    /// <summary>2026-08-23要望対応(BPMリンク): speed/boost(タブ別のValueEvent)とBPM(プロジェクト共通の
+    /// BpmEvent)は型が異なるため、リンクUI側では(Tick, LinkGridDivision)のタプル列へ統一して扱う。</summary>
+    private List<(long Tick, int? Link)> GetValueEventTicksAndLinks(ValueEventKind kind) => kind switch
+    {
+        ValueEventKind.Speed => _document!.CurrentTab.SpeedEvents.OrderBy(e => e.Tick).Select(e => (e.Tick, e.LinkGridDivision)).ToList(),
+        ValueEventKind.Boost => _document!.CurrentTab.BoostEvents.OrderBy(e => e.Tick).Select(e => (e.Tick, e.LinkGridDivision)).ToList(),
+        _ => _document!.Project.BpmEvents.OrderBy(e => e.Tick).Select(e => (e.Tick, e.LinkGridDivision)).ToList(),
+    };
+
+    /// <summary>③タブでspeed/boost/BPMマーカーを選択した際、「前の同種マーカーとのリンク」「次の同種マーカーとの
     /// リンク」の2パネルを、直近手前・直近直後の同種イベントの有無に応じて表示/更新する。
     /// リンクは常に「tick順で早い方のイベントがLinkGridDivisionを持つ」形で内部表現しているため、
     /// 「前とのリンク」パネルは直前のイベント自身のLinkGridDivisionを、「次とのリンク」パネルは
-    /// 選択中のイベント自身のLinkGridDivisionを、それぞれ参照/更新する。</summary>
+    /// 選択中のイベント自身のLinkGridDivisionを、それぞれ参照/更新する。
+    /// 2026-08-23要望対応: BPM変更マーカーでも共用する(BPMは「値」ではなく「拍位置に対する直線ランプ」
+    /// という意味になるが、UIの見た目・操作感はspeed/boostと統一する)。</summary>
     private void ShowValueEventLinkFields(ValueEventKind kind, long tick)
     {
-        var list = kind == ValueEventKind.Speed ? _document!.CurrentTab.SpeedEvents : _document!.CurrentTab.BoostEvents;
-        var sorted = list.OrderBy(e => e.Tick).ToList();
+        var sorted = GetValueEventTicksAndLinks(kind);
         int idx = sorted.FindIndex(e => e.Tick == tick);
         if (idx < 0)
         {
@@ -3541,9 +3915,9 @@ public partial class MainWindow : Window
         {
             var prev = sorted[idx - 1];
             ObjectLinkPrevPanel.Visibility = Visibility.Visible;
-            ObjectLinkPrevCheck.IsChecked = prev.LinkGridDivision is not null;
-            ObjectLinkPrevGridCombo.IsEnabled = prev.LinkGridDivision is not null;
-            ObjectLinkPrevGridCombo.SelectedIndex = GridDivisionToComboIndex(prev.LinkGridDivision ?? 8);
+            ObjectLinkPrevCheck.IsChecked = prev.Link is not null;
+            ObjectLinkPrevGridCombo.IsEnabled = prev.Link is not null;
+            ObjectLinkPrevGridCombo.SelectedIndex = GridDivisionToComboIndex(prev.Link ?? 8);
         }
         else
         {
@@ -3554,9 +3928,9 @@ public partial class MainWindow : Window
         {
             var self = sorted[idx];
             ObjectLinkNextPanel.Visibility = Visibility.Visible;
-            ObjectLinkNextCheck.IsChecked = self.LinkGridDivision is not null;
-            ObjectLinkNextGridCombo.IsEnabled = self.LinkGridDivision is not null;
-            ObjectLinkNextGridCombo.SelectedIndex = GridDivisionToComboIndex(self.LinkGridDivision ?? 8);
+            ObjectLinkNextCheck.IsChecked = self.Link is not null;
+            ObjectLinkNextGridCombo.IsEnabled = self.Link is not null;
+            ObjectLinkNextGridCombo.SelectedIndex = GridDivisionToComboIndex(self.Link ?? 8);
         }
         else
         {
@@ -3564,20 +3938,26 @@ public partial class MainWindow : Window
         }
     }
 
+    private static ValueEventKind ToValueEventKind(ObjectKind kind) => kind switch
+    {
+        ObjectKind.Speed => ValueEventKind.Speed,
+        ObjectKind.Boost => ValueEventKind.Boost,
+        _ => ValueEventKind.Bpm,
+    };
+
     private void ObjectLinkPrev_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
-        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
-        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
-        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
-        var sorted = list.OrderBy(x => x.Tick).ToList();
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost or ObjectKind.Bpm)) return;
+        var kind = ToValueEventKind(r.Kind);
+        var sorted = GetValueEventTicksAndLinks(kind);
         int idx = sorted.FindIndex(x => x.Tick == r.Tick);
         if (idx <= 0) return;
         var prev = sorted[idx - 1];
 
         bool linked = ObjectLinkPrevCheck.IsChecked == true;
         int div = ComboIndexToGridDivision(ObjectLinkPrevGridCombo.SelectedIndex < 0 ? 1 : ObjectLinkPrevGridCombo.SelectedIndex);
-        if (linked == (prev.LinkGridDivision is not null)) return; // 変化なし
+        if (linked == (prev.Link is not null)) return; // 変化なし
         _document.Execute(new SetValueEventLinkAction(kind, prev.Tick, linked ? div : null));
         RefreshSelectedObjectPanel();
     }
@@ -3585,31 +3965,31 @@ public partial class MainWindow : Window
     private void ObjectLinkPrevGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
-        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost or ObjectKind.Bpm)) return;
         if (ObjectLinkPrevCheck.IsChecked != true) return; // 未リンク時のコンボ初期化は無視(チェック時に反映)
-        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
-        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
-        var sorted = list.OrderBy(x => x.Tick).ToList();
+        var kind = ToValueEventKind(r.Kind);
+        var sorted = GetValueEventTicksAndLinks(kind);
         int idx = sorted.FindIndex(x => x.Tick == r.Tick);
         if (idx <= 0) return;
         var prev = sorted[idx - 1];
         int div = ComboIndexToGridDivision(ObjectLinkPrevGridCombo.SelectedIndex);
-        if (prev.LinkGridDivision == div) return;
+        if (prev.Link == div) return;
         _document.Execute(new SetValueEventLinkAction(kind, prev.Tick, div));
     }
 
     private void ObjectLinkNext_Changed(object sender, RoutedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
-        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
-        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
-        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
-        var self = list.FirstOrDefault(x => x.Tick == r.Tick);
-        if (self is null) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost or ObjectKind.Bpm)) return;
+        var kind = ToValueEventKind(r.Kind);
+        var sorted = GetValueEventTicksAndLinks(kind);
+        int selfIdx = sorted.FindIndex(x => x.Tick == r.Tick);
+        if (selfIdx < 0) return;
+        var self = sorted[selfIdx];
 
         bool linked = ObjectLinkNextCheck.IsChecked == true;
         int div = ComboIndexToGridDivision(ObjectLinkNextGridCombo.SelectedIndex < 0 ? 1 : ObjectLinkNextGridCombo.SelectedIndex);
-        if (linked == (self.LinkGridDivision is not null)) return; // 変化なし
+        if (linked == (self.Link is not null)) return; // 変化なし
         _document.Execute(new SetValueEventLinkAction(kind, r.Tick, linked ? div : null));
         RefreshSelectedObjectPanel();
     }
@@ -3617,14 +3997,15 @@ public partial class MainWindow : Window
     private void ObjectLinkNextGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressObjectPanelEvents || _document is null || _currentPropertyObject is not { } r) return;
-        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost)) return;
+        if (r.Kind is not (ObjectKind.Speed or ObjectKind.Boost or ObjectKind.Bpm)) return;
         if (ObjectLinkNextCheck.IsChecked != true) return;
-        var kind = r.Kind == ObjectKind.Speed ? ValueEventKind.Speed : ValueEventKind.Boost;
-        var list = kind == ValueEventKind.Speed ? _document.CurrentTab.SpeedEvents : _document.CurrentTab.BoostEvents;
-        var self = list.FirstOrDefault(x => x.Tick == r.Tick);
-        if (self is null) return;
+        var kind = ToValueEventKind(r.Kind);
+        var sorted = GetValueEventTicksAndLinks(kind);
+        int selfIdx = sorted.FindIndex(x => x.Tick == r.Tick);
+        if (selfIdx < 0) return;
+        var self = sorted[selfIdx];
         int div = ComboIndexToGridDivision(ObjectLinkNextGridCombo.SelectedIndex);
-        if (self.LinkGridDivision == div) return;
+        if (self.Link == div) return;
         _document.Execute(new SetValueEventLinkAction(kind, r.Tick, div));
     }
 
@@ -3744,7 +4125,7 @@ public partial class MainWindow : Window
         {
             if (!_audioLoaded)
             {
-                MessageBox.Show(this, "音楽ファイルが読み込まれていませんの。波形表示には音楽の読み込みが必要ですわ。", "波形表示", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(this, "音楽ファイルが読み込まれていません。波形表示には音楽の読み込みが必要です。", "波形表示", MessageBoxButton.OK, MessageBoxImage.Information);
                 WaveformToggle.IsChecked = false;
                 return;
             }
@@ -3775,7 +4156,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"波形の解析に失敗しましたわ: {ex.Message}\n(ogg等、未対応の形式の可能性がありますの)", "波形表示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, $"波形の解析に失敗しました: {ex.Message}\n(ogg等、未対応の形式の可能性があります)", "波形表示", MessageBoxButton.OK, MessageBoxImage.Warning);
             WaveformToggle.IsChecked = false;
             Canvas.ShowWaveform = false;
         }
@@ -3801,7 +4182,7 @@ public partial class MainWindow : Window
             }
             if (_document.IsFrameEditMode)
             {
-                MessageBox.Show(this, "フレーム情報モード中はStartNumber編集モードに切り替えられませんの。先にフレーム情報モードを終了してくださいまし。", "StartNumber編集", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(this, "フレーム情報モード中はStartNumber編集モードに切り替えられません。先にフレーム情報モードを終了してください。", "StartNumber編集", MessageBoxButton.OK, MessageBoxImage.Information);
                 StartNumberEditToggle.IsChecked = false;
                 return;
             }
@@ -3833,7 +4214,7 @@ public partial class MainWindow : Window
         {
             if (Canvas.StartNumberEditMode)
             {
-                MessageBox.Show(this, "StartNumber編集モード中はフレーム情報モードに切り替えられませんの。先にStartNumber編集を終了してくださいまし。", "フレーム情報モード", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(this, "StartNumber編集モード中はフレーム情報モードに切り替えられません。先にStartNumber編集を終了してください。", "フレーム情報モード", MessageBoxButton.OK, MessageBoxImage.Information);
                 FrameEditToggle.IsChecked = false;
                 return;
             }
@@ -3847,7 +4228,7 @@ public partial class MainWindow : Window
                 var head = string.Join("\n", collisions.Take(10));
                 var more = collisions.Count > 10 ? $"\n…ほか{collisions.Count - 10}件" : "";
                 var r = MessageBox.Show(this,
-                    $"丸め込みにより同一位置へ重なったオブジェクトがありますわ:\n{head}{more}\n\n" +
+                    $"丸め込みにより同一位置へ重なったオブジェクトがあります:\n{head}{more}\n\n" +
                     "「はい」= 重複を統合して拍情報モードへ戻る(統合はUndo可能)\n「いいえ」= フレーム情報モードに留まる",
                     "フレーム情報モード終了", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 if (r != MessageBoxResult.Yes)
@@ -4008,17 +4389,16 @@ public partial class MainWindow : Window
     /// <summary>右ペイン(Canvas2)用。ChartPane1HostGrid_PreviewMouseDown参照。</summary>
     private void ChartPane2HostGrid_PreviewMouseDown(object sender, MouseButtonEventArgs e) => Keyboard.Focus(Canvas2);
 
-    /// <summary>2026-08-01要望対応: 右パネル(PropertyTabControl)のタブをマウスクリックで切り替えると、
-    /// WPF標準の挙動により新しく表示されたタブ内の先頭フォーカス可能コントロール(TextBox等)へ
-    /// フォーカスが移ってしまい、以降ショートカットキーが譜面ビューに届かなくなる不具合があった。
-    /// マウスでタブヘッダーをクリックした場合のみ(キーボード操作によるタブ切替やコード側での
-    /// SelectedIndex変更は対象外)、選択切替の処理(WPFの既定フォーカス移動を含む)が完了した後に
-    /// Dispatcher経由でChartCanvasへフォーカスを戻す(ChartScrollViewer_PreviewMouseDownと同じ
-    /// Keyboard.Focus復帰パターン。ただしこちらはタブ切替直後のWPF既定フォーカス移動と競合するため、
-    /// 同一クリックの入力処理が全て終わった後(DispatcherPriority.Input)まで遅延させる必要がある)。</summary>
-    private void PropertyTabControl_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    /// <summary>2026-08-01要望対応(2026-09-21: AvalonDock移行に伴い実装変更)。右パネルの表示内容を
+    /// 切り替えると、WPF標準の挙動により新しく表示された内容内の先頭フォーカス可能コントロール
+    /// (TextBox等)へフォーカスが移ってしまい、以降ショートカットキーが譜面ビューに届かなくなる
+    /// 不具合があった。従来はマウスクリックによるタブ切替のみを対象としていたが(TabItemの
+    /// PreviewMouseLeftButtonDownを利用)、LayoutAnchorableはFrameworkElementではなくマウスイベントを
+    /// 持たないため、DockingManager.ActiveContentChanged(マウス・キーボード・コードいずれの原因でも
+    /// 発火)を使い、原因を問わず常にDispatcher経由でCanvasへフォーカスを戻す方式へ単純化した
+    /// (意図的な挙動変更。キーボード操作時のTabキー移動等に支障が出ないか実機確認で要確認)。</summary>
+    private void PropertyDockingManager_ActiveContentChanged(object? sender, EventArgs e)
     {
-        if (FindTabItemAncestor(e.OriginalSource as DependencyObject) is null) return;
         Dispatcher.BeginInvoke(new Action(() => Keyboard.Focus(Canvas)), DispatcherPriority.Input);
     }
 
@@ -4117,7 +4497,7 @@ public partial class MainWindow : Window
     {
         _activePaneIsSecondary = !_activePaneIsSecondary;
         UpdateActivePaneIndicator();
-        StatusText.Text = _activePaneIsSecondary ? "分割ビュー: 右側がアクティブですわ" : "分割ビュー: 左側がアクティブですわ";
+        StatusText.Text = _activePaneIsSecondary ? "分割ビュー: 右側がアクティブです" : "分割ビュー: 左側がアクティブです";
     }
 
     /// <summary>アクティブペインの目印(枠線)を更新する。分割ONかつキーボードモード中のみ表示する
@@ -4162,6 +4542,7 @@ public partial class MainWindow : Window
     {
         Canvas2.Document = Canvas.Document;
         Canvas2.Controller = Canvas.Controller;
+        Canvas2.CollabSession = Canvas.CollabSession; // 2026-09-20: ノート所有者アイコン用の参照も追従させる
         Canvas2.OverlayPlugins = Canvas.OverlayPlugins;
         Canvas2.Reverse = Canvas.Reverse;
         Canvas2.ShowNoteImages = Canvas.ShowNoteImages;
@@ -4294,18 +4675,17 @@ public partial class MainWindow : Window
             // 前進に割り当て済みで紛らわしいため)。
             case ShortcutId.InterruptVisualTestMouseMode:
                 if (_keyboardModeActive || !_visualTestActive) return false;
+                // 2026-09-07要望対応: キーボードモード側(Ctrl+Enter)と挙動を揃え、その場中断した際は
+                // 中断タイミングの最寄りグリッドへ再生開始ラインを設定する(次回の目視テスト・
+                // プレイテストが続きから始まるように)。
+                SnapPlaybackStartLineToLivePlaybackTick();
                 StopVisualTest(returnToStart: false);
                 return true;
             case ShortcutId.InterruptVisualTestKeyboardMode:
                 if (!_keyboardModeActive || !_visualTestActive) return false;
                 // 2026-07-26要望対応: キーボードモード中、その場中断した際は、中断タイミングの
                 // 最寄りグリッドへ再生開始ラインを設定する(次回の目視テスト・プレイテストが続きから始まるように)。
-                if (_document is not null && Canvas.PlaybackTick is { } liveTick)
-                {
-                    var engine = _document.Project.CreateTimingEngine();
-                    long snappedTick = _document.Snap.Snap(liveTick);
-                    _document.CurrentTab.PlaybackStartFrame = engine.TickToFrame(snappedTick);
-                }
+                SnapPlaybackStartLineToLivePlaybackTick();
                 StopVisualTest(returnToStart: false);
                 return true;
             case ShortcutId.StartPlaytest: // 2026-07-17g: プレイテスト開始(仕様書12.2)
@@ -4498,7 +4878,7 @@ public partial class MainWindow : Window
         _colorEditModeActive = !_colorEditModeActive;
         ColorEditModeToggle.IsChecked = _colorEditModeActive;
         PushColorEditStateToController();
-        if (_colorEditModeActive) PropertyTabControl.SelectedItem = ColorEditTabItem;
+        if (_colorEditModeActive) ColorEditTabItem.IsActive = true;
         InvalidateChartViews();
         StatusText.Text = _colorEditModeActive
             ? "色編集モード: ON(左クリック=着色/Shift・ホイールクリック=端点+帯同時/右クリック=解除、他の配置・移動は無効)"
@@ -4542,7 +4922,7 @@ public partial class MainWindow : Window
     private void NColorClearAllButton_Click(object sender, RoutedEventArgs e)
     {
         if (_document is null || _controller is null) return;
-        var result = MessageBox.Show(this, "現在の難易度タブの色指定(ncolor_data)を全て削除しますの。よろしいですか？",
+        var result = MessageBox.Show(this, "現在の難易度タブの色指定(ncolor_data)を全て削除します。よろしいですか？",
             "ncolor_dataを全て削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (result != MessageBoxResult.Yes) return;
         if (_controller.ClearAllNoteColors())
@@ -4733,7 +5113,7 @@ public partial class MainWindow : Window
     private void MacroDeleteButton_Click(object sender, RoutedEventArgs e)
     {
         if (MacroListBox.SelectedItem is not MacroListEntry entry) return;
-        var confirm = MessageBox.Show(this, $"マクロ '{entry.Macro.MacroName}' を削除しますの。よろしいですか？",
+        var confirm = MessageBox.Show(this, $"マクロ '{entry.Macro.MacroName}' を削除します。よろしいですか？",
             "マクロ削除", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
         _macros.RemoveAll(m => m.MacroId == entry.Macro.MacroId);
@@ -4813,7 +5193,7 @@ public partial class MainWindow : Window
             var partner = _document!.Project.Tabs.FirstOrDefault(t => t.TabId == linkedId);
             LinkStatusText.Text = partner is not null
                 ? $"リンク中: {partner.DisplayLabel}"
-                : "リンク中(相手タブが見つかりませんでした。リンク解除をお試しくださいませ)";
+                : "リンク中(相手タブが見つかりませんでした。リンク解除をお試しください)";
             LinkUnlinkButton.Visibility = Visibility.Visible;
             LinkCandidatePanel.Visibility = Visibility.Collapsed;
             return;
@@ -4911,7 +5291,7 @@ public partial class MainWindow : Window
     private void RefreshAnalysisPanel()
     {
         bool analyzerUnlocked = _appSettings.StatObjectsPlaced >= AnalyzerUnlockThreshold;
-        AnalysisTabItem.Visibility = analyzerUnlocked ? Visibility.Visible : Visibility.Collapsed;
+        if (analyzerUnlocked) AnalysisTabItem.Show(); else AnalysisTabItem.Hide();
         AnalyzerResultText.Text = "";
         OniStarResultText.Text = "？？？";
     }
@@ -5652,6 +6032,18 @@ public partial class MainWindow : Window
         ChartScrollViewer.ScrollToVerticalOffset(Math.Max(0, y - ChartScrollViewer.ViewportHeight / 2));
     }
 
+    /// <summary>目視テストの「その場中断」ショートカット(マウスモード:Ctrl+Space/キーボードモード:
+    /// Ctrl+Enter)共通の処理。中断タイミングの現在の再生位置(Canvas.PlaybackTick、スナップ後)を
+    /// 再生開始ラインへ設定し、次回の目視テスト・プレイテストが続きから始まるようにする
+    /// (2026-07-26要望対応、2026-09-07要望対応でマウスモード側にも展開)。</summary>
+    private void SnapPlaybackStartLineToLivePlaybackTick()
+    {
+        if (_document is null || Canvas.PlaybackTick is not { } liveTick) return;
+        var engine = _document.Project.CreateTimingEngine();
+        long snappedTick = _document.Snap.Snap(liveTick);
+        _document.CurrentTab.PlaybackStartFrame = engine.TickToFrame(snappedTick);
+    }
+
     private void ToggleVisualTest()
     {
         if (_visualTestActive) StopVisualTest(returnToStart: true);
@@ -5665,7 +6057,7 @@ public partial class MainWindow : Window
         if (_document is null) return;
         if (!_audioLoaded)
         {
-            MessageBox.Show(this, "音楽ファイルが読み込まれていませんの。目視テストには音楽の読み込みが必要ですわ。", "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "音楽ファイルが読み込まれていません。目視テストには音楽の読み込みが必要です。", "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         double startFrame = _document.CurrentTab.PlaybackStartFrame ?? 0;
@@ -5676,7 +6068,7 @@ public partial class MainWindow : Window
         if (_audioPlayer.Duration is { } duration && startFrame / 60.0 >= duration.TotalSeconds)
         {
             MessageBox.Show(this,
-                "再生開始ラインが音楽ファイルの長さを超えていますの。ラインをもっと手前へ置き直してくださいませ。",
+                "再生開始ラインが音楽ファイルの長さを超えています。ラインをもっと手前へ置き直してください。",
                 "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -5699,13 +6091,35 @@ public partial class MainWindow : Window
         _audioPlayer.Play();
         _playbackTimer.Start();
         _visualTestActive = true;
+
+        // 2026-09-13要望対応: WASAPI自動復旧のスタック検知状態をリセットする(PlaybackTimer_Tick参照)。
+        _lastTickPositionSeconds = -1;
+        _lastTickPositionChangedUtc = DateTime.UtcNow;
+
+        // 2026-09-07要望対応: 「Spaceで目視テストを開始しても無音・再生位置ラインが動かない」不具合の
+        // 切り分け用診断情報。開始時点のスナップショットを取り、以後はPlaybackTimer_Tick/StopVisualTestで
+        // 追記していく(環境報告に含める、DiagnosticsReport参照)。
+        _lastVisualTestDiag = new VisualTestDiagnostics
+        {
+            StartedAtUtc = DateTime.UtcNow,
+            RequestedStartFrame = startFrame,
+            AudioLoadedAtStart = _audioLoaded,
+            DurationSecondsAtStart = _audioPlayer.Duration?.TotalSeconds,
+            KeyboardModeActiveAtStart = _keyboardModeActive,
+            SplitViewEnabledAtStart = _splitViewEnabled,
+            HandClapEnabledAtStart = _appSettings.HandClapEnabled,
+            OutputStateAtStart = _audioPlayer.DiagOutputState,
+            PlayingFlagAtStart = _audioPlayer.DiagIsPlayingFlag,
+        };
     }
 
     /// <summary>目視テスト終了。returnToStart=true(Space)なら「表示範囲の一番上が再生開始フレームの
     /// 1小節前」までスクロールを戻す(未解決事項§2-2の終了時挙動)。false(Ctrl+Space)なら
     /// 現在の再生位置表示ラインの位置に留まる(未解決事項§2-1派生の要望)。</summary>
-    private void StopVisualTest(bool returnToStart)
+    private void StopVisualTest(bool returnToStart, string reason = "手動")
     {
+        if (_lastVisualTestDiag is { } diag) { diag.StoppedAtUtc = DateTime.UtcNow; diag.StopReason = reason; }
+
         _visualTestActive = false;
         _audioPlayer.Stop();
         _playbackTimer.Stop();
@@ -5945,6 +6359,16 @@ public partial class MainWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         base.OnClosing(e);
+        if (_collab is not null)
+        {
+            _ = _collab.DisconnectAsync(); // 2026-09-20: ベストエフォート、終了処理はブロックしない
+            _collab = null;
+        }
+        if (_rendezvousHelper is not null)
+        {
+            _ = _rendezvousHelper.DisposeAsync(); // 2026-09-20: ベストエフォート
+            _rendezvousHelper = null;
+        }
         if (!_appSettings.ConfirmUnsavedOnClose) return;
 
         SyncActiveSessionBeforeSwitch();
@@ -5954,7 +6378,7 @@ public partial class MainWindow : Window
         var names = string.Join("\n", unsaved.Select(s =>
             "・" + (string.IsNullOrWhiteSpace(s.Document.Project.ProjectName) ? "Untitled" : s.Document.Project.ProjectName)));
         var r = MessageBox.Show(this,
-            $"以下のプロジェクトに未保存の変更がありますわ:\n{names}\n\n" +
+            $"以下のプロジェクトに未保存の変更があります:\n{names}\n\n" +
             "「はい」= 全て保存してから終了\n「いいえ」= 保存せず終了\n「キャンセル」= 終了を中止",
             "終了の確認", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         if (r == MessageBoxResult.Cancel) { e.Cancel = true; return; }
@@ -5982,7 +6406,7 @@ public partial class MainWindow : Window
         if (_document is null) return;
         if (!_audioLoaded)
         {
-            MessageBox.Show(this, "音楽ファイルが読み込まれていませんの。プレイテストには音楽の読み込みが必要ですわ。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "音楽ファイルが読み込まれていません。プレイテストには音楽の読み込みが必要です。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (_visualTestActive) StopVisualTest(returnToStart: false); // 目視テスト中なら止めてから

@@ -27,7 +27,7 @@ internal static class GridMismatchPolicyDialog
         panel.Children.Add(new TextBlock
         {
             Text = "出力先の形式のグリッド(位置の分解能)に乗らないノート・フリーズ・BPM変化・速度変化が" +
-                   "あった場合の扱いを選んでくださいまし。いずれの場合も対象は警告一覧でお知らせいたしますわ。",
+                   "あった場合の扱いを選んでください。いずれの場合も対象は警告一覧でお知らせいたします。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 12),
         });

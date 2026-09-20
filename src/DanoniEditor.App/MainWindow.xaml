@@ -2,8 +2,85 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DanoniEditor.App"
+        xmlns:xcad="https://github.com/Dirkster99/AvalonDock"
         Title="IDE (ITTN-DANONI-EDITOR)" Width="1280" Height="800"
         Icon="Assets/AppIcon.ico">
+    <Window.Resources>
+                    <!-- 2026-09-21要望対応: AvalonDockの既定ではツールウィンドウ系ペイン(LayoutAnchorablePane)の
+                         タブは下側に表示される(Visual Studioのツールウィンドウと同じ既定挙動)。テーマの
+                         AnchorablePaneControlStyleはControlTemplate内でタブ行を固定的にGrid.Row="1"(下側)へ
+                         配置しており、TabStripPlacementプロパティの値だけでは切り替わらないため、タブを上側に
+                         配置し直した独自ControlTemplateへ丸ごと差し替える(テーマ固有のDynamicResourceキー名には
+                         依存させず、TemplateBindingのみで組む単純な見た目にして、アプリ他所の素のTabControlの
+                         見た目に近づける)。 -->
+                    <Style x:Key="AnchorablePaneTopTabsStyle" TargetType="{x:Type xcad:LayoutAnchorablePaneControl}">
+                        <Setter Property="TabStripPlacement" Value="Top"/>
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="{x:Type xcad:LayoutAnchorablePaneControl}">
+                                    <Grid ClipToBounds="True"
+                                          KeyboardNavigation.TabNavigation="Local"
+                                          SnapsToDevicePixels="True">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <!-- マウスイベント捕捉用(元のテーマテンプレートと同じ目的) -->
+                                        <Border Grid.RowSpan="2" Background="Transparent"/>
+                                        <xcad:AnchorablePaneTabPanel x:Name="HeaderPanel"
+                                                                     Grid.Row="0"
+                                                                     Margin="2,2,2,0"
+                                                                     Panel.ZIndex="1"
+                                                                     IsItemsHost="True"
+                                                                     KeyboardNavigation.TabIndex="1"/>
+                                        <Border x:Name="ContentPanel"
+                                                Grid.Row="1"
+                                                Grid.Column="0"
+                                                Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                KeyboardNavigation.DirectionalNavigation="Contained"
+                                                KeyboardNavigation.TabIndex="2"
+                                                KeyboardNavigation.TabNavigation="Cycle">
+                                            <ContentPresenter x:Name="PART_SelectedContentHost"
+                                                              Margin="{TemplateBinding Padding}"
+                                                              ContentSource="SelectedContent"
+                                                              SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                        </Border>
+                                    </Grid>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <!-- 2026-09-21修正: 上記Templateの独自差し替えだけでは、タブ見出し(Title)・
+                             タブ内容(実際のプロパティパネル)を描画するためのItemTemplate/ContentTemplateが
+                             テーマ既定のものから引き継がれず(このStyleが丸ごと差し替わるため)、各タブの
+                             見出し・中身がLayoutAnchorableモデルのToString()表示("AvalonDock.Layout.
+                             LayoutAnchorable")になってしまう不具合があった。AvalonDockが標準で使う
+                             LayoutAnchorableTabItem/LayoutAnchorableControlを明示的に指定し直すことで解消する
+                             (テーマのAnchorablePaneControlStyleが本来設定している値と同じ)。 -->
+                        <Setter Property="ItemTemplate">
+                            <Setter.Value>
+                                <DataTemplate>
+                                    <xcad:LayoutAnchorableTabItem Model="{Binding}"/>
+                                </DataTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Setter Property="ContentTemplate">
+                            <Setter.Value>
+                                <DataTemplate>
+                                    <xcad:LayoutAnchorableControl Model="{Binding}"/>
+                                </DataTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+    </Window.Resources>
     <!-- 仕様書6.1: 上段=グローバル設定 / 左=編集ツール / 中央=譜面 / 右=プロパティ / 下=ステータス -->
     <DockPanel>
         <Menu DockPanel.Dock="Top">
@@ -21,7 +98,10 @@
                 <Separator/>
                 <MenuItem Header="dos.txtをエクスポート(_E)..." InputGestureText="Ctrl+E" Click="ExportDos_Click"/>
                 <!-- 2026-07-23: 合作用途(TBD 5)。カレント難易度タブ1つだけをITTNエディタ形式で書き出す -->
-                <MenuItem Header="現在の難易度タブをエクスポート(_T)..." Click="ExportCurrentTab_Click"/>
+                <MenuItem Header="現在のタブを単独で保存(_T)..." Click="ExportCurrentTab_Click"/>
+                <!-- 2026-08-22要望対応: 合作用途。カレント難易度タブ1つだけをdos.txtデータ行の形で書き出す
+                     (既存dos.txtへの手動貼り付け用スニペット。サフィックス番号は都度ダイアログで指定) -->
+                <MenuItem Header="現在のタブをdosエクスポート(_D)..." Click="ExportCurrentTabDos_Click"/>
                 <!-- 2026-08-03要望対応: 現在の難易度タブ1つを他エディタ形式へ書き出す -->
                 <MenuItem Header="SKBエディタへエクスポート..." Click="ExportSkb_Click"/>
                 <MenuItem Header="FUJIエディタへエクスポート..." Click="ExportFuji_Click"/>
@@ -49,6 +129,24 @@
                 <MenuItem Header="環境報告作成(_R)..." Click="CreateDiagnosticsReport_Click"/>
                 <!-- 2026-07-31: バージョン情報ダイアログ -->
                 <MenuItem Header="バージョン情報(_V)..." Click="OpenAbout_Click"/>
+            </MenuItem>
+            <!-- 2026-09-20: 共同編集(複数人リアルタイム編集、realtime_collab_edit_design_2026-09-20.md参照)。
+                 フェーズ1(MVP)、簡易版(双方向スナップショット送信)。 -->
+            <MenuItem Header="共同編集(_C)">
+                <MenuItem x:Name="CollabStartHostMenuItem" Header="ホストを開始(_H)..." Click="CollabStartHost_Click"/>
+                <MenuItem x:Name="CollabJoinMenuItem" Header="セッションに参加(_J)..." Click="CollabJoin_Click"/>
+                <Separator/>
+                <!-- 2026-09-20: 仲介ヘルパー機能(設計メモ4.2節、CGNAT対応)。ホスト/参加者どちらか
+                     一方が直接到達できない(CGNAT配下等)場合の迂回手段。 -->
+                <MenuItem Header="仲介ヘルパー機能(CGNAT対応)(_G)">
+                    <MenuItem x:Name="RendezvousHelperStartMenuItem" Header="仲介ヘルパーとして待機する(_W)..." Click="RendezvousHelperStart_Click"/>
+                    <MenuItem x:Name="RendezvousHelperStopMenuItem" Header="仲介ヘルパーを停止(_S)" Click="RendezvousHelperStop_Click" IsEnabled="False"/>
+                    <Separator/>
+                    <MenuItem x:Name="RendezvousJoinMenuItem" Header="仲介ヘルパー経由でホストへ参加する(_P)..." Click="RendezvousJoin_Click"/>
+                    <MenuItem x:Name="RendezvousAcceptMenuItem" Header="仲介ヘルパー経由で参加者を受け入れる(_A)..." Click="RendezvousAccept_Click" IsEnabled="False"/>
+                </MenuItem>
+                <Separator/>
+                <MenuItem x:Name="CollabDisconnectMenuItem" Header="切断(_D)" Click="CollabDisconnect_Click" IsEnabled="False"/>
             </MenuItem>
         </Menu>
         <!-- 2026-08-02要望対応: FHD(1920x1080)環境だと上パネルが画面幅に見切れるとの指摘対応で
@@ -190,6 +288,11 @@
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="準備完了"/>
             </StatusBarItem>
+            <Separator/>
+            <!-- 2026-09-20: 共同編集の接続状態(未接続/ホスト中/参加中+人数)を常時表示 -->
+            <StatusBarItem>
+                <TextBlock x:Name="CollabStatusText" Text="共同編集: 未接続"/>
+            </StatusBarItem>
         </StatusBar>
         <Border DockPanel.Dock="Left" Width="72" Background="#E8E8E8">
             <StackPanel Margin="4">
@@ -208,9 +311,20 @@
                 <ColumnDefinition Width="4"/>
                 <ColumnDefinition x:Name="RightPanelColumn" Width="280"/>
             </Grid.ColumnDefinitions>
+        <!-- 2026-09-21: 5ステップ計画Step4(AvalonDock導入)。従来のTabControl(単一選択のみ)から
+             AvalonDockのDockingManagerへ移行。この段階では見た目・挙動をほぼそのまま(1つのペインに
+             タブとして並ぶだけ)に保つことを優先し、複数ペイン化は次段階で対応する。 -->
         <Border Grid.Column="2" Background="#E8E8E8">
-            <TabControl x:Name="PropertyTabControl" PreviewMouseLeftButtonDown="PropertyTabControl_PreviewMouseLeftButtonDown">
-                <TabItem Header="プロジェクト">
+            <xcad:DockingManager x:Name="PropertyDockingManager"
+                                 AnchorablePaneControlStyle="{StaticResource AnchorablePaneTopTabsStyle}"
+                                 ActiveContentChanged="PropertyDockingManager_ActiveContentChanged">
+                <xcad:DockingManager.Theme>
+                    <xcad:Vs2013LightTheme/>
+                </xcad:DockingManager.Theme>
+                <xcad:LayoutRoot>
+                    <xcad:LayoutPanel Orientation="Vertical">
+                        <xcad:LayoutAnchorablePane x:Name="PropertyAnchorablePane">
+                <xcad:LayoutAnchorable x:Name="ProjectPropertyPane" Title="プロジェクト" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock Text="曲名" Margin="0,4,0,2"/>
@@ -274,8 +388,8 @@
                             <TextBlock x:Name="ToolValueText" Text="-" FontWeight="Bold"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem Header="色設定">
+                </xcad:LayoutAnchorable>
+                <xcad:LayoutAnchorable x:Name="ColorSettingsPane" Title="色設定" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock x:Name="ColorTab0NoticeText" Text="このタブが「共通」の実体です(dos.txt出力時、無サフィックスのsetColor/frzColorになります)"
@@ -298,8 +412,8 @@
                             <Separator Margin="0,12,0,8"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem Header="オブジェクト">
+                </xcad:LayoutAnchorable>
+                <xcad:LayoutAnchorable x:Name="ObjectPropertyPane" Title="オブジェクト" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <CheckBox x:Name="ObjectTabPinCheck" Content="このタブに固定(選択解除しても自動で切り替わらない)" Margin="0,0,0,8"/>
@@ -326,7 +440,10 @@
 
                                 <!-- 2026-07-30要望対応: speed/boostの「始点終点オートスムージング出力」。
                                      前/次の同種マーカーとリンクすると、その間を指定した設置間隔(絶対グリッド)で
-                                     自動補間した中間値をdos.txt出力・プレイテスト・プレビューへ反映する。 -->
+                                     自動補間した中間値をdos.txt出力・プレイテスト・プレビューへ反映する。
+                                     2026-08-23要望対応: BPM変更マーカーでも同じチェックボックスを共用する
+                                     (BPMは拍位置に対して直線的に変化するランプとして扱われ、正確な値は
+                                     解析解で計算されるため、設置間隔はSKB/FUJIエクスポート時の分解粒度としてのみ使う)。 -->
                                 <StackPanel x:Name="ObjectLinkPrevPanel" Margin="0,10,0,0" Visibility="Collapsed">
                                     <CheckBox x:Name="ObjectLinkPrevCheck" Content="前の同種マーカーとリンクする(自動スムージング)"
                                               Checked="ObjectLinkPrev_Changed" Unchecked="ObjectLinkPrev_Changed"/>
@@ -380,15 +497,19 @@
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem Header="その他">
+                </xcad:LayoutAnchorable>
+                <xcad:LayoutAnchorable x:Name="OtherPropertyPane" Title="その他" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <StackPanel x:Name="ExtraHeadersPanel"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem x:Name="ColorEditTabItem" Header="色編集">
+                </xcad:LayoutAnchorable>
+                        </xcad:LayoutAnchorablePane>
+                        <!-- 2026-09-21: 5ステップ計画Step4 第2段階(既定レイアウトの複数ペイン化)。
+                             編集ツール系(色編集/マクロ/マーカー/リンク)を独立ペインへ分離。 -->
+                        <xcad:LayoutAnchorablePane x:Name="EditToolsAnchorablePane">
+                <xcad:LayoutAnchorable x:Name="ColorEditTabItem" Title="色編集" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock Text="編集対象" FontWeight="Bold" Margin="0,0,0,2"/>
@@ -474,8 +595,8 @@
                             <Button x:Name="NColorClearAllButton" Content="ncolor_dataを全て削除" Click="NColorClearAllButton_Click" Foreground="DarkRed"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem x:Name="MacroTabItem" Header="マクロ">
+                </xcad:LayoutAnchorable>
+                <xcad:LayoutAnchorable x:Name="MacroTabItem" Title="マクロ" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <ListBox x:Name="MacroListBox" Height="220" SelectionChanged="MacroListBox_SelectionChanged"
@@ -495,18 +616,18 @@
                             <TextBlock Text="※範囲が設定されている場合、実行時に範囲内のみへ自動適用されます(解除はEscapeキー)" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="11" Foreground="Gray"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
+                </xcad:LayoutAnchorable>
                 <!-- 2026-07-26要望対応(第三者提案): マーカー一覧からのジャンプ機能 -->
-                <TabItem x:Name="MarkerTabItem" Header="マーカー">
+                <xcad:LayoutAnchorable x:Name="MarkerTabItem" Title="マーカー" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock Text="マーカー一覧(ダブルクリックでジャンプ)" FontWeight="Bold" Margin="0,0,0,4"/>
                             <ListBox x:Name="MarkerListBox" Height="320" MouseDoubleClick="MarkerListBox_MouseDoubleClick"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
+                </xcad:LayoutAnchorable>
                 <!-- 2026-07-26要望対応: 同キー種タブ同士のリンク(非アクティブタブを背景に薄く表示) -->
-                <TabItem x:Name="LinkTabItem" Header="リンク">
+                <xcad:LayoutAnchorable x:Name="LinkTabItem" Title="リンク" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock x:Name="LinkStatusText" Text="(未オープン)" TextWrapping="Wrap" Margin="0,0,0,8"/>
@@ -518,8 +639,11 @@
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-                <TabItem x:Name="AnalysisTabItem" Header="分析" Visibility="Collapsed">
+                </xcad:LayoutAnchorable>
+                        </xcad:LayoutAnchorablePane>
+                        <!-- 分析・プレビュー系を独立ペインへ分離。 -->
+                        <xcad:LayoutAnchorablePane x:Name="AnalysisAnchorablePane">
+                <xcad:LayoutAnchorable x:Name="AnalysisTabItem" Title="分析" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock Text="ITTNアナライザー(難易度分析)" FontWeight="Bold" Margin="0,0,0,4"/>
@@ -534,9 +658,9 @@
                             <TextBlock x:Name="OniStarResultText" Text="？？？" FontWeight="Bold" TextWrapping="Wrap"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
+                </xcad:LayoutAnchorable>
                 <!-- 2026-07-29要望対応: プレイ画面プレビュー(仮想スナップショット)。目視テスト中はプレビューも連動して動く -->
-                <TabItem x:Name="PreviewTabItem" Header="プレビュー">
+                <xcad:LayoutAnchorable x:Name="PreviewTabItem" Title="プレビュー" CanClose="False">
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
                         <StackPanel Margin="8">
                             <TextBlock Text="プレイ画面プレビュー(仮想スナップショット)" FontWeight="Bold" Margin="0,0,0,4"/>
@@ -554,8 +678,11 @@
                             <Border x:Name="PreviewHostBorder" BorderBrush="Black" BorderThickness="1" HorizontalAlignment="Left" VerticalAlignment="Top"/>
                         </StackPanel>
                     </ScrollViewer>
-                </TabItem>
-            </TabControl>
+                </xcad:LayoutAnchorable>
+                        </xcad:LayoutAnchorablePane>
+                    </xcad:LayoutPanel>
+                </xcad:LayoutRoot>
+            </xcad:DockingManager>
         </Border>
         <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                       Background="#CCCCCC" ResizeBehavior="PreviousAndNext" Cursor="SizeWE"

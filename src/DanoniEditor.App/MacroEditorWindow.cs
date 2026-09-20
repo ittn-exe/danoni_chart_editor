@@ -142,7 +142,7 @@ internal sealed class MacroEditorWindow : Window
         if (_currentTemplate is not null && !string.Equals(newKeyTypeId, _lastConfirmedKeyTypeId, StringComparison.Ordinal))
         {
             var confirm = MessageBox.Show(this,
-                "対象キー種を変更すると、入れ替え後プレビューの内容がリセットされますの。よろしいですか?",
+                "対象キー種を変更すると、入れ替え後プレビューの内容がリセットされます。よろしいですか?",
                 "キー種の変更", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes)
             {
@@ -179,7 +179,7 @@ internal sealed class MacroEditorWindow : Window
         if (_keyTypeCombo.SelectedItem is not string keyTypeId) return;
         KeyTemplate tpl;
         try { tpl = _templates.Get(keyTypeId); }
-        catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗しましたわ: {ex.Message}"; return; }
+        catch (Exception ex) { _error.Text = $"テンプレートの読み込みに失敗しました: {ex.Message}"; return; }
 
         _currentTemplate = tpl;
         var identity = Enumerable.Range(0, tpl.Lanes.Count).ToList();
@@ -195,14 +195,14 @@ internal sealed class MacroEditorWindow : Window
     {
         _error.Text = "";
         if (_keyTypeCombo.SelectedItem is not string keyTypeId)
-        { _error.Text = "対象キー種を選択してくださいまし"; return; }
+        { _error.Text = "対象キー種を選択してください"; return; }
         var name = _macroNameBox.Text.Trim();
         if (name.Length == 0)
-        { _error.Text = "マクロ名を入力してくださいまし"; return; }
+        { _error.Text = "マクロ名を入力してください"; return; }
         if (_existingNames.Contains(name))
-        { _error.Text = "同じ名前のマクロが既にありますの。別の名前にしてくださいまし"; return; }
+        { _error.Text = "同じ名前のマクロが既にあります。別の名前にしてください"; return; }
         if (_currentTemplate is null || _mappedRow.Count == 0)
-        { _error.Text = "レーン構成を読み込めませんでしたわ"; return; }
+        { _error.Text = "レーン構成を読み込めませんでした"; return; }
 
         var mapping = _mappedRow.CurrentOrderOriginalIndices();
 

@@ -53,6 +53,14 @@ internal sealed class NAudioBgmPlayer : IDisposable
     /// <summary>曲の全体長(デコード完了後のみ値が入る)。</summary>
     public TimeSpan? Duration { get; private set; }
 
+    /// <summary>診断用(2026-09-07: 「Spaceで目視テストを開始しても無音・再生位置ラインが動かない」
+    /// 不具合の切り分け用): Play()/Stop()で切り替わる内部フラグの生値。</summary>
+    public bool DiagIsPlayingFlag { get { lock (_lock) return _playing; } }
+
+    /// <summary>診断用: WASAPI出力ストリーム自体の実際の再生状態(Stopped/Playing/Paused)。
+    /// _output未初期化(音楽未読込)の場合は"(未初期化)"を返す。</summary>
+    public string DiagOutputState => _output?.PlaybackState.ToString() ?? "(未初期化)";
+
     /// <summary>Open完了時に発火(WPF MediaPlayer.MediaOpenedの代替、呼び出し元の使い方を変えずに
     /// 済むよう同じ「非同期に後から通知」の形にしている)。デコードはバックグラウンドスレッドで行い、
     /// 完了後の通知はawait元のSynchronizationContext(WPFならUIスレッド)へ戻る。</summary>
@@ -142,6 +150,20 @@ internal sealed class NAudioBgmPlayer : IDisposable
 
     public void Play() { lock (_lock) _playing = true; }
     public void Stop() { lock (_lock) _playing = false; }
+
+    /// <summary>診断用/自動復旧(2026-09-13要望対応): WASAPI出力ストリームが、内部的には「再生中」の
+    /// ままなのに実際のレンダリングコールバックが呼ばれなくなり、位置が進まなくなる不具合
+    /// (環境報告の診断情報で確認済み、NAudioのイベント同期に起因すると見られる)への対策。
+    /// 既存の音声データ(_pcm/_format/_framePos)はそのまま使い、出力デバイスストリーム(_output、
+    /// WasapiOutインスタンス)だけを作り直す。呼び出し元がPosition/Playを設定し直す前提
+    /// (MainWindow.PlaybackTimer_Tick参照)。</summary>
+    public void RecoverOutput()
+    {
+        WaveFormat? fmt;
+        lock (_lock) fmt = _format;
+        if (fmt is null) return;
+        SetupOutput(fmt); // _lockを保持したまま呼ぶとStop()がオーディオスレッド合流待ちでデッドロックしうるため、ロック外で呼ぶ
+    }
 
     /// <summary>ハンドクラップのスケジュールを設定する(2026-07-26f)。framesはBGMのframe(60fps)基準、
     /// 昇順・呼び出し元で必要な範囲(再生開始frame以降等)に絞り込んだ状態で渡すこと。

@@ -39,7 +39,7 @@ internal sealed class PluginManager
             }
             catch (Exception ex)
             {
-                var msg = $"{plugin.Id}: 初期化に失敗しましたわ({ex.Message})";
+                var msg = $"{plugin.Id}: 初期化に失敗しました({ex.Message})";
                 _errors.Add(msg);
                 PluginLog.Write(msg);
             }

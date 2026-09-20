@@ -120,101 +120,7 @@ public sealed class DosExporter
             var template = _templateResolver(tab.KeyTypeId);
             var suffix = tabIndex == 0 ? "" : (tabIndex + 1).ToString();
 
-            if (tab.Lanes.Count != template.KeyCount)
-                throw new InvalidOperationException(
-                    $"タブ'{tab.DifficultyName}'のレーン数({tab.Lanes.Count})がテンプレート({template.KeyCount})と一致しません");
-
-            // 2026-07-23(TBD 3): 最終的な出力直前に(Frame,TargetSuffix,ColorCode,AllFlag)が同一の
-            // エントリをまとめて0...7/1・3・5・7/all記法へ圧縮するため、まずはレーンごとの生データ
-            // (EngineLaneNumとTargetSuffixを分離した形)で集める。
-            var nColorRaw = new List<(long Frame, int EngineLaneNum, string TargetSuffix, string ColorCode, bool AllFlag)>();
-
-            for (int j = 0; j < template.KeyCount; j++)
-            {
-                var lane = template.Lanes[j];
-                var data = tab.Lanes[j];
-
-                if (data.Notes.Count > 0)
-                {
-                    var frames = data.Notes
-                        .Select(t => RoundFrame(engine.TickToFrame(t) + blankShift))
-                        .OrderBy(f => f);
-                    AppendParam(sb, $"{lane.DataName}{suffix}_data", string.Join(",", frames));
-                }
-
-                if (data.Freezes.Count > 0)
-                {
-                    var frzName = lane.FrzDataNameOverride ?? FrzNameResolver.Resolve(lane.DataName);
-                    var pairs = data.Freezes
-                        .OrderBy(f => f.StartTick)
-                        .SelectMany(f => new[]
-                        {
-                            RoundFrame(engine.TickToFrame(f.StartTick) + blankShift),
-                            RoundFrame(engine.TickToFrame(f.EndTick) + blankShift),
-                        });
-                    AppendParam(sb, $"{frzName}{suffix}_data", string.Join(",", pairs));
-                }
-
-                if (data.ColorOverrides.Count > 0)
-                {
-                    // 2026-07-24: ncolor_data(allFlg無し)は本家仕様上「指定フレーム以降ずっと持続する」
-                    // 永続的な色状態変更であり、1オーバーライド=1行の単純な出力では「着色ノートの後ろに
-                    // 置いた無着色ノートまで意図せず着色される」問題が起きる(ユーザー指摘、2026-07-24)。
-                    // トラック(Arrow=通常ノート、Normal=フリーズ端点、NormalBar=フリーズ帯)ごとに
-                    // tick順で「現在の色状態」との差分がある地点だけncolor_dataを出力する。
-                    // 連続する同色区間は状態が変化しないため自動的に省略され、着色→無着色→着色のような
-                    // 区間には「基本色へ戻す」行が自動的に挿入される。
-                    var overrideByTick = data.ColorOverrides.ToDictionary(c => c.Tick);
-                    string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, lane.ColorGroup, tabs);
-
-                    void ScanTrack(IEnumerable<long> ticks, string defaultHex, string targetSuffix,
-                        Func<NColorEntry, string?> pick)
-                    {
-                        string current = defaultHex;
-                        foreach (var tick in ticks.OrderBy(t => t))
-                        {
-                            overrideByTick.TryGetValue(tick, out var e);
-                            string desired = e is not null ? pick(e) ?? defaultHex : defaultHex;
-                            if (string.Equals(desired, current, StringComparison.Ordinal)) continue;
-                            long frame = RoundFrame(engine.TickToFrame(tick) + blankShift);
-                            // allFlg(即時適用)は基本色への自動復帰(e=null)には適用しない。
-                            // ユーザーが明示的に塗った箇所(eが存在する)でのみ、その時のチェック状態を反映する。
-                            bool allFlag = e?.AllFlag ?? false;
-                            nColorRaw.Add((frame, lane.EngineLaneNum, targetSuffix, desired, allFlag));
-                            current = desired;
-                        }
-                    }
-
-                    string arrowShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "setShadowColor");
-
-                    if (data.Notes.Count > 0)
-                    {
-                        ScanTrack(data.Notes, arrowDefault, "", e => e.Color);
-                        ScanTrack(data.Notes, arrowShadowDefault, "ArrowShadow", e => e.ShadowColor);
-                    }
-
-                    if (data.Freezes.Count > 0)
-                    {
-                        var (normalDefault, barDefault) =
-                            ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault, tabs);
-                        var (hitDefault, hitBarDefault) =
-                            ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault, tabs);
-                        string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "frzShadowColor");
-                        var freezeStartTicks = data.Freezes.Select(f => f.StartTick);
-                        ScanTrack(freezeStartTicks, normalDefault, "Normal", e => e.Color);
-                        ScanTrack(freezeStartTicks, barDefault, "NormalBar", e => e.BandColor);
-                        ScanTrack(freezeStartTicks, normalShadowDefault, "NormalShadow", e => e.ShadowColor);
-                        ScanTrack(freezeStartTicks, hitDefault, "Hit", e => e.HitColor);
-                        ScanTrack(freezeStartTicks, hitBarDefault, "HitBar", e => e.HitBarColor);
-                        ScanTrack(freezeStartTicks, normalShadowDefault, "HitShadow", e => e.HitShadowColor);
-                    }
-                }
-            }
-
-            AppendValueEvents(sb, $"speed{suffix}_data", tab.SpeedEvents, engine, blankShift);
-            AppendValueEvents(sb, $"boost{suffix}_data", tab.BoostEvents, engine, blankShift);
-            AppendNColorData(sb, $"ncolor{suffix}_data", CompressNColorEntries(nColorRaw, template));
-            AppendWordData(sb, suffix, tab, engine, blankShift);
+            AppendTabBody(sb, project, tabs, tab, template, suffix, engine, blankShift);
             sb.AppendLine();
         }
 
@@ -235,6 +141,142 @@ public sealed class DosExporter
         sb.Append("}\n");
 
         return sb.ToString();
+    }
+
+    /// <summary>2026-08-22要望対応(合作用途): カレント難易度タブ1つだけを対象に、dos.txtのデータ行
+    /// (note/freeze/ncolor/speed/boost/word_data)のみを出力する。JSラッパー・musicTitle等の
+    /// プロジェクト共通ヘッダー・difDataは出力しない(既存の合作用途の
+    /// 「現在の難易度タブをエクスポート」がITTNエディタ形式でタブ全体を書き出すのに対し、こちらは
+    /// dos.txt形式のテキストとして、合作相手が既に持っている(または他の合作者から受け取る)dos.txtへ
+    /// 手動で貼り付けることを想定した「差分スニペット」を作る機能)。
+    /// サフィックス番号(dataName{N}_data等の{N}部分)は、プロジェクト内でのタブ並び順から自動採番される
+    /// 通常のExportとは異なり、呼び出し元が明示的に指定する(貼り付け先の既存dos.txtで
+    /// 何番目のスロットに割り当てるかは、単体のタブ情報だけからは決められないため)。
+    /// suffixNumberがnullの場合はサフィックス無し(1番目のタブ相当の名前、例: 1_data)で出力する。</summary>
+    public string ExportSingleTab(ChartProject project, DifficultyTab tab, int? suffixNumber)
+    {
+        if (!project.Tabs.Contains(tab))
+            throw new InvalidOperationException("指定されたタブはこのプロジェクトに属していませんわ");
+
+        // 色の既定値解決(ColorDefaults.Resolve*)は「先頭タブ」を基準に行うため、対象タブ自身が
+        // dosロック(ExcludeFromDosExport)中でも、コンテキスト用のtabsリストには必ず対象タブ自身を
+        // 含める(通常のExportと違い、こちらはロック状態に関わらずユーザーが明示的に選んだタブを
+        // そのまま出力する機能のため)。
+        var tabs = project.Tabs.Where(t => !t.ExcludeFromDosExport || ReferenceEquals(t, tab)).ToList();
+
+        var template = _templateResolver(tab.KeyTypeId);
+        if (tab.Lanes.Count != template.KeyCount)
+            throw new InvalidOperationException(
+                $"タブ'{tab.DifficultyName}'のレーン数({tab.Lanes.Count})がテンプレート({template.KeyCount})と一致しません");
+
+        var engine = project.CreateTimingEngine();
+        double blankShift = project.BlankFrame;
+        string suffix = suffixNumber is { } n ? n.ToString(CultureInfo.InvariantCulture) : "";
+
+        var sb = new StringBuilder();
+        AppendTabBody(sb, project, tabs, tab, template, suffix, engine, blankShift);
+        return sb.ToString();
+    }
+
+    /// <summary>1タブ分のdos.txtデータ行(note/freeze/ncolor/speed/boost/word_data)を出力する。
+    /// 通常の全タブExportと単体タブ出力(ExportSingleTab)の両方から共通で呼ばれる(2026-08-22抽出)。
+    /// tabsは色の既定値解決(ColorDefaults参照)に使うコンテキスト用のタブ一覧で、必ずしもtab自身が
+    /// 含まれるとは限らない呼び出し元(通常Export)とtab自身を含む呼び出し元(ExportSingleTab)の
+    /// 両方がある。</summary>
+    private static void AppendTabBody(StringBuilder sb, ChartProject project, List<DifficultyTab> tabs,
+        DifficultyTab tab, KeyTemplate template, string suffix, Timing.TimingEngine engine, double blankShift)
+    {
+        // 2026-07-23(TBD 3): 最終的な出力直前に(Frame,TargetSuffix,ColorCode,AllFlag)が同一の
+        // エントリをまとめて0...7/1・3・5・7/all記法へ圧縮するため、まずはレーンごとの生データ
+        // (EngineLaneNumとTargetSuffixを分離した形)で集める。
+        var nColorRaw = new List<(long Frame, int EngineLaneNum, string TargetSuffix, string ColorCode, bool AllFlag)>();
+
+        for (int j = 0; j < template.KeyCount; j++)
+        {
+            var lane = template.Lanes[j];
+            var data = tab.Lanes[j];
+
+            if (data.Notes.Count > 0)
+            {
+                var frames = data.Notes
+                    .Select(t => RoundFrame(engine.TickToFrame(t) + blankShift))
+                    .OrderBy(f => f);
+                AppendParam(sb, $"{lane.DataName}{suffix}_data", string.Join(",", frames));
+            }
+
+            if (data.Freezes.Count > 0)
+            {
+                var frzName = lane.FrzDataNameOverride ?? FrzNameResolver.Resolve(lane.DataName);
+                var pairs = data.Freezes
+                    .OrderBy(f => f.StartTick)
+                    .SelectMany(f => new[]
+                    {
+                        RoundFrame(engine.TickToFrame(f.StartTick) + blankShift),
+                        RoundFrame(engine.TickToFrame(f.EndTick) + blankShift),
+                    });
+                AppendParam(sb, $"{frzName}{suffix}_data", string.Join(",", pairs));
+            }
+
+            if (data.ColorOverrides.Count > 0)
+            {
+                // 2026-07-24: ncolor_data(allFlg無し)は本家仕様上「指定フレーム以降ずっと持続する」
+                // 永続的な色状態変更であり、1オーバーライド=1行の単純な出力では「着色ノートの後ろに
+                // 置いた無着色ノートまで意図せず着色される」問題が起きる(ユーザー指摘、2026-07-24)。
+                // トラック(Arrow=通常ノート、Normal=フリーズ端点、NormalBar=フリーズ帯)ごとに
+                // tick順で「現在の色状態」との差分がある地点だけncolor_dataを出力する。
+                // 連続する同色区間は状態が変化しないため自動的に省略され、着色→無着色→着色のような
+                // 区間には「基本色へ戻す」行が自動的に挿入される。
+                var overrideByTick = data.ColorOverrides.ToDictionary(c => c.Tick);
+                string arrowDefault = ColorDefaults.ResolveSetColorHex(tab, project, lane.ColorGroup, tabs);
+
+                void ScanTrack(IEnumerable<long> ticks, string defaultHex, string targetSuffix,
+                    Func<NColorEntry, string?> pick)
+                {
+                    string current = defaultHex;
+                    foreach (var tick in ticks.OrderBy(t => t))
+                    {
+                        overrideByTick.TryGetValue(tick, out var e);
+                        string desired = e is not null ? pick(e) ?? defaultHex : defaultHex;
+                        if (string.Equals(desired, current, StringComparison.Ordinal)) continue;
+                        long frame = RoundFrame(engine.TickToFrame(tick) + blankShift);
+                        // allFlg(即時適用)は基本色への自動復帰(e=null)には適用しない。
+                        // ユーザーが明示的に塗った箇所(eが存在する)でのみ、その時のチェック状態を反映する。
+                        bool allFlag = e?.AllFlag ?? false;
+                        nColorRaw.Add((frame, lane.EngineLaneNum, targetSuffix, desired, allFlag));
+                        current = desired;
+                    }
+                }
+
+                string arrowShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "setShadowColor");
+
+                if (data.Notes.Count > 0)
+                {
+                    ScanTrack(data.Notes, arrowDefault, "", e => e.Color);
+                    ScanTrack(data.Notes, arrowShadowDefault, "ArrowShadow", e => e.ShadowColor);
+                }
+
+                if (data.Freezes.Count > 0)
+                {
+                    var (normalDefault, barDefault) =
+                        ColorDefaults.ResolveFrzColorsHex(tab, project, arrowDefault, tabs);
+                    var (hitDefault, hitBarDefault) =
+                        ColorDefaults.ResolveFrzHitColorsHex(tab, project, normalDefault, barDefault, tabs);
+                    string normalShadowDefault = ColorDefaults.ResolveShadowHex(project, lane.ColorGroup, "frzShadowColor");
+                    var freezeStartTicks = data.Freezes.Select(f => f.StartTick);
+                    ScanTrack(freezeStartTicks, normalDefault, "Normal", e => e.Color);
+                    ScanTrack(freezeStartTicks, barDefault, "NormalBar", e => e.BandColor);
+                    ScanTrack(freezeStartTicks, normalShadowDefault, "NormalShadow", e => e.ShadowColor);
+                    ScanTrack(freezeStartTicks, hitDefault, "Hit", e => e.HitColor);
+                    ScanTrack(freezeStartTicks, hitBarDefault, "HitBar", e => e.HitBarColor);
+                    ScanTrack(freezeStartTicks, normalShadowDefault, "HitShadow", e => e.HitShadowColor);
+                }
+            }
+        }
+
+        AppendValueEvents(sb, $"speed{suffix}_data", tab.SpeedEvents, engine, blankShift);
+        AppendValueEvents(sb, $"boost{suffix}_data", tab.BoostEvents, engine, blankShift);
+        AppendNColorData(sb, $"ncolor{suffix}_data", CompressNColorEntries(nColorRaw, template));
+        AppendWordData(sb, suffix, tab, engine, blankShift);
     }
 
     /// <summary>2026-07-30要望対応: 「始点終点オートスムージング出力」。ValueEvent.LinkGridDivisionで

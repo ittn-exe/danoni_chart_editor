@@ -410,7 +410,7 @@ public sealed class PlaceValueEventAction(ValueEventKind kind, long tick, double
                 break;
             case ValueEventKind.Bpm:
                 if (tick == 0) throw new InvalidOperationException("tick0のBPMイベントは変更できません(エンジン不変条件)");
-                doc.Project.BpmEvents.Add(new BpmEvent(tick, value));
+                doc.Project.BpmEvents.Add(new BpmEvent(tick, value, LinkGridDivision: linkGridDivision));
                 break;
         }
     }
@@ -435,7 +435,8 @@ public sealed class PlaceValueEventAction(ValueEventKind kind, long tick, double
 /// <summary>speed/boost/BPMイベントの削除。tick0のBPMは削除不可(不変条件)。
 /// 2026-07-30追記: speed/boostを削除する際、削除対象を「次」としてリンクしている直前のイベントが
 /// あれば、そのリンクも一緒に解除する(リンク先が消滅した状態のまま、tick順で新たに隣り合った
-/// 別の遠いイベントへ黙って再リンクされてしまう事故を防ぐ)。</summary>
+/// 別の遠いイベントへ黙って再リンクされてしまう事故を防ぐ)。2026-08-23: BPMイベントにも同様の
+/// リンク(始点終点の直線ランプ)機能が追加されたため、同じ解除ロジックをBPMにも適用する。</summary>
 public sealed class DeleteValueEventAction(ValueEventKind kind, long tick) : IEditAction
 {
     private double? _removedValue;
@@ -481,8 +482,25 @@ public sealed class DeleteValueEventAction(ValueEventKind kind, long tick) : IEd
                 }
             case ValueEventKind.Bpm:
                 {
-                    var e = doc.Project.BpmEvents.FirstOrDefault(x => x.Tick == tick);
-                    if (e is not null) { _removedValue = e.Bpm; doc.Project.BpmEvents.Remove(e); }
+                    // 2026-08-23要望対応(BPMリンク): speed/boostと同様、削除対象を「次」としてリンク
+                    // している直前のBPMイベントがあれば、そのリンクも一緒に解除する。
+                    var list = doc.Project.BpmEvents;
+                    var e = list.FirstOrDefault(x => x.Tick == tick);
+                    if (e is null) break;
+                    _removedValue = e.Bpm;
+                    _removedLink = e.LinkGridDivision;
+
+                    var sorted = list.OrderBy(x => x.Tick).ToList();
+                    int idx = sorted.FindIndex(x => x.Tick == tick);
+                    if (idx > 0 && sorted[idx - 1].LinkGridDivision is not null)
+                    {
+                        _clearedPredecessorTick = sorted[idx - 1].Tick;
+                        _clearedPredecessorLink = sorted[idx - 1].LinkGridDivision;
+                        int predIdx = list.FindIndex(x => x.Tick == _clearedPredecessorTick);
+                        if (predIdx >= 0) list[predIdx] = list[predIdx] with { LinkGridDivision = null };
+                    }
+
+                    list.Remove(e);
                     break;
                 }
         }
@@ -505,7 +523,17 @@ public sealed class DeleteValueEventAction(ValueEventKind kind, long tick) : IEd
                     }
                     break;
                 }
-            case ValueEventKind.Bpm: doc.Project.BpmEvents.Add(new BpmEvent(tick, v)); break;
+            case ValueEventKind.Bpm:
+                {
+                    var list = doc.Project.BpmEvents;
+                    list.Add(new BpmEvent(tick, v, LinkGridDivision: _removedLink));
+                    if (_clearedPredecessorTick is { } pt)
+                    {
+                        int predIdx = list.FindIndex(x => x.Tick == pt);
+                        if (predIdx >= 0) list[predIdx] = list[predIdx] with { LinkGridDivision = _clearedPredecessorLink };
+                    }
+                    break;
+                }
         }
     }
 }
@@ -553,10 +581,12 @@ public sealed class MoveValueEventAction(ValueEventKind kind, long oldTick, long
                 }
             case ValueEventKind.Bpm:
                 {
+                    // 2026-08-23要望対応(BPMリンク): speed/boostと同様、移動後もLinkGridDivisionを保持する。
                     var e = doc.Project.BpmEvents.First(x => x.Tick == oldTick);
                     _value = e.Bpm;
+                    _link = e.LinkGridDivision;
                     doc.Project.BpmEvents.Remove(e);
-                    doc.Project.BpmEvents.Add(new BpmEvent(newTick, _value));
+                    doc.Project.BpmEvents.Add(new BpmEvent(newTick, _value, LinkGridDivision: _link));
                     break;
                 }
         }
@@ -576,7 +606,7 @@ public sealed class MoveValueEventAction(ValueEventKind kind, long oldTick, long
                 break;
             case ValueEventKind.Bpm:
                 doc.Project.BpmEvents.RemoveAll(x => x.Tick == newTick && x.Bpm == _value);
-                doc.Project.BpmEvents.Add(new BpmEvent(oldTick, _value));
+                doc.Project.BpmEvents.Add(new BpmEvent(oldTick, _value, LinkGridDivision: _link));
                 break;
         }
     }
@@ -585,15 +615,35 @@ public sealed class MoveValueEventAction(ValueEventKind kind, long oldTick, long
 /// <summary>speed/boostの「始点終点オートスムージング出力」用リンク設定/解除(2026-07-30要望対応)。
 /// 対象イベント(kind, tick)のLinkGridDivisionを書き換える。gridDivision=nullでリンク解除、非nullで
 /// 「tick順で直後の同種イベントとの間を、指定した設置間隔(4/8/16/32)で自動補間する」設定を行う。
-/// BPMイベントは対象外。</summary>
+/// 2026-08-23要望対応: BPMイベントの「始点終点リンク(直線ランプ)」にも同じ仕組みを流用する
+/// (TimingEngineが対数/指数の解析解でランプ区間を厳密に計算するため、設置間隔の値自体は
+/// TickToFrame/FrameToTickの計算には使われず、SKB/FUJIエクスポート時の分解粒度としてのみ使う)。
+/// tick0の先頭BPMイベントはTick/Bpm自体は不変条件で変更不可だが、LinkGridDivisionはTickを
+/// 変更しないため対象にできる(PlaceValueEventAction等とは異なりtick0ガードは不要)。</summary>
 public sealed class SetValueEventLinkAction(ValueEventKind kind, long tick, int? gridDivision) : IEditAction
 {
     private int? _previous;
 
-    public string Label => gridDivision is null ? "速度/ブーストのリンク解除" : "速度/ブーストのリンク設定";
+    public string Label => (kind, gridDivision) switch
+    {
+        (ValueEventKind.Bpm, null) => "BPMのリンク解除",
+        (ValueEventKind.Bpm, _) => "BPMのリンク設定",
+        (_, null) => "速度/ブーストのリンク解除",
+        _ => "速度/ブーストのリンク設定",
+    };
 
     public void Do(EditorDocument doc)
     {
+        if (kind == ValueEventKind.Bpm)
+        {
+            var bpmList = doc.Project.BpmEvents;
+            int bidx = bpmList.FindIndex(e => e.Tick == tick);
+            if (bidx < 0) return;
+            _previous = bpmList[bidx].LinkGridDivision;
+            bpmList[bidx] = bpmList[bidx] with { LinkGridDivision = gridDivision };
+            return;
+        }
+
         var list = kind == ValueEventKind.Speed ? doc.CurrentTab.SpeedEvents : doc.CurrentTab.BoostEvents;
         int idx = list.FindIndex(e => e.Tick == tick);
         if (idx < 0) return;
@@ -603,6 +653,15 @@ public sealed class SetValueEventLinkAction(ValueEventKind kind, long tick, int?
 
     public void Undo(EditorDocument doc)
     {
+        if (kind == ValueEventKind.Bpm)
+        {
+            var bpmList = doc.Project.BpmEvents;
+            int bidx = bpmList.FindIndex(e => e.Tick == tick);
+            if (bidx < 0) return;
+            bpmList[bidx] = bpmList[bidx] with { LinkGridDivision = _previous };
+            return;
+        }
+
         var list = kind == ValueEventKind.Speed ? doc.CurrentTab.SpeedEvents : doc.CurrentTab.BoostEvents;
         int idx = list.FindIndex(e => e.Tick == tick);
         if (idx < 0) return;

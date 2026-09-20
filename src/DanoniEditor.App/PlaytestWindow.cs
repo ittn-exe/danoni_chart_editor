@@ -389,7 +389,7 @@ internal sealed class PlaytestWindow : Window
         var path = _doc.Project.AudioFilePath;
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
         {
-            MessageBox.Show(this, "音楽ファイルが見つかりませんの。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "音楽ファイルが見つかりません。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
             Close();
             return;
         }
@@ -402,14 +402,14 @@ internal sealed class PlaytestWindow : Window
         if (_closed) return;
         if (_player.Duration is not { } duration)
         {
-            MessageBox.Show(this, "音楽ファイルの読み込みに失敗しましたわ。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "音楽ファイルの読み込みに失敗しました。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
             Close();
             return;
         }
         if (_startFrame / 60.0 >= duration.TotalSeconds)
         {
             MessageBox.Show(this,
-                "再生開始ラインが音楽ファイルの長さを超えていますの。ラインをもっと手前へ置き直してくださいませ。",
+                "再生開始ラインが音楽ファイルの長さを超えています。ラインをもっと手前へ置き直してください。",
                 "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Information);
             Close();
             return;

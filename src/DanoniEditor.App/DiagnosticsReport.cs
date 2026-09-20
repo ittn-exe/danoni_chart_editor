@@ -16,7 +16,7 @@ internal static class DiagnosticsReport
 {
     private static readonly JsonSerializerOptions SettingsJsonOpts = new() { WriteIndented = true };
 
-    public static string Build(AppSettings settings, PluginManager pluginManager)
+    public static string Build(AppSettings settings, PluginManager pluginManager, VisualTestDiagnostics? lastVisualTestDiag = null)
     {
         var sb = new StringBuilder();
 
@@ -46,7 +46,7 @@ internal static class DiagnosticsReport
         sb.AppendLine("--- プラグイン ---");
         if (pluginManager.Plugins.Count == 0)
         {
-            sb.AppendLine("(読み込まれているプラグインはありませんわ)");
+            sb.AppendLine("(読み込まれているプラグインはありません)");
         }
         else
         {
@@ -61,8 +61,16 @@ internal static class DiagnosticsReport
         }
         sb.AppendLine();
 
+        // 2026-09-07要望対応: 「Spaceで目視テストを開始しても無音・再生位置ラインが動かない」不具合の
+        // 切り分け用(VisualTestDiagnostics参照)。直近1回分の開始試行があれば含める。
+        sb.AppendLine("--- 目視テスト診断情報(直近1回の開始試行) ---");
+        sb.AppendLine(lastVisualTestDiag is { } diag
+            ? diag.Format()
+            : "(記録なし。この起動セッションで目視テストを一度も開始していません)");
+        sb.AppendLine();
+
         sb.AppendLine("--- 環境設定(settings.json相当) ---");
-        sb.AppendLine("※ 最近開いたファイルのパス等、環境固有の情報が含まれます。共有前に内容をご確認くださいませ。");
+        sb.AppendLine("※ 最近開いたファイルのパス等、環境固有の情報が含まれます。共有前に内容をご確認ください。");
         sb.AppendLine(JsonSerializer.Serialize(settings, SettingsJsonOpts));
 
         return sb.ToString();

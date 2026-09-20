@@ -148,6 +148,65 @@ public class EditActionsTests
         Assert.Equal(8, doc.CurrentTab.SpeedEvents.First(e => e.Tick == 0).LinkGridDivision);
     }
 
+    // =====================================================================
+    // BPM 始点終点リンク(直線ランプ、2026-08-23要望対応)
+    // =====================================================================
+
+    [Fact]
+    public void SetValueEventLink_Bpm_SetsAndUndoes()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 480, 200));
+
+        // tick0はTick/Bpm自体は不変条件で変更不可だが、LinkGridDivisionはTickを変更しないため対象にできる。
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Bpm, 0, 8));
+        Assert.Equal(8, doc.Project.BpmEvents.First(e => e.Tick == 0).LinkGridDivision);
+
+        doc.Undo();
+        Assert.Null(doc.Project.BpmEvents.First(e => e.Tick == 0).LinkGridDivision);
+    }
+
+    [Fact]
+    public void MoveValueEvent_Bpm_PreservesLinkGridDivision()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 96, 150));
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 480, 200));
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Bpm, 96, 16));
+
+        doc.Execute(new MoveValueEventAction(ValueEventKind.Bpm, 96, 192));
+
+        var moved = doc.Project.BpmEvents.First(e => e.Tick == 192);
+        Assert.Equal(16, moved.LinkGridDivision);
+
+        doc.Undo();
+        var restored = doc.Project.BpmEvents.First(e => e.Tick == 96);
+        Assert.Equal(16, restored.LinkGridDivision);
+    }
+
+    [Fact]
+    public void DeleteValueEvent_Bpm_ClearsPredecessorLinkPointingAtIt()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 480, 200));
+        doc.Execute(new SetValueEventLinkAction(ValueEventKind.Bpm, 0, 8));
+
+        doc.Execute(new DeleteValueEventAction(ValueEventKind.Bpm, 480));
+        Assert.Null(doc.Project.BpmEvents.First(e => e.Tick == 0).LinkGridDivision);
+
+        doc.Undo(); // 削除取り消し→リンクも復元されるはず
+        Assert.Contains(doc.Project.BpmEvents, e => e.Tick == 480);
+        Assert.Equal(8, doc.Project.BpmEvents.First(e => e.Tick == 0).LinkGridDivision);
+    }
+
+    [Fact]
+    public void PlaceValueEvent_Bpm_PreservesLinkGridDivisionArgument()
+    {
+        var doc = TestFixtures.NewDocument();
+        doc.Execute(new PlaceValueEventAction(ValueEventKind.Bpm, 96, 150, linkGridDivision: 4));
+        Assert.Equal(4, doc.Project.BpmEvents.First(e => e.Tick == 96).LinkGridDivision);
+    }
+
     [Fact]
     public void MoveObjects_GroupMove_UpdatesModelAndSelection()
     {

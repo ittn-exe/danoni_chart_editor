@@ -14,14 +14,27 @@
     <!-- 2026-07-26: バージョン番号は自動生成せず、リリースのたびに手動で書き換える運用(ユーザー確定方針)。
          この1行がAssemblyVersion/FileVersion/InformationalVersionの既定値にもなる(個別上書き無しの場合)。
          環境報告(DiagnosticsReport.cs)等、人間向けの表示にはInformationalVersionを使うこと。 -->
-    <Version>0.2.0.45</Version>
+    <Version>0.2.0.63</Version>
     <!--  バージョン番号書式：Major.Minor.Patch.Build
           Buildは自動インクリメントの予定-->
+    <!-- 2026-09-20: 配布ディレクトリ整理対応(Program.cs参照)。WPFネイティブ相互運用DLLを
+         "lib"フォルダへ検索パス追加してから起動する必要があるため、App.xamlの既定の自動生成Mainを
+         使わず、Program.Mainを明示的なエントリポイントにする(直下のItemGroupでApp.xamlの
+         ビルドアクションをApplicationDefinition→Pageへ変更するのとセットで機能する)。 -->
+    <StartupObject>DanoniEditor.App.Program</StartupObject>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\DanoniEditor.Core\DanoniEditor.Core.csproj" />
     <ProjectReference Include="..\DanoniEditor.Editing\DanoniEditor.Editing.csproj" />
     <ProjectReference Include="..\DanoniEditor.PluginContracts\DanoniEditor.PluginContracts.csproj" />
+    <ProjectReference Include="..\DanoniEditor.Collab\DanoniEditor.Collab.csproj" />
+  </ItemGroup>
+  <!-- 2026-09-20: 上記StartupObjectとセットの変更(Program.cs参照)。App.xamlは既定では
+       (ファイル名がApp.xamlであるため)暗黙的にApplicationDefinition扱いとなり、WPFのビルド処理が
+       Mainを自動生成してしまう(=Program.Mainへ処理を挟めない)。ここで明示的にPage扱いへ変更する。 -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
   </ItemGroup>
   <ItemGroup>
     <!-- MainWindow.xamlのIcon属性から参照する実行時ウィンドウアイコン -->
@@ -46,5 +59,28 @@
     <PackageReference Include="System.Drawing.Common" Version="8.0.7" />
     <!-- 2026-07-26: imgフォルダのSVGノート画像対応(pngが無い場合にsvgをラスタライズして使用) -->
     <PackageReference Include="Svg" Version="3.4.7" />
+    <!-- 2026-09-21: 5ステップ計画Step4(AvalonDock導入)。右パネルをTabControlから本格的な
+         ドッキングシステムへ移行するために採用。Xceed.Wpf.AvalonDockは現在商用ライセンス化されて
+         いるため、MITライセンスのDirkster.AvalonDockフォーク(https://github.com/Dirkster99/AvalonDock)を
+         使う。バージョンは4.74.1固定(net5.0-windows7.0までを対象とする最後の4.x系。5.0.0以降は
+         net9.0-windows7.0以上のみが対象でnet8.0-windowsからは解決できないため採用不可)。 -->
+    <PackageReference Include="Dirkster.AvalonDock" Version="4.74.1" />
+    <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.1" />
   </ItemGroup>
+
+  <!-- 2026-09-20: 配布ディレクトリ整理対応(共同編集 設計メモ 2026-09-20 5ステップ計画Step3、
+       ユーザー要望「EXE本体と各種DLLを同じディレクトリに入れているので、一段下のlibディレクトリへ
+       移してEXE本体ディレクトリをスッキリさせたい」)。単独exe配布(-p:PublishSingleFile=true かつ self-contained)でもなお単一exeへ埋め込めず、既定ではexeと同じ階層に残る
+       WPFネイティブ相互運用DLL群(docs/progress_and_tbd_2026-07-22.md 4章参照、実体は
+       D3DCompiler_47_cor3.dll・PenImc_cor3.dll・PresentationNative_cor3.dll・vcruntime140_cor3.dll・
+       wpfgfx_cor3.dllの5個、いずれも"*_cor3.dll"という共通の命名規則を持つ)を、publish完了後に
+       "lib"サブフォルダへ物理的に移動する。実行時にこれらをlibフォルダから解決できるようにする側の
+       対応はProgram.cs(AddDllDirectoryによるネイティブDLL検索パス追加)を参照。 -->
+  <Target Name="MoveNativeInteropDllsToLib" AfterTargets="Publish">
+    <ItemGroup>
+      <NativeInteropDllsToMove Include="$(PublishDir)*_cor3.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(PublishDir)lib" Condition="'@(NativeInteropDllsToMove)' != ''" />
+    <Move SourceFiles="@(NativeInteropDllsToMove)" DestinationFolder="$(PublishDir)lib" Condition="'@(NativeInteropDllsToMove)' != ''" />
+  </Target>
 </Project>

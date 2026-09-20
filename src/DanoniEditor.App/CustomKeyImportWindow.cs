@@ -78,9 +78,9 @@ internal sealed class CustomKeyImportWindow : Window
         var instructions = new TextBlock
         {
             Text = "dos.txtのヘッダー部やdanoni_settings.js等に書かれている、danoniplus本体互換の" +
-                   "カスタムキー定義テキスト(|keyCtrlX=...|等)を下の欄へ貼り付けてくださいまし。" +
+                   "カスタムキー定義テキスト(|keyCtrlX=...|等)を下の欄へ貼り付けてください。" +
                    "keyTypeIdは通常自動検出しますが、複数のキー種が混在するテキストの場合は" +
-                   "明示的に指定してくださいまし。",
+                   "明示的に指定してください。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -133,7 +133,7 @@ internal sealed class CustomKeyImportWindow : Window
         _status.Text = "";
 
         if (string.IsNullOrWhiteSpace(_pasteBox.Text))
-        { _status.Text = "カスタムキー定義テキストを貼り付けてくださいまし。"; return; }
+        { _status.Text = "カスタムキー定義テキストを貼り付けてください。"; return; }
 
         var layout = _layoutCombo.SelectedItem is KeyboardLayout kbl ? kbl : KeyboardLayout.Us;
         var idOverride = string.IsNullOrWhiteSpace(_keyTypeIdOverride.Text) ? null : _keyTypeIdOverride.Text.Trim();
@@ -145,7 +145,7 @@ internal sealed class CustomKeyImportWindow : Window
         }
         catch (Exception ex)
         {
-            _status.Text = $"取り込みに失敗しましたわ: {ex.Message}";
+            _status.Text = $"取り込みに失敗しました: {ex.Message}";
             return;
         }
 
@@ -153,9 +153,9 @@ internal sealed class CustomKeyImportWindow : Window
         if (File.Exists(destPath))
         {
             var overwrite = MessageBox.Show(this,
-                $"temp_{result.Template.KeyTypeId}.json は既に存在しますの。上書きしてよろしいですか?",
+                $"temp_{result.Template.KeyTypeId}.json は既に存在します。上書きしてよろしいですか?",
                 "確認", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (overwrite != MessageBoxResult.Yes) { _status.Text = "取り込みを中止しましたわ。"; return; }
+            if (overwrite != MessageBoxResult.Yes) { _status.Text = "取り込みを中止しました。"; return; }
         }
 
         try
@@ -164,13 +164,13 @@ internal sealed class CustomKeyImportWindow : Window
         }
         catch (Exception ex)
         {
-            _status.Text = $"保存に失敗しましたわ: {ex.Message}";
+            _status.Text = $"保存に失敗しました: {ex.Message}";
             return;
         }
 
         if (result.Warnings.Count > 0)
             MessageBox.Show(this,
-                "取り込みは完了いたしましたが、以下の点をテンプレートエディタでご確認くださいまし。\n\n" +
+                "取り込みは完了いたしましたが、以下の点をテンプレートエディタでご確認ください。\n\n" +
                 string.Join("\n\n", result.Warnings.Select(w => "・" + w)),
                 "取り込み完了(要確認)", MessageBoxButton.OK, MessageBoxImage.Information);
 

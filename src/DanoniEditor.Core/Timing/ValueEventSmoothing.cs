@@ -51,4 +51,44 @@ public static class ValueEventSmoothing
 
         return result;
     }
+
+    /// <summary>2026-08-23要望対応(BPMの「始点終点リンク」、直線ランプ): BpmEvent版のExpandLinkedEvents。
+    /// BPMは拍位置(tick)に対して直線的に変化するランプとして扱われ、このエディタ内部の
+    /// TimingEngine.TickToFrame/FrameToTickは対数/指数の解析解で厳密な値を計算するため、本来は
+    /// 中間点への分解(近似)を必要としない。しかしSKB/FUJIエディタ向けエクスポートは離散的な
+    /// BPM変化点しか扱えない外部形式であるため、それらの出力時にのみ、リンク区間をこのメソッドで
+    /// 選択した設置間隔(LinkGridDivision)の細かい離散ステップへ分解して近似出力する
+    /// (アルゴリズムはExpandLinkedEventsと同一、対象の型(ValueEvent/BpmEvent)のみ異なる)。
+    /// 生成される中間点はFrameAnchorを持たない(FrameAnchorは元の宣言済みイベントにのみ意味を持つため)。</summary>
+    public static List<BpmEvent> ExpandLinkedBpmEvents(IReadOnlyList<BpmEvent> events)
+    {
+        if (events.Count == 0) return [];
+
+        var sorted = events.OrderBy(e => e.Tick).ToList();
+        var result = new List<BpmEvent>(sorted.Count);
+
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            result.Add(sorted[i]);
+
+            if (sorted[i].LinkGridDivision is not { } division || division <= 0) continue;
+            if (i + 1 >= sorted.Count) continue;
+
+            var next = sorted[i + 1];
+            if (next.Tick <= sorted[i].Tick) continue;
+
+            long step = TimingEngine.TicksPerBeat * 4 / division;
+            if (step <= 0) continue;
+
+            long firstGridTick = (sorted[i].Tick / step + 1) * step;
+            for (long t = firstGridTick; t < next.Tick; t += step)
+            {
+                double ratio = (double)(t - sorted[i].Tick) / (next.Tick - sorted[i].Tick);
+                double bpm = sorted[i].Bpm + (next.Bpm - sorted[i].Bpm) * ratio;
+                result.Add(new BpmEvent(t, bpm));
+            }
+        }
+
+        return result;
+    }
 }

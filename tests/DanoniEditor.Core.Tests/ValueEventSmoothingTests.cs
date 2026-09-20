@@ -93,6 +93,68 @@ public class ValueEventSmoothingTests
         Assert.Empty(ValueEventSmoothing.ExpandLinkedEvents([]));
     }
 
+    // =====================================================================
+    // ExpandLinkedBpmEvents(BPMの始点終点リンク、直線ランプ、2026-08-23要望対応)
+    // SKB/FUJIエクスポート(離散BPMしか扱えない外部形式)向けの分解専用。TimingEngine自体は
+    // 対数/指数の解析解を使うため、このメソッドの結果に依存しない(TimingEngineBpmLinkTests参照)。
+    // =====================================================================
+
+    [Fact]
+    public void ExpandLinkedBpmEvents_NoLink_ReturnsEventsUnchangedInTickOrder()
+    {
+        var events = new List<BpmEvent> { new(Beat * 4, 200), new(0, 100) };
+
+        var result = ValueEventSmoothing.ExpandLinkedBpmEvents(events);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(0, result[0].Tick);
+        Assert.Equal(Beat * 4, result[1].Tick);
+    }
+
+    [Fact]
+    public void ExpandLinkedBpmEvents_Linked4th_GeneratesThreeIntermediatePointsWithLinearBpm()
+    {
+        var events = new List<BpmEvent> { new(0, 100, LinkGridDivision: 4), new(Beat * 4, 200) };
+
+        var result = ValueEventSmoothing.ExpandLinkedBpmEvents(events);
+
+        Assert.Equal(5, result.Count);
+        Assert.Equal(Beat * 1, result[1].Tick);
+        Assert.Equal(125, result[1].Bpm, 3);
+        Assert.Equal(Beat * 2, result[2].Tick);
+        Assert.Equal(150, result[2].Bpm, 3);
+        Assert.Equal(Beat * 3, result[3].Tick);
+        Assert.Equal(175, result[3].Bpm, 3);
+    }
+
+    [Fact]
+    public void ExpandLinkedBpmEvents_LinkOnLastEvent_IsIgnored()
+    {
+        var events = new List<BpmEvent> { new(0, 100), new(Beat * 4, 200, LinkGridDivision: 4) };
+
+        var result = ValueEventSmoothing.ExpandLinkedBpmEvents(events);
+
+        Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public void ExpandLinkedBpmEvents_GeneratedIntermediatePoints_HaveNoFrameAnchorOrLink()
+    {
+        var events = new List<BpmEvent> { new(0, 100, LinkGridDivision: 4), new(Beat * 4, 200) };
+
+        var result = ValueEventSmoothing.ExpandLinkedBpmEvents(events);
+        var intermediate = result[1];
+
+        Assert.Null(intermediate.FrameAnchor);
+        Assert.Null(intermediate.LinkGridDivision);
+    }
+
+    [Fact]
+    public void ExpandLinkedBpmEvents_Empty_ReturnsEmpty()
+    {
+        Assert.Empty(ValueEventSmoothing.ExpandLinkedBpmEvents([]));
+    }
+
     [Fact]
     public void Export_LinkedSpeedEvents_IncludesInterpolatedFramesInSpeedData()
     {

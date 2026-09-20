@@ -692,7 +692,7 @@ internal sealed class TemplateEditorWindow : Window
         var label = KeyLabelMapper.LabelForKey(key);
         if (label is null)
         {
-            MessageBox.Show(this, $"このキー({key})は対応表に無いため指定できませんの。", "キー入力",
+            MessageBox.Show(this, $"このキー({key})は対応表に無いため指定できません。", "キー入力",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             EndKeyCapture();
             return;
@@ -1023,16 +1023,16 @@ internal sealed class TemplateEditorWindow : Window
     {
         lane = null;
         string laneLabel = HeaderText(vm);
-        if (string.IsNullOrWhiteSpace(vm.LaneId)) { error = "laneIdが空欄のレーンがありますの"; return false; }
-        if (string.IsNullOrWhiteSpace(vm.DataName)) { error = $"'{laneLabel}': dataNameを入力してくださいまし"; return false; }
+        if (string.IsNullOrWhiteSpace(vm.LaneId)) { error = "laneIdが空欄のレーンがあります"; return false; }
+        if (string.IsNullOrWhiteSpace(vm.DataName)) { error = $"'{laneLabel}': dataNameを入力してください"; return false; }
         var kbdKeys = SplitKeys(vm.KeyboardInputKeys);
         if (!int.TryParse(vm.EngineLaneNum, NumberStyles.Integer, CultureInfo.InvariantCulture, out var engineLaneNum))
-        { error = $"'{laneLabel}': engineLaneNumは整数で入力してくださいまし"; return false; }
+        { error = $"'{laneLabel}': engineLaneNumは整数で入力してください"; return false; }
         int? fujiLaneNum = null;
         if (!string.IsNullOrWhiteSpace(vm.FujiLaneNumText))
         {
             if (!int.TryParse(vm.FujiLaneNumText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedFuji))
-            { error = $"'{laneLabel}': fujiLaneNumは整数で入力するか、空欄にしてくださいまし"; return false; }
+            { error = $"'{laneLabel}': fujiLaneNumは整数で入力するか、空欄にしてください"; return false; }
             fujiLaneNum = parsedFuji;
         }
         // 2026-07-26e: keyAssign以下6項目(パターン0=既定パターン分)はvm.Baseから検証する
@@ -1067,16 +1067,16 @@ internal sealed class TemplateEditorWindow : Window
         result = null;
         string suffix = patternNumber > 0 ? $"(パターン{patternNumber})" : "";
         var keyAssign = SplitKeys(f.KeyAssign);
-        if (keyAssign.Count == 0) { error = $"'{laneLabel}'{suffix}: keyAssignを1つ以上指定してくださいまし"; return false; }
+        if (keyAssign.Count == 0) { error = $"'{laneLabel}'{suffix}: keyAssignを1つ以上指定してください"; return false; }
         if (!int.TryParse(f.ColorGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var colorGroup))
-        { error = $"'{laneLabel}'{suffix}: colorGroupは整数で入力してくださいまし"; return false; }
+        { error = $"'{laneLabel}'{suffix}: colorGroupは整数で入力してください"; return false; }
         if (!double.TryParse(f.PosIndex, NumberStyles.Float, CultureInfo.InvariantCulture, out var posIndex))
-        { error = $"'{laneLabel}'{suffix}: posIndexは数値で入力してくださいまし"; return false; }
+        { error = $"'{laneLabel}'{suffix}: posIndexは数値で入力してください"; return false; }
         if (f.ScrollDirection is not ("up" or "down"))
-        { error = $"'{laneLabel}'{suffix}: scrollDirectionはup/downのいずれかにしてくださいまし"; return false; }
-        if (string.IsNullOrWhiteSpace(f.NoteGraphic)) { error = $"'{laneLabel}'{suffix}: noteGraphicを選択してくださいまし"; return false; }
+        { error = $"'{laneLabel}'{suffix}: scrollDirectionはup/downのいずれかにしてください"; return false; }
+        if (string.IsNullOrWhiteSpace(f.NoteGraphic)) { error = $"'{laneLabel}'{suffix}: noteGraphicを選択してください"; return false; }
         if (!double.TryParse(f.RotationAngle, NumberStyles.Float, CultureInfo.InvariantCulture, out var rot))
-        { error = $"'{laneLabel}'{suffix}: rotationAngleは数値で入力してくださいまし"; return false; }
+        { error = $"'{laneLabel}'{suffix}: rotationAngleは数値で入力してください"; return false; }
 
         result = new LanePatternOverride
         {
@@ -1141,28 +1141,28 @@ internal sealed class TemplateEditorWindow : Window
             _patternCombo.SelectedIndex = patternIndex;
             if (laneItem is not null) _laneTabs.SelectedItem = laneItem;
             MessageBox.Show(this,
-                $"プレイテスト・プレビューの表示に必要な項目が未入力のままですの(あと{unresolved.Count}件、" +
-                $"まず「{fieldName}」をご確認くださいまし)。カスタムキー定義の取り込みで自動取得できなかった" +
-                "項目ですわ。黄色くハイライトされた欄をすべて入力してから、改めて保存してくださいまし。",
-                "入力が必要ですの", MessageBoxButton.OK, MessageBoxImage.Warning);
+                $"プレイテスト・プレビューの表示に必要な項目が未入力のままです(あと{unresolved.Count}件、" +
+                $"まず「{fieldName}」をご確認ください)。カスタムキー定義の取り込みで自動取得できなかった" +
+                "項目です。黄色くハイライトされた欄をすべて入力してから、改めて保存してください。",
+                "入力が必要です", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         var keyTypeId = _keyTypeId.Text.Trim();
         if (keyTypeId.Length == 0 || keyTypeId.Length > 10 || !keyTypeId.All(char.IsAsciiLetterOrDigit))
-        { _error.Text = "keyTypeIdは半角英数字1〜10文字で入力してくださいまし"; return; }
+        { _error.Text = "keyTypeIdは半角英数字1〜10文字で入力してください"; return; }
         if (string.IsNullOrWhiteSpace(_keyTypeName.Text))
-        { _error.Text = "keyTypeNameを入力してくださいまし"; return; }
+        { _error.Text = "keyTypeNameを入力してください"; return; }
         // 2026-07-26e: blank/divideCnt/posMaxは現在表示中のパターンの値であり、既定パターン(0)の
         // 値は_basePatternに常に同期済み(TextChangedがActivePattern経由で書き込むため)。
         if (!double.TryParse(_basePattern.Blank, NumberStyles.Float, CultureInfo.InvariantCulture, out var blank))
-        { _error.Text = "blank(パターン0)は数値で入力してくださいまし"; return; }
+        { _error.Text = "blank(パターン0)は数値で入力してください"; return; }
         if (!double.TryParse(_basePattern.DivideCnt, NumberStyles.Float, CultureInfo.InvariantCulture, out var divideCnt))
-        { _error.Text = "divideCnt(パターン0)は数値で入力してくださいまし"; return; }
+        { _error.Text = "divideCnt(パターン0)は数値で入力してください"; return; }
         if (!double.TryParse(_basePattern.PosMax, NumberStyles.Float, CultureInfo.InvariantCulture, out var posMax))
-        { _error.Text = "posMax(パターン0)は数値で入力してくださいまし"; return; }
+        { _error.Text = "posMax(パターン0)は数値で入力してください"; return; }
         if (_laneTabs.Items.Count == 0)
-        { _error.Text = "レーンを1つ以上追加してくださいまし"; return; }
+        { _error.Text = "レーンを1つ以上追加してください"; return; }
 
         var lanes = new List<LaneDef>();
         var engineLaneSeen = new HashSet<int>();
@@ -1173,7 +1173,7 @@ internal sealed class TemplateEditorWindow : Window
             if (!TryBuildLaneDef(vm, order, out var lane, out var err))
             { _error.Text = err; return; }
             if (!engineLaneSeen.Add(lane!.EngineLaneNum))
-            { _error.Text = $"engineLaneNum({lane.EngineLaneNum})がレーン間で重複していますの"; return; }
+            { _error.Text = $"engineLaneNum({lane.EngineLaneNum})がレーン間で重複しています"; return; }
             lanes.Add(lane);
             order++;
         }
@@ -1186,11 +1186,11 @@ internal sealed class TemplateEditorWindow : Window
             var pvm = _extraPatterns[pi];
             int patternNumber = pi + 1;
             if (!double.TryParse(pvm.Blank, NumberStyles.Float, CultureInfo.InvariantCulture, out var pBlank))
-            { _error.Text = $"blank(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+            { _error.Text = $"blank(パターン{patternNumber})は数値で入力してください"; return; }
             if (!double.TryParse(pvm.DivideCnt, NumberStyles.Float, CultureInfo.InvariantCulture, out var pDivideCnt))
-            { _error.Text = $"divideCnt(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+            { _error.Text = $"divideCnt(パターン{patternNumber})は数値で入力してください"; return; }
             if (!double.TryParse(pvm.PosMax, NumberStyles.Float, CultureInfo.InvariantCulture, out var pPosMax))
-            { _error.Text = $"posMax(パターン{patternNumber})は数値で入力してくださいまし"; return; }
+            { _error.Text = $"posMax(パターン{patternNumber})は数値で入力してください"; return; }
 
             var overrides = new List<LanePatternOverride>();
             foreach (TabItem item in _laneTabs.Items)
@@ -1230,7 +1230,7 @@ internal sealed class TemplateEditorWindow : Window
         bool renaming = !isNew && !string.Equals(Path.GetFullPath(_originalPath!), Path.GetFullPath(destPath), StringComparison.OrdinalIgnoreCase);
 
         if ((isNew || renaming) && File.Exists(destPath))
-        { _error.Text = $"temp_{keyTypeId}.json は既に存在しますの。別のkeyTypeIdにしてくださいまし"; return; }
+        { _error.Text = $"temp_{keyTypeId}.json は既に存在します。別のkeyTypeIdにしてください"; return; }
 
         try
         {
@@ -1239,7 +1239,7 @@ internal sealed class TemplateEditorWindow : Window
         }
         catch (Exception ex)
         {
-            _error.Text = $"保存に失敗しましたわ: {ex.Message}";
+            _error.Text = $"保存に失敗しました: {ex.Message}";
             return;
         }
 

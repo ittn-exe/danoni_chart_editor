@@ -81,7 +81,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"起動に失敗しましたわ: {ex.Message}", "起動エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show($"起動に失敗しました: {ex.Message}", "起動エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(-1);
             return;
         }
@@ -107,10 +107,15 @@ public partial class App : Application
     /// 復元できる)。</summary>
     private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
     {
+        // 2026-09-07要望対応: 従来はe.Exception.Messageのみ表示しており、発生箇所(スタックトレース)が
+        // 分からず不具合報告からの原因特定に時間がかかっていた。バグ報告に添付しやすいよう、
+        // 例外の型・メッセージ・スタックトレースを内側の例外までまとめて表示する(ダイアログの文字列は
+        // Ctrl+Cで全文コピー可能、WPFのMessageBoxの標準機能)。
         var result = MessageBox.Show(
-            $"予期しないエラーが発生しましたわ。\n\n{e.Exception.Message}\n\n" +
+            $"予期しないエラーが発生しました。\n\n{FormatExceptionDetails(e.Exception)}\n\n" +
             "このままではアプリを終了する必要がありますが、その前に編集中のデータを緊急保存しますか?\n" +
-            "(保存したデータは次回起動時に「クラッシュ復旧」として復元できます)",
+            "(保存したデータは次回起動時に「クラッシュ復旧」として復元できます)\n" +
+            "(上記のエラー内容はCtrl+Cでコピーできます。不具合報告の際に添えてください)",
             "予期しないエラー", MessageBoxButton.YesNo, MessageBoxImage.Error);
 
         if (result == MessageBoxResult.Yes && MainWindow is MainWindow main)
@@ -118,16 +123,34 @@ public partial class App : Application
             try
             {
                 int saved = main.EmergencySaveAllSessions();
-                MessageBox.Show(saved > 0 ? $"{saved}件のプロジェクトを緊急保存しましたわ。" : "保存が必要な変更はありませんでしたわ。",
+                MessageBox.Show(saved > 0 ? $"{saved}件のプロジェクトを緊急保存しました。" : "保存が必要な変更はありませんでした。",
                     "緊急保存", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception saveEx)
             {
-                MessageBox.Show($"緊急保存にも失敗しましたわ: {saveEx.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"緊急保存にも失敗しました: {saveEx.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         e.Handled = true;
         Shutdown(-1);
+    }
+
+    /// <summary>2026-09-07要望対応: 例外の型・メッセージ・スタックトレースを、InnerExceptionが
+    /// 無くなるまで再帰的にたどって1つのテキストへまとめる(発生箇所の特定用)。</summary>
+    private static string FormatExceptionDetails(Exception ex)
+    {
+        var sb = new System.Text.StringBuilder();
+        var current = ex;
+        int depth = 0;
+        while (current is not null)
+        {
+            if (depth > 0) sb.AppendLine($"--- 内側の例外(depth {depth}) ---");
+            sb.AppendLine($"[{current.GetType().FullName}] {current.Message}");
+            sb.AppendLine(current.StackTrace ?? "(スタックトレース無し)");
+            current = current.InnerException;
+            depth++;
+        }
+        return sb.ToString();
     }
 }

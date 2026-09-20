@@ -52,7 +52,7 @@ internal sealed class ImportHubWindow : Window
         });
         root.Children.Add(new TextBlock
         {
-            Text = "FUJIエディタのファイルをここへドラッグ&ドロップしてくださいませ。",
+            Text = "FUJIエディタのファイルをここへドラッグ&ドロップしてください。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 6),
         });
@@ -112,7 +112,7 @@ internal sealed class ImportHubWindow : Window
         });
         root.Children.Add(new TextBlock
         {
-            Text = "SKBエディタのデータをコピーし、下の欄へCtrl+Vまたは右クリック貼り付けしてくださいませ。",
+            Text = "SKBエディタのデータをコピーし、下の欄へCtrl+Vまたは右クリック貼り付けしてください。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 6),
         });
@@ -129,7 +129,7 @@ internal sealed class ImportHubWindow : Window
         {
             if (string.IsNullOrWhiteSpace(_skbTextBox.Text))
             {
-                MessageBox.Show(this, "SKBデータが貼り付けられていませんわ。", "インポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this, "SKBデータが貼り付けられていません。", "インポートできません", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             _owner.ImportSkbText(_skbTextBox.Text, "クリップボードからの貼り付け");

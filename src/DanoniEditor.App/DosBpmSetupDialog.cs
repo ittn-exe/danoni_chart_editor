@@ -33,7 +33,7 @@ internal static class DosBpmSetupDialog
 
         panel.Children.Add(new TextBlock
         {
-            Text = "BPMの決定方法を選んでくださいませ。",
+            Text = "BPMの決定方法を選んでください。",
             Margin = new Thickness(0, 0, 0, 10),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -103,7 +103,7 @@ internal static class DosBpmSetupDialog
             {
                 if (!double.TryParse(bpmBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var bpm) || bpm <= 0)
                 {
-                    errorText.Text = "BPMは正の数で入力してくださいませ。";
+                    errorText.Text = "BPMは正の数で入力してください。";
                     return;
                 }
                 result = new Choice(AutoEstimate: false, ManualBpm: bpm);

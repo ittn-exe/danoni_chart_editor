@@ -89,7 +89,7 @@ internal static class PluginLoader
             // 二重読み込みになり型不一致を引き起こすため)。エラーではなく情報としてログに残す。
             if (string.Equals(Path.GetFileNameWithoutExtension(dllPath), ContractsAssemblyName, StringComparison.OrdinalIgnoreCase))
             {
-                PluginLog.Write($"{Path.GetFileName(dllPath)}: 契約DLLはpluginsフォルダへ置く必要がございませんの(本体側のものを常に使用します)。スキップしましたわ");
+                PluginLog.Write($"{Path.GetFileName(dllPath)}: 契約DLLはpluginsフォルダへ置く必要がございません(本体側のものを常に使用します)。スキップしました");
                 continue;
             }
 
@@ -101,7 +101,7 @@ internal static class PluginLoader
             }
             catch (Exception ex)
             {
-                var msg = $"{Path.GetFileName(dllPath)}: 読み込みに失敗しましたわ({ex.Message})";
+                var msg = $"{Path.GetFileName(dllPath)}: 読み込みに失敗しました({ex.Message})";
                 errors.Add(msg);
                 PluginLog.Write(msg);
                 continue;
@@ -118,7 +118,7 @@ internal static class PluginLoader
             }
             catch (Exception ex)
             {
-                var msg = $"{Path.GetFileName(dllPath)}: 型情報の取得に失敗しましたわ({ex.Message})";
+                var msg = $"{Path.GetFileName(dllPath)}: 型情報の取得に失敗しました({ex.Message})";
                 errors.Add(msg);
                 PluginLog.Write(msg);
                 continue;
@@ -130,7 +130,7 @@ internal static class PluginLoader
                 if (!typeof(IEditorPlugin).IsAssignableFrom(type)) continue;
                 if (type.GetConstructor(Type.EmptyTypes) is null)
                 {
-                    var msg = $"{Path.GetFileName(dllPath)}: {type.FullName} に引数無しコンストラクタが無いため読み込めませんでしたわ";
+                    var msg = $"{Path.GetFileName(dllPath)}: {type.FullName} に引数無しコンストラクタが無いため読み込めませんでした";
                     errors.Add(msg);
                     PluginLog.Write(msg);
                     continue;
@@ -145,7 +145,7 @@ internal static class PluginLoader
                 }
                 catch (Exception ex)
                 {
-                    var msg = $"{Path.GetFileName(dllPath)}: {type.FullName} の生成に失敗しましたわ({ex.Message})";
+                    var msg = $"{Path.GetFileName(dllPath)}: {type.FullName} の生成に失敗しました({ex.Message})";
                     errors.Add(msg);
                     PluginLog.Write(msg);
                 }

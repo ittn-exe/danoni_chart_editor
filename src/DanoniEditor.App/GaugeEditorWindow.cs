@@ -140,8 +140,8 @@ internal sealed class GaugeEditorWindow : Window
         outer.Children.Add(SectionLabel("① ゲージ名の宣言(gaugeXXX、プロジェクト全体で共有)"));
         outer.Children.Add(new TextBlock
         {
-            Text = "内部名(dos.txt出力用の識別子)と、任意の既定表示名をここで宣言してくださいませ。値は" +
-                   "「全譜面で共有」ならここで直接入力、「譜面毎に変更」なら各難易度タブ側で入力しますの。",
+            Text = "内部名(dos.txt出力用の識別子)と、任意の既定表示名をここで宣言してください。値は" +
+                   "「全譜面で共有」ならここで直接入力、「譜面毎に変更」なら各難易度タブ側で入力します。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 6),
         });
@@ -161,8 +161,8 @@ internal sealed class GaugeEditorWindow : Window
         outer.Children.Add(SectionLabel("② 難易度タブごとの設定"));
         outer.Children.Add(new TextBlock
         {
-            Text = "対象の譜面をタブで選び、本体ゲージ・ゲージセット設定を行ってくださいまし(この2つは独立した" +
-                   "機能で、同時に使えますの)。",
+            Text = "対象の譜面をタブで選び、本体ゲージ・ゲージセット設定を行ってください(この2つは独立した" +
+                   "機能で、同時に使えます)。",
             Margin = new Thickness(0, 0, 0, 6),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -527,7 +527,7 @@ internal sealed class GaugeEditorWindow : Window
             gaugeSetPanel.Children.Add(SectionLabel("ゲージセット設定(customGauge)"));
             gaugeSetPanel.Children.Add(new TextBlock
             {
-                Text = "上の本体ゲージとは独立した機能で、同時に使えますの(本体ゲージ=既定表示、ゲージセット=" +
+                Text = "上の本体ゲージとは独立した機能で、同時に使えます(本体ゲージ=既定表示、ゲージセット=" +
                        "プレイヤーが選べる代替候補)。",
                 Foreground = Brushes.Gray,
                 TextWrapping = TextWrapping.Wrap,
@@ -700,7 +700,7 @@ internal sealed class GaugeEditorWindow : Window
         string text = _rawOverrideBox.Text;
         if (string.IsNullOrWhiteSpace(text))
         {
-            _error.Text = "テキスト欄が空のため読み取れませんの。";
+            _error.Text = "テキスト欄が空のため読み取れません。";
             return;
         }
 
@@ -763,7 +763,7 @@ internal sealed class GaugeEditorWindow : Window
 
         if (!anyMatched)
         {
-            _error.Text = "customGauge/gaugeXXXの行が見つかりませんでしたの(|key=value|形式の行のみ読み取れます)。";
+            _error.Text = "customGauge/gaugeXXXの行が見つかりませんでした(|key=value|形式の行のみ読み取れます)。";
             return;
         }
 
@@ -775,7 +775,7 @@ internal sealed class GaugeEditorWindow : Window
         RefreshAll();
         _error.Text = "";
         _error.Foreground = Brushes.LightGreen;
-        _error.Text = "①②へ反映しましたの。";
+        _error.Text = "①②へ反映しました。";
     }
 
     // =====================================================================
@@ -810,7 +810,7 @@ internal sealed class GaugeEditorWindow : Window
                         {
                             if (string.IsNullOrWhiteSpace(entry.Name))
                             {
-                                _error.Text = $"'{_project.Tabs[i].DisplayLabel}': ゲージ名が未入力の項目がありますの。";
+                                _error.Text = $"'{_project.Tabs[i].DisplayLabel}': ゲージ名が未入力の項目があります。";
                                 return;
                             }
                         }
@@ -827,7 +827,7 @@ internal sealed class GaugeEditorWindow : Window
             var names = _paramRows.Where(r => !string.IsNullOrWhiteSpace(r.GaugeName)).Select(r => r.GaugeName.Trim()).ToList();
             if (names.Distinct(StringComparer.Ordinal).Count() != names.Count)
             {
-                _error.Text = "①のゲージ名が重複していますの。";
+                _error.Text = "①のゲージ名が重複しています。";
                 return;
             }
         }

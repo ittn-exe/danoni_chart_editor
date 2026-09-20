@@ -81,7 +81,10 @@ public static class FujiExporter
         }
 
         // --- $frame(BPM変化点、小節境界にしか置けない) ---
-        var sourceBpmEvents = project.BpmEvents.OrderBy(e => e.Tick).ToList();
+        // 2026-08-23要望対応(BPMリンク): FUJI形式は各セグメントのstartFrame/endFrameを直接指定する
+        // ため、区切り(小節境界)を細かく増やせば直線ランプを近似できる。ExpandLinkedBpmEventsで
+        // リンク区間を選択した設置間隔の細かい離散ステップへ分解してから、既存の小節境界丸め処理へ渡す。
+        var sourceBpmEvents = ValueEventSmoothing.ExpandLinkedBpmEvents(project.BpmEvents);
         if (sourceBpmEvents.Count == 0 || sourceBpmEvents[0].Tick != 0)
             throw new InvalidOperationException("BPMイベントの先頭がtick0にありません(不正なプロジェクトデータ)");
 
@@ -260,8 +263,12 @@ public static class FujiExporter
             }
         }
 
-        foreach (var e in tab.SpeedEvents) AddSpeedBoostToken(e, "400", "速度変化");
-        foreach (var e in tab.BoostEvents) AddSpeedBoostToken(e, "410", "ブースト変化");
+        // 2026-08-22不具合修正(SkbExporterと同種): speed/boostの「始点終点オートスムージング出力」
+        // (ValueEvent.LinkGridDivisionによるリンク、2026-07-30要望対応)がFUJIエクスポートには
+        // 反映されておらず、リンクした2点だけが出力され中間点が生成されていなかった。
+        // dos.txt出力・プレイテスト・プレビューと同じくValueEventSmoothing.ExpandLinkedEventsを経由する。
+        foreach (var e in ValueEventSmoothing.ExpandLinkedEvents(tab.SpeedEvents)) AddSpeedBoostToken(e, "400", "速度変化");
+        foreach (var e in ValueEventSmoothing.ExpandLinkedEvents(tab.BoostEvents)) AddSpeedBoostToken(e, "410", "ブースト変化");
 
         void AddSpeedBoostToken(ValueEvent e, string kindCode, string label)
         {

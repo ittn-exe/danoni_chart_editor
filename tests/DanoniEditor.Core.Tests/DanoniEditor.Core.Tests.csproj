@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DanoniEditor.Core\DanoniEditor.Core.csproj" />
     <ProjectReference Include="..\..\src\DanoniEditor.Editing\DanoniEditor.Editing.csproj" />
+    <ProjectReference Include="..\..\src\DanoniEditor.Collab\DanoniEditor.Collab.csproj" />
   </ItemGroup>
 
   <ItemGroup>

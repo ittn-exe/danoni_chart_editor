@@ -265,12 +265,24 @@ public sealed class EditorDocument
         NotifyChanged();
     }
 
+    /// <summary>
+    /// 編集操作(Execute/Undo/Redo)の直前・直後に、対象タブを引数として発火する(2026-09-20、
+    /// 共同編集のセル差分検出用)。EditorDocument自身は共同編集の存在を一切知らない
+    /// (WPF非依存と同じ理由で疎結合を保つ)。BeforeEdit時点のタブの状態と、AfterEdit時点の
+    /// タブの状態を購読側(Collab連携層)が比較することで、「実際にどのセルが変わったか」を
+    /// EditActions.cs側の改修無しに検出できる。</summary>
+    public event Action<DifficultyTab>? BeforeEdit;
+    public event Action<DifficultyTab>? AfterEdit;
+
     /// <summary>編集アクションを実行してUndo履歴に積む(1ジェスチャ=1呼び出しが原則)。
     /// フレーム情報モード中はFrameModeActionで包み、BPM変更に伴う逆算再配置まで含めて1Undo単位にする。</summary>
     public void Execute(IEditAction action)
     {
+        var tab = CurrentTab;
+        BeforeEdit?.Invoke(tab);
         UndoStack.Push(this, FrameEdit is { } fe ? new FrameModeAction(action, fe) : action);
         NotifyChanged();
+        AfterEdit?.Invoke(tab);
     }
 
     /// <summary>2026-07-26: 統計情報(環境設定 > 統計情報)向けの操作カウント通知。
@@ -285,15 +297,21 @@ public sealed class EditorDocument
 
     public bool Undo()
     {
+        var tab = CurrentTab;
+        BeforeEdit?.Invoke(tab);
         var ok = UndoStack.Undo(this);
         if (ok) NotifyChanged();
+        AfterEdit?.Invoke(tab);
         return ok;
     }
 
     public bool Redo()
     {
+        var tab = CurrentTab;
+        BeforeEdit?.Invoke(tab);
         var ok = UndoStack.Redo(this);
         if (ok) NotifyChanged();
+        AfterEdit?.Invoke(tab);
         return ok;
     }
 

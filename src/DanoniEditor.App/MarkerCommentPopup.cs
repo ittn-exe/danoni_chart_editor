@@ -181,4 +181,13 @@ internal static class MarkerCommentPopup
         _hideTimer?.Stop();
         _hideTimer = null;
     }
+
+    /// <summary>猶予無しで即座に閉じる(2026-09-07要望対応)。マーカー付近でのクリック・ドラッグ開始時に
+    /// 呼び、開いたままのポップアップが後続の操作(マウスキャプチャやヒットテスト)に干渉するのを防ぐ。
+    /// ScheduleHideと同じくピン留め中は閉じない(明示的に固定した内容を意図せず消さないため)。</summary>
+    public static void HideImmediately()
+    {
+        CancelScheduledHide();
+        if (_current is { IsOpen: true } p && !_pinned) p.IsOpen = false;
+    }
 }

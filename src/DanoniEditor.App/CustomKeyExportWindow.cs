@@ -67,8 +67,8 @@ internal sealed class CustomKeyExportWindow : Window
         var instructions = new TextBlock
         {
             Text = $"テンプレート「{_template.KeyTypeId} ({_template.KeyTypeName})」を、danoniplus本体互換の" +
-                   "カスタムキー定義テキストとして書き出しますの。下のプレビューをそのままdos.txtの" +
-                   "ヘッダー部、またはdanoni_settings.js等の共通設定ファイルへコピー&ペーストしてお使いくださいまし。",
+                   "カスタムキー定義テキストとして書き出します。下のプレビューをそのままdos.txtの" +
+                   "ヘッダー部、またはdanoni_settings.js等の共通設定ファイルへコピー&ペーストしてお使いください。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -129,12 +129,12 @@ internal sealed class CustomKeyExportWindow : Window
             var path = Path.Combine(_templateDir, $"カスタムキー定義_{_template.KeyTypeId}.txt");
             File.WriteAllText(path, _previewBox.Text);
             _status.Foreground = Brushes.LightGreen;
-            _status.Text = $"書き出しましたわ: {path}";
+            _status.Text = $"書き出しました: {path}";
         }
         catch (Exception ex)
         {
             _status.Foreground = Brushes.Orange;
-            _status.Text = $"書き出しに失敗いたしましたの: {ex.Message}";
+            _status.Text = $"書き出しに失敗いたしました: {ex.Message}";
         }
     }
 }

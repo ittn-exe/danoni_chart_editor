@@ -342,12 +342,12 @@ internal sealed class GaugeCalculatorWindow : Window
     {
         if (_gaugeNameCombo.SelectedItem is not string name || name == "(手動入力)")
         {
-            _error.Text = "適用先のゲージ名を選択してくださいまし(②の表に無いゲージ名は先に②で追加が必要です)。";
+            _error.Text = "適用先のゲージ名を選択してください(②の表に無いゲージ名は先に②で追加が必要です)。";
             return;
         }
         if (!TryReadInputs(out _, out double borderPercent, out _, out _, out double initPercent, out double rcvRaw, out double dmgRaw))
         {
-            _error.Text = "入力値が不正ですの。";
+            _error.Text = "入力値が不正です。";
             return;
         }
 
@@ -379,7 +379,7 @@ internal sealed class GaugeCalculatorWindow : Window
         _dmgBox.Text = dmgRaw.ToString(CultureInfo.InvariantCulture);
 
         _owner.RefreshParamTableExternal();
-        _error.Text = $"'{name}'(タブ列{tabIndex + 1})へ適用しましたの。";
+        _error.Text = $"'{name}'(タブ列{tabIndex + 1})へ適用しました。";
         _error.Foreground = Brushes.LightGreen;
     }
 }

@@ -46,7 +46,7 @@ internal sealed class KeyMacroWindow : Window
 
         root.Children.Add(new TextBlock
         {
-            Text = "Ctrl+Shift+数字キーへ割り当てる、複数の機能を順番に実行するマクロですわ。",
+            Text = "Ctrl+Shift+数字キーへ割り当てる、複数の機能を順番に実行するマクロです。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         });
@@ -139,7 +139,7 @@ internal sealed class KeyMacroWindow : Window
         double value = 0;
         if (needsValue && (!double.TryParse(_valueBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) || value < 0))
         {
-            MessageBox.Show(this, "値は0以上の数値で入力してくださいませ。", "キーマクロ設定", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "値は0以上の数値で入力してください。", "キーマクロ設定", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         GetOrCreateSlotDefinition().Steps.Add(new KeyMacroStep { Kind = kind, Value = value });

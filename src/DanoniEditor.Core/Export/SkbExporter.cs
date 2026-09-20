@@ -95,8 +95,10 @@ public static class SkbExporter
 
         // --- timings(BPM変化点)。ページ境界(ticksPerPageInternalの倍数)にしか置けないため、
         // 乗らない変化点はオプションに従って丸める/削除する。startNum/bpmはtick単位ではなく
-        // フレーム値そのものなので、PosScaleの影響を受けない。 ---
-        var sourceBpmEvents = project.BpmEvents.OrderBy(e => e.Tick).ToList();
+        // フレーム値そのものなので、PosScaleの影響を受けない。
+        // 2026-08-23要望対応(BPMリンク): SKB形式は離散的なBPM変化点しか扱えないため、リンクされた
+        // 区間(直線ランプ)はExpandLinkedBpmEventsで細かい離散ステップへ分解してから出力する。 ---
+        var sourceBpmEvents = ValueEventSmoothing.ExpandLinkedBpmEvents(project.BpmEvents);
         if (sourceBpmEvents.Count == 0 || sourceBpmEvents[0].Tick != 0)
             throw new InvalidOperationException("BPMイベントの先頭がtick0にありません(不正なプロジェクトデータ)");
 
@@ -203,9 +205,15 @@ public static class SkbExporter
                 PlaceTick(f.EndTick, $"'{laneLabel}'のフリーズ終点", (pg, pos) => pg.freezes[laneIdx].Add(pos));
             }
         }
-        foreach (var e in tab.SpeedEvents)
+        // 2026-08-22不具合修正: 「始点終点オートスムージング出力」(ValueEvent.LinkGridDivisionによる
+        // リンク、2026-07-30要望対応)がSKBエクスポートには反映されておらず、リンクした2点だけが
+        // 出力され中間点が一切生成されていなかった(DosExporter/PlaytestWindow/PlayPreviewSurfaceは
+        // いずれもValueEventSmoothing.ExpandLinkedEventsを経由済みだったが、SkbExporterだけが
+        // tab.SpeedEvents/BoostEventsを直接使っていたため漏れていた)。他の出力先と同じくここでも
+        // 展開後のリストを使う。
+        foreach (var e in ValueEventSmoothing.ExpandLinkedEvents(tab.SpeedEvents))
             PlaceTick(e.Tick, "速度変化", (pg, pos) => pg.speeds.Add(new SkbSpeedOut(pos, e.Value, "speed")));
-        foreach (var e in tab.BoostEvents)
+        foreach (var e in ValueEventSmoothing.ExpandLinkedEvents(tab.BoostEvents))
             PlaceTick(e.Tick, "ブースト変化", (pg, pos) => pg.speeds.Add(new SkbSpeedOut(pos, e.Value, "boost")));
 
         // 各ページ内のnotes/freezesは昇順にしておく(本体側の想定順序に合わせる、読み込み比較のしやすさのため)

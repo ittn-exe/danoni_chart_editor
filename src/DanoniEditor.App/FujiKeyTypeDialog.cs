@@ -110,12 +110,12 @@ internal static class FujiImportSetupDialog
         {
             if (keyTypeCombo.SelectedItem is not string keyTypeId || string.IsNullOrWhiteSpace(keyTypeId))
             {
-                errorText.Text = "キー種を選択してくださいませ。";
+                errorText.Text = "キー種を選択してください。";
                 return;
             }
             if (nameCombo.SelectedItem is not NameItem item)
             {
-                errorText.Text = "難易度名を選択してくださいませ。";
+                errorText.Text = "難易度名を選択してください。";
                 return;
             }
 
@@ -128,7 +128,7 @@ internal static class FujiImportSetupDialog
                 case FujiDifficultyNameMode.SetNow:
                     if (string.IsNullOrWhiteSpace(nameBox.Text))
                     {
-                        errorText.Text = "難易度名を入力してくださいませ。";
+                        errorText.Text = "難易度名を入力してください。";
                         return;
                     }
                     nameChoice = new FujiDifficultyNameChoice(item.Mode, nameBox.Text.Trim(), null);

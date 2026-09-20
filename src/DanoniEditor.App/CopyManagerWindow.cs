@@ -40,7 +40,7 @@ internal sealed class CopyManagerWindow : Window
         _settings = settings;
 
         var sourceKeyTypeId = controller.ClipboardSourceKeyTypeId
-            ?? throw new InvalidOperationException("クリップボードにコピー元のキー種情報がありませんの");
+            ?? throw new InvalidOperationException("クリップボードにコピー元のキー種情報がありません");
         _sourceTemplate = doc.Templates.Get(sourceKeyTypeId);
         _destTemplate = doc.CurrentTemplate;
         _sourceLanes = controller.ClipboardSourceLanesWithObjects();
@@ -67,9 +67,9 @@ internal sealed class CopyManagerWindow : Window
 
         var instructions = new TextBlock
         {
-            Text = "コピー元タブとペースト先タブのキー種が異なりますの。下の「コピー元レーン」から「配置レーン」へ" +
-                   "ドラッグ&ドロップして、貼り付け先のどのレーンに置くかを指定してくださいまし" +
-                   "(同じコピー元レーンを複数の配置レーンへ、複数のコピー元レーンを同じ配置レーンへ、どちらも指定可能ですわ)。",
+            Text = "コピー元タブとペースト先タブのキー種が異なります。下の「コピー元レーン」から「配置レーン」へ" +
+                   "ドラッグ&ドロップして、貼り付け先のどのレーンに置くかを指定してください" +
+                   "(同じコピー元レーンを複数の配置レーンへ、複数のコピー元レーンを同じ配置レーンへ、どちらも指定可能です)。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
@@ -496,7 +496,7 @@ internal sealed class CopyManagerWindow : Window
         if (mapping.Count == 0)
         {
             MessageBox.Show(this,
-                "配置レーンに何も割り当てられていませんの。コピー元レーンをドラッグ&ドロップして対応を指定してくださいまし。",
+                "配置レーンに何も割り当てられていません。コピー元レーンをドラッグ&ドロップして対応を指定してください。",
                 "コピーマネージャー", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
