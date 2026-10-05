@@ -91,7 +91,7 @@ internal sealed class ToastHost : StackPanel
         if (toast.Tag is string key) _byKey.Remove(key);
     }
 
-    private static (Color Accent, string Glyph) Style(NotificationLevel level) => level switch
+    private static (Color Accent, string Glyph) LevelStyle(NotificationLevel level) => level switch
     {
         NotificationLevel.Error => (Color.FromRgb(0xE5, 0x48, 0x4D), "×"),
         NotificationLevel.Warning => (Color.FromRgb(0xF5, 0xA6, 0x23), "!"),
@@ -100,7 +100,7 @@ internal sealed class ToastHost : StackPanel
 
     private Border BuildToast(NotificationLevel level, string message, string key, string? actionText, Action? action)
     {
-        var (accent, glyph) = Style(level);
+        var (accent, glyph) = LevelStyle(level);
 
         var icon = new Border
         {
