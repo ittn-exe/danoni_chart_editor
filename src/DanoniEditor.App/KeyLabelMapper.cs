@@ -32,6 +32,15 @@ internal static class KeyLabelMapper
         // 2026-07-26e: 標準キー種のキーパターン追加データ(8key/12key/14key等の変則配置)に
         // Shiftキーを使うものがあったため対応(左右いずれかで反応する)。
         "Shift" => [Key.LeftShift, Key.RightShift],
+        // 2026-09-29不具合修正: temp_n5g.json/temp_n9g.json(ギター系キー種)のlane5(n5g)/lane9(n9g、
+        // いずれもピックレーン)が、本家のW3C KeyboardEvent.codeそのままの表記("ShiftRight")で
+        // keyAssignを記述していたが、このメソッドは従来"Shift"(左右いずれでも反応、上記)しか
+        // 認識しておらず、該当ラベルが常に未対応(unmapped)として無視されていた。この結果、
+        // これらのテンプレートは既定の右Shiftキーがプレーテストで一切反応しない不具合になっていた。
+        // キャプチャUI(LabelForKey)側は引き続き左右を区別しない"Shift"を生成する(既存の運用通り)が、
+        // こちらの変換表には左右individual指定のラベルも受け付けるよう追加しておく。
+        "ShiftRight" => [Key.RightShift],
+        "ShiftLeft" => [Key.LeftShift],
         // 2026-07-26e: temp_11j.json(既存出荷テンプレート、keyCtrl11j_0由来)が既に"Tab"を
         // keyAssignに使っていたが対応表に無かったため合わせて追加(未対応判明、8key/14keyの
         // キーパターン追加データでも使用するため今回まとめて対応)。

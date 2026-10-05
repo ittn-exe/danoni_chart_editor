@@ -67,10 +67,12 @@ public sealed class DosExporter
         sb.Append("  g_externalDos = `\n");
 
         // --- ヘッダー部 ---
-        var titleParts = new List<string> { project.MusicTitle };
-        if (project.ArtistName.Length > 0 || project.ArtistUrl.Length > 0) titleParts.Add(project.ArtistName);
-        if (project.ArtistUrl.Length > 0) titleParts.Add(project.ArtistUrl);
-        AppendParam(sb, "musicTitle", string.Join(",", titleParts));
+        // 2026-09-29要望対応・簡素化版(難易度別音源): danoniplus本体はmusicTitle/musicUrlを"$"区切りで
+        // 複数曲列挙し、musicNo(タブ順・"$"区切り)で譜面ごとにどの曲番号を使うか指定できる
+        // (dos-h0011 musicUrl/dos-h0012 musicNo)。project.AdditionalSongsが空(=2曲目以降を1曲も
+        // ストックしていない)であれば、後方互換のため従来通り単一行のmusicTitle/musicUrlのみを出力し、
+        // musicNoは一切出力しない。1曲でもストックがあれば複数曲形式へ切り替える(WriteMusicHeaders参照)。
+        WriteMusicHeaders(sb, project, tabs);
 
         // 2026-07-26: GaugeManualEditAfterExportがONの間はdifData内のborder/recovery/damage/initLife%
         // (DifDataExtra)も出力しない(ゲージ関連は一切エディタが触れず、ユーザーが後から手で追記する運用のため)。
@@ -102,12 +104,13 @@ public sealed class DosExporter
 
         AppendParam(sb, "startFrame", project.StartFrame.ToString());
         if (project.BlankFrame != 0) AppendParam(sb, "blankFrame", project.BlankFrame.ToString());
-        AppendParam(sb, "musicUrl", project.MusicUrl);
         AppendParam(sb, "tuning", project.Tuning);
         if (project.FrzAttempt != 5) AppendParam(sb, "frzAttempt", project.FrzAttempt.ToString());
 
+        // 2026-09-29: musicNoは難易度別音源機能の専用出力(WriteMusicHeaders)へ移行したため、
+        // 旧プロジェクトファイルのExtraHeadersに残っていた場合でも二重出力しないよう明示的に除外する。
         foreach (var (key, value) in project.ExtraHeaders)
-            AppendParam(sb, key, value);
+            if (key != "musicNo") AppendParam(sb, key, value);
 
         AppendGaugeHeaders(sb, project, tabs);
 
@@ -382,6 +385,39 @@ public sealed class DosExporter
 
     private static void AppendParam(StringBuilder sb, string name, string value)
         => sb.AppendLine($"|{name}={value}|");
+
+    /// <summary>musicTitle/musicUrl/musicNoの出力(2026-09-29要望対応・簡素化版: 難易度別音源)。
+    /// 1曲目=プロジェクト共通の曲(MusicTitle等)、2曲目以降=project.AdditionalSongsをそのまま
+    /// "$"区切りで列挙する。AdditionalSongsが空(=2曲目以降を1曲もストックしていない)なら、
+    /// 後方互換のため従来通り単一行のmusicTitle/musicUrlのみ出力し、musicNoは出さない。
+    /// 1曲でもストックがあれば、danoniplus本体の仕様(dos-h0011 musicUrl/dos-h0012 musicNo)に従い
+    /// 複数曲形式+musicNo(各タブのSongIndexをタブ順に"$"区切り)へ切り替える。
+    /// tabsは呼び出し元(Export)からdosロック除外・詰め直し済みのリストを受け取る。</summary>
+    private static void WriteMusicHeaders(StringBuilder sb, ChartProject project, List<DifficultyTab> tabs)
+    {
+        var songs = new List<(string Title, string Artist, string ArtistUrl, string Url)>
+        {
+            (project.MusicTitle, project.ArtistName, project.ArtistUrl, project.MusicUrl),
+        };
+        songs.AddRange(project.AdditionalSongs.Select(s => (s.MusicTitle, s.ArtistName, s.ArtistUrl, s.MusicUrl)));
+
+        static string TitleField((string Title, string Artist, string ArtistUrl, string Url) s)
+        {
+            var parts = new List<string> { s.Title };
+            if (s.Artist.Length > 0 || s.ArtistUrl.Length > 0) parts.Add(s.Artist);
+            if (s.ArtistUrl.Length > 0) parts.Add(s.ArtistUrl);
+            return string.Join(",", parts);
+        }
+
+        AppendParam(sb, "musicTitle", string.Join("$", songs.Select(TitleField)));
+        AppendParam(sb, "musicUrl", string.Join("$", songs.Select(s => s.Url)));
+        if (songs.Count > 1)
+        {
+            // SongIndexが範囲外(手動編集等による不整合)の場合に備え、安全のため0〜songs.Count-1へ丸める。
+            var musicNo = tabs.Select(t => Math.Clamp(t.SongIndex, 0, songs.Count - 1));
+            AppendParam(sb, "musicNo", string.Join("$", musicNo));
+        }
+    }
 
     /// <summary>customGauge{N}/gaugeXXX{N}の出力(2026-07-26、GaugeEditorWindow)。
     /// GaugeRawOverrideText(直接入力モード)に空白以外の内容があれば、その内容を

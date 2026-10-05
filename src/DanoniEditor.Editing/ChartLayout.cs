@@ -168,7 +168,13 @@ public sealed class ChartLayout
 
     /// <summary>コンテンツ全体の高さ(最終オブジェクト+4小節ぶんの余白)。Reverseの影響を受けない
     /// 素の高さ(RawTickToY基準)であり、RefreshContentHeightの反転基準そのものでもある。</summary>
-    public double ContentHeight(long maxTick) => RawTickToY(maxTick + 4L * TimingEngine.TicksPerBeat * 4);
+    public double ContentHeight(long maxTick)
+    {
+        // 2026-10-05: 壊れたデータ等でmaxTickがlong上限付近でも桁あふれ(負値化)しないよう飽和させる
+        const long Margin = 4L * TimingEngine.TicksPerBeat * 4;
+        long padded = maxTick > long.MaxValue - Margin ? long.MaxValue : maxTick + Margin;
+        return RawTickToY(padded);
+    }
 
     // --- ヒットテスト ---
     /// <summary>点(x,y)にあるオブジェクトを返す(上に描画されるもの優先)。hitScale=0.5でドラッグ削除用の縮小判定(6.3.1)</summary>

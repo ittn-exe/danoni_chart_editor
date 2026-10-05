@@ -121,6 +121,14 @@ public class ChartLayoutTests
     // --- Reverse(譜面ビュー、2026-07-22追加) ---
 
     [Fact]
+    public void ContentHeight_NearLongMax_DoesNotOverflowToNegative()
+    {
+        var layout = NewLayout();
+        double h = layout.ContentHeight(long.MaxValue - 10);
+        Assert.True(h > 0);
+    }
+
+    [Fact]
     public void Reverse_TickToY_And_YToTick_AreStillInverse()
     {
         var layout = NewLayout();

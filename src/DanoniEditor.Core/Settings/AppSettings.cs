@@ -222,6 +222,28 @@ public sealed class AppSettings
     public bool ShowFrameWithBlankFrame { get; set; } = true;
 
     // =====================================================================
+    // ギター系キー種(std_gt.js相当、GuitarFreaks形式のピック+フレット判定、2026-09-27要望対応)。
+    // GTR_TARGET_KEYS等をハードコードにせず環境設定「ギター」カテゴリへ集約する専用設定。
+    // 今後ピック先行猶予・離し遅れ免除等のパラメータを追加する場合も、GuitarSettingsへ追記していく。
+    // =====================================================================
+
+    /// <summary>ギター系プレーテスト設定(GuitarPlaytestEngine)。</summary>
+    public GuitarSettings Guitar { get; set; } = new();
+
+    // =====================================================================
+    // プレーテストのキーアサイン上書き(2026-09-27要望対応)。テンプレート本来のKeyAssign
+    // (dos.txt出力・本体エンジンに影響する本来のキー配置)は変更せず、プレーテスト時の入力キーのみを
+    // 個人の好みで上書きする(環境設定「テスト再生」の「キーアサイン」ボタン、KeyAssignWindow参照)。
+    // =====================================================================
+
+    /// <summary>プレーテストのキーアサイン上書き。キー=keyTypeId、値は(laneId→物理キーの
+    /// 割当ラベル文字列のリスト)の辞書。未設定のレーンはテンプレート既定のKeyAssignを使う。
+    /// 2026-09-27要望対応: 「複数キーの割り当て対応」により単一文字列からリストへ変更
+    /// (テンプレート本来のKeyAssign同様、1レーンに複数の物理キーを割り当てられる)。
+    /// リストが空になったレーンはDictionaryから取り除く運用(KeyAssignWindow参照)。</summary>
+    public Dictionary<string, Dictionary<string, List<string>>> PlaytestKeyAssignOverrides { get; set; } = [];
+
+    // =====================================================================
     // 目視テスト: 自動でスタート位置(再生開始ライン)へ戻る機能(2026-07-29要望対応、既定OFF)。
     // 再生開始ラインから指定した小節数/秒数が経過すると、自動的に再生開始ラインの位置へ戻る
     // (DAWループ再生(時間情報レーンの範囲選択)とは別の、より単純な「練習用ループ」機能)。
@@ -638,6 +660,9 @@ public sealed class AppSettings
         })];
         c.Shortcuts = Shortcuts.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
         c.KeyboardModeShortcuts = new Dictionary<string, string>(KeyboardModeShortcuts);
+        c.Guitar = Guitar.Clone();
+        c.PlaytestKeyAssignOverrides = PlaytestKeyAssignOverrides.ToDictionary(
+            kv => kv.Key, kv => kv.Value.ToDictionary(kv2 => kv2.Key, kv2 => new List<string>(kv2.Value)));
         return c;
     }
 

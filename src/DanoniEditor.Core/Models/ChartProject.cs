@@ -22,6 +22,12 @@ public sealed class ChartProject
     /// <summary>目テスト・プレイテスト時にエディタが再生するローカル音源の絶対パス(dos.txtには出力しない。
     /// MusicUrlはdos.txt上の相対パス文字列であり、これとは別物)</summary>
     public string AudioFilePath { get; set; } = "";
+
+    /// <summary>2曲目以降の楽曲(2026-09-29要望対応・簡素化版: 難易度別音源)。1曲目は上記の
+    /// MusicTitle/ArtistName/ArtistUrl/MusicUrl/AudioFilePathが担い、このリストは2曲目以降のみを
+    /// 保持する(SongInfo参照)。各DifficultyTabがSongIndexでどの曲を使うか選択する
+    /// (0=1曲目、1以上=AdditionalSongs[SongIndex-1])。右パネル「楽曲」タブで管理する。</summary>
+    public List<SongInfo> AdditionalSongs { get; set; } = [];
     public string Tuning { get; set; } = "name";
     public int StartFrame { get; set; } = 0;
     public int BlankFrame { get; set; } = 0;
@@ -209,6 +215,15 @@ public sealed class DifficultyTab
     /// (2026-08-04要望対応、既定は引き継がない)。</summary>
     public double? PlaybackStartFrame { get; set; }
 
+    /// <summary>このタブが使う曲の番号(2026-09-29要望対応・簡素化版: 難易度別に異なる曲を指定する機能)。
+    /// 0=共通/1曲目(ChartProject.MusicTitle/ArtistName/ArtistUrl/MusicUrl/AudioFilePath)、
+    /// 1以上=ChartProject.AdditionalSongs[SongIndex-1]。新規タブの既定値は0(=1曲目)。
+    /// danoniplus本体のmusicTitle/musicUrlが"$"区切りで複数曲を列挙し、musicNoで譜面ごとに
+    /// どの曲番号を使うか指定する仕組み(dos-h0011/h0012)にそのまま対応する(インデックスの意味も同一)。
+    /// DosExporter.Export参照(AdditionalSongsが空なら従来通り単一行のmusicTitle/musicUrlのみ出力し、
+    /// musicNoは出さない)。右パネル「楽曲」タブでタブごとに選択する(MainWindow.RefreshMusicPanel参照)。</summary>
+    public int SongIndex { get; set; } = 0;
+
     /// <summary>テンプレートに合わせてレーン数を初期化する</summary>
     public static DifficultyTab CreateFor(KeyTemplate template, string name, double initialSpeed = 3.5)
     {
@@ -254,6 +269,7 @@ public sealed class DifficultyTab
             TimeRangeSelectionStartTick = TimeRangeSelectionStartTick,
             TimeRangeSelectionEndTick = TimeRangeSelectionEndTick,
             PlaybackStartFrame = carryOverPlaybackStart ? PlaybackStartFrame : null,
+            SongIndex = SongIndex,
         };
         foreach (var lane in Lanes)
         {
@@ -276,6 +292,22 @@ public sealed class DifficultyTab
         }
         return clone;
     }
+}
+
+/// <summary>2曲目以降の楽曲情報(2026-09-29要望対応・簡素化版: 難易度別音源)。
+/// ChartProject.AdditionalSongsの要素。1曲目はChartProject自身のMusicTitle/ArtistName/ArtistUrl/
+/// MusicUrl/AudioFilePathが担うため、ここには含まない(index 0が1曲目、AdditionalSongs[0]が2曲目、
+/// という対応。DifficultyTab.SongIndex参照)。楽曲ファイルが既に1曲読み込まれている状態でさらに
+/// 音楽ファイルをD&Dすると、上書きではなくこのリストへ「2曲目以降」として追加される
+/// (MainWindow.Window_Drop参照)。AudioFilePathはdos.txtには出力しない、エディタのローカル
+/// 再生用の絶対パス。</summary>
+public sealed class SongInfo
+{
+    public string MusicTitle { get; set; } = "";
+    public string ArtistName { get; set; } = "";
+    public string ArtistUrl { get; set; } = "";
+    public string MusicUrl { get; set; } = "";
+    public string AudioFilePath { get; set; } = "";
 }
 
 /// <summary>1レーン分のノートデータ(位置はすべてtick単位=拍管理、仕様書7.2)</summary>

@@ -67,7 +67,16 @@ public sealed class RendezvousConnection : IAsyncDisposable
         if (!await ReadExactAsync(body, ct).ConfigureAwait(false))
             return null;
 
-        return JsonSerializer.Deserialize<RendezvousMessage>(body, JsonOptions);
+        RendezvousMessage? message;
+        try
+        {
+            message = JsonSerializer.Deserialize<RendezvousMessage>(body, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("不正な待ち合わせメッセージを受信しました。", ex);
+        }
+        return message ?? throw new InvalidDataException("空の待ち合わせメッセージを受信しました。");
     }
 
     private async Task<bool> ReadExactAsync(byte[] buffer, CancellationToken ct)

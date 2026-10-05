@@ -52,21 +52,33 @@ public sealed class CollabConnection : IAsyncDisposable
     /// メッセージを1件受信する。接続が正常にクローズされた場合はnullを返す
     /// (呼び出し側は受信ループを終了させること)。
     /// </summary>
-    public async Task<CollabMessage?> ReceiveAsync(CancellationToken ct = default)
+    public async Task<CollabMessage?> ReceiveAsync(CancellationToken ct = default, int maxMessageBytes = CollabProtocol.MaxMessageBytes)
     {
         var header = new byte[4];
         if (!await ReadExactAsync(header, ct).ConfigureAwait(false))
             return null;
 
         var length = BinaryPrimitives.ReadInt32BigEndian(header);
-        if (length < 0 || length > CollabProtocol.MaxMessageBytes)
+        if (length < 0 || length > Math.Min(maxMessageBytes, CollabProtocol.MaxMessageBytes))
             throw new InvalidDataException($"不正なメッセージ長を受信しました: {length}バイト");
 
         var body = new byte[length];
         if (!await ReadExactAsync(body, ct).ConfigureAwait(false))
             return null;
 
-        return JsonSerializer.Deserialize<CollabMessage>(body, JsonOptions);
+        // 2026-10-05: 不正なJSON/未知の種別は例外(InvalidDataException)として呼び出し側へ伝える。
+        // 以前はJsonExceptionがそのまま漏れ、"null"という本文は戻り値nullとなって
+        // 「正常切断」と区別が付かなかった。
+        CollabMessage? message;
+        try
+        {
+            message = JsonSerializer.Deserialize<CollabMessage>(body, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("不正なメッセージ本文を受信しました。", ex);
+        }
+        return message ?? throw new InvalidDataException("空のメッセージを受信しました。");
     }
 
     /// <summary>bufferがちょうど埋まるまで読み込む。相手が正常にクローズした場合はfalseを返す。</summary>

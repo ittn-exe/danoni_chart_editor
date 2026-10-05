@@ -32,6 +32,10 @@ public static class AutoSaveManager
     private const string CrashFlagPrefix = "running_";
     private const string CrashFlagExt = ".flag";
 
+    // プロセス開始時刻とフラグ時刻の比較に許容する時計の誤差。
+    private static readonly TimeSpan PidReuseTolerance = TimeSpan.FromSeconds(5);
+    private const string ManifestLockFileName = "manifest.lock";
+
     private static readonly JsonSerializerOptions ManifestJsonOpts = new() { WriteIndented = true };
 
     public static string GetManifestPath(string autoSaveDir) => Path.Combine(autoSaveDir, ManifestFileName);
@@ -80,9 +84,23 @@ public static class AutoSaveManager
         try
         {
             var content = File.ReadAllText(flagPath);
-            var pidText = content.Split('|')[0];
-            if (!int.TryParse(pidText, out var pid)) return false;
-            System.Diagnostics.Process.GetProcessById(pid); // 存在しなければArgumentException
+            var parts = content.Split('|');
+            if (!int.TryParse(parts[0], out var pid)) return false;
+            using var process = System.Diagnostics.Process.GetProcessById(pid); // 存在しなければArgumentException
+
+            // PID再利用対策: フラグ書き込み時刻より後に開始したプロセスは、同じPIDを使い回した
+            // 別プロセスなので「元のインスタンスは死んでいる」と判定する。開始時刻が取得できない
+            // (権限不足など)場合や、フラグに時刻が無い旧形式の場合は従来どおり「生きている」とみなす。
+            if (parts.Length > 1
+                && DateTime.TryParse(parts[1], null, System.Globalization.DateTimeStyles.RoundtripKind, out var flagTime))
+            {
+                try
+                {
+                    var startUtc = process.StartTime.ToUniversalTime();
+                    if (startUtc > flagTime.ToUniversalTime() + PidReuseTolerance) return false;
+                }
+                catch { /* 開始時刻が取れない場合は判定不能 → 生存扱い */ }
+            }
             return true;
         }
         catch { return false; }
@@ -101,8 +119,14 @@ public static class AutoSaveManager
 
     // --- マニフェスト(開いているセッション一覧) ---
 
-    public static List<AutoSaveSlotInfo> LoadManifest(string autoSaveDir)
+    public static List<AutoSaveSlotInfo> LoadManifest(string autoSaveDir) => TryLoadManifest(autoSaveDir, out _);
+
+    /// <summary>manifestを読む。壊れていた場合は「復旧候補なし」として空リストを返し(起動を止めない)、
+    /// corrupted=true を返す。呼び出し側(書き込み経路)は、壊れたmanifestを黙って上書きして
+    /// 復旧情報を失わないよう、退避してから作り直す。</summary>
+    private static List<AutoSaveSlotInfo> TryLoadManifest(string autoSaveDir, out bool corrupted)
     {
+        corrupted = false;
         var path = GetManifestPath(autoSaveDir);
         if (!File.Exists(path)) return [];
         try
@@ -111,15 +135,52 @@ public static class AutoSaveManager
         }
         catch
         {
-            // 壊れたmanifestは「復旧候補なし」として扱う(起動を止めない)
+            corrupted = true;
             return [];
         }
     }
 
     private static void SaveManifest(string autoSaveDir, List<AutoSaveSlotInfo> slots)
     {
+        AtomicFile.WriteAllText(GetManifestPath(autoSaveDir), JsonSerializer.Serialize(slots, ManifestJsonOpts));
+    }
+
+    /// <summary>manifestの「読む→変更→書く」を、ロックファイルで複数プロセス間直列化して行う。
+    /// ロックが取れない場合(長時間占有されているなど)は、保存自体を止めないためロック無しで続行する。
+    /// 壊れたmanifestは manifest.corrupt-*.json へ退避してから作り直す。</summary>
+    private static void UpdateManifest(string autoSaveDir, Func<List<AutoSaveSlotInfo>, bool> mutate)
+    {
         Directory.CreateDirectory(autoSaveDir);
-        File.WriteAllText(GetManifestPath(autoSaveDir), JsonSerializer.Serialize(slots, ManifestJsonOpts));
+        using var lockHandle = AcquireManifestLock(autoSaveDir);
+
+        var manifest = TryLoadManifest(autoSaveDir, out var corrupted);
+        if (corrupted)
+        {
+            try
+            {
+                var backup = Path.Combine(autoSaveDir, $"manifest.corrupt-{DateTime.UtcNow:yyyyMMddHHmmssfff}.json");
+                File.Copy(GetManifestPath(autoSaveDir), backup, overwrite: false);
+            }
+            catch { /* 退避に失敗しても続行 */ }
+        }
+
+        if (mutate(manifest) || corrupted)
+            SaveManifest(autoSaveDir, manifest);
+    }
+
+    private static FileStream? AcquireManifestLock(string autoSaveDir)
+    {
+        var lockPath = Path.Combine(autoSaveDir, ManifestLockFileName);
+        for (var attempt = 0; attempt < 40; attempt++) // 最大およそ2秒
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) { Thread.Sleep(50); }
+            catch (UnauthorizedAccessException) { Thread.Sleep(50); }
+        }
+        return null;
     }
 
     // --- スロットの読み書き ---
@@ -129,13 +190,14 @@ public static class AutoSaveManager
     /// しない、というユーザー確定仕様)。</summary>
     public static void WriteSlot(string autoSaveDir, string slotId, string instanceId, string? lastKnownPath, string projectName, string projectJson)
     {
-        Directory.CreateDirectory(autoSaveDir);
-        File.WriteAllText(GetSlotFilePath(autoSaveDir, slotId), projectJson);
+        AtomicFile.WriteAllText(GetSlotFilePath(autoSaveDir, slotId), projectJson);
 
-        var manifest = LoadManifest(autoSaveDir);
-        manifest.RemoveAll(s => s.SlotId == slotId);
-        manifest.Add(new AutoSaveSlotInfo(slotId, instanceId, lastKnownPath, projectName, DateTime.UtcNow));
-        SaveManifest(autoSaveDir, manifest);
+        UpdateManifest(autoSaveDir, manifest =>
+        {
+            manifest.RemoveAll(s => s.SlotId == slotId);
+            manifest.Add(new AutoSaveSlotInfo(slotId, instanceId, lastKnownPath, projectName, DateTime.UtcNow));
+            return true;
+        });
     }
 
     /// <summary>手動保存(Ctrl+S)完了時、またはセッションを閉じた時に呼ぶ。そのスロットはもう
@@ -145,9 +207,8 @@ public static class AutoSaveManager
         var path = GetSlotFilePath(autoSaveDir, slotId);
         if (File.Exists(path)) File.Delete(path);
 
-        var manifest = LoadManifest(autoSaveDir);
-        if (manifest.RemoveAll(s => s.SlotId == slotId) > 0)
-            SaveManifest(autoSaveDir, manifest);
+        if (!Directory.Exists(autoSaveDir)) return;
+        UpdateManifest(autoSaveDir, manifest => manifest.RemoveAll(s => s.SlotId == slotId) > 0);
     }
 
     public static string ReadSlotContent(string autoSaveDir, string slotId) => File.ReadAllText(GetSlotFilePath(autoSaveDir, slotId));

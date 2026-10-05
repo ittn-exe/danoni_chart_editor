@@ -32,6 +32,22 @@ public static partial class Base64MusicDecoder
         catch (FormatException) { return null; }
     }
 
+    /// <summary>デコードした音声を保存する際のファイル名の接頭辞。旧バージョンが一時フォルダへ書き出した
+    /// ファイル(danoni_music_{guid}.ext)も同じ接頭辞のため、救済処理の判定にも使う。</summary>
+    public const string DecodedFilePrefix = "danoni_music_";
+
+    /// <summary>デコード済みバイト列の内容から決まる保存ファイル名(接頭辞+SHA-256先頭16桁+拡張子)。
+    /// 同じ楽曲を何度読み込んでも同じ名前になるため、./temp にファイルが増え続けない。</summary>
+    public static string BuildContentFileName(byte[] bytes)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(bytes);
+        return DecodedFilePrefix + Convert.ToHexString(hash, 0, 8).ToLowerInvariant() + GuessExtension(bytes);
+    }
+
+    /// <summary>このアプリがBASE64楽曲データから書き出したファイル名か。</summary>
+    public static bool IsDecodedFileName(string? fileName) =>
+        !string.IsNullOrEmpty(fileName) && fileName.StartsWith(DecodedFilePrefix, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>デコード済みバイト列の先頭マジックバイトから拡張子を推定する(元の形式情報が
     /// JS側に残っていないため)。判定できなければ既定で".mp3"を返す(最も一般的な形式のため)。</summary>
     public static string GuessExtension(byte[] bytes)

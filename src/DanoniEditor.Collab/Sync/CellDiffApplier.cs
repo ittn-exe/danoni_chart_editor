@@ -17,6 +17,7 @@ public static class CellDiffApplier
     public static void ApplyNoteCell(ChartProject project, NoteCellChangedMessage message)
     {
         var lane = GetLane(project, message.TabIndex, message.LaneIndex);
+        ValidateTick(message.Tick);
         lane.Notes.RemoveAll(tick => tick == message.Tick);
         if (message.State == NoteCellState.Note)
             lane.Notes.Add(message.Tick);
@@ -27,6 +28,8 @@ public static class CellDiffApplier
     public static void ApplyFreeze(ChartProject project, FreezeChangedMessage message)
     {
         var lane = GetLane(project, message.TabIndex, message.LaneIndex);
+        ValidateTick(message.StartTick);
+        if (message.EndTick is { } e) ValidateTick(e);
         lane.Freezes.RemoveAll(f => f.StartTick == message.StartTick);
         if (message.EndTick is { } endTick)
             lane.Freezes.Add(new FreezeNote(message.StartTick, endTick));
@@ -45,6 +48,14 @@ public static class CellDiffApplier
     /// <summary>フリーズの削除を表すメッセージを組み立てる(送信側用)。</summary>
     public static FreezeChangedMessage CreateFreezeRemoveMessage(int tabIndex, int laneIndex, long startTick, string authorParticipantId = "") =>
         new(tabIndex, laneIndex, startTick, EndTick: null, authorParticipantId);
+
+    /// <summary>外部(ネットワーク)から届いたtickの範囲検査(2026-10-05)。極端な値は描画・演算の
+    /// オーバーフローの原因になるため、プロジェクトファイルの読み込み時と同じ上限で弾く。</summary>
+    private static void ValidateTick(long tick)
+    {
+        if (Math.Abs(tick) > DanoniEditor.Core.Persistence.ProjectSerializer.MaxTick)
+            throw new ArgumentOutOfRangeException(nameof(tick), tick, "tickが範囲外です。");
+    }
 
     private static LaneNotes GetLane(ChartProject project, int tabIndex, int laneIndex)
     {

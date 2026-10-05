@@ -20,6 +20,10 @@ namespace DanoniEditor.App;
 internal sealed class PreferencesWindow : Window
 {
     private readonly AppSettings _work; // 作業コピー(OKで確定)
+    /// <summary>2026-09-29不具合修正: 現行(実際に使われている)のAppSettings。キーアサイン
+    /// (KeyAssignWindow)は環境設定ウィンドウのOK/キャンセルを待たず即座に確定させたいため、
+    /// _work(作業コピー)ではなくこちらへ直接反映・保存させる(BuildTestPlaybackPanel参照)。</summary>
+    private readonly AppSettings _current;
 
     /// <summary>OK確定後の設定。キャンセル時はnull</summary>
     public AppSettings? Result { get; private set; }
@@ -99,6 +103,33 @@ internal sealed class PreferencesWindow : Window
     private readonly CheckBox _ptShowMeasureLines = new() { Content = "小節線を表示(小節番号付き)" };
     // --- プレイテスト: キー種ごとのReverse既定値(2026-07-26要望対応) ---
     private readonly Dictionary<string, CheckBox> _ptReverseByKeyType = [];
+    /// <summary>2026-09-27要望対応: ギター判定(GuitarPlaytestEngine)の対象キー種
+    /// (AppSettings.Guitar.TargetKeyTypeIds)。GTR_TARGET_KEYS相当をハードコードにせず
+    /// この専用カテゴリで管理する。</summary>
+    private readonly Dictionary<string, CheckBox> _guitarTargetKeyTypes = [];
+    // --- ギター Phase2(2026-09-27b要望対応): ピック先行の猶予・離し遅れ免除・ダブルピック許可 ---
+    private readonly TextBox _guitarPickEarlyGrace = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _guitarReleaseExemptEnable = new() { Content = "離し遅れ免除を有効にする" };
+    private readonly TextBox _guitarReleaseExemptMaxFrames = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarFreezeEndGraceFrames = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _guitarAllowRepick = new() { Content = "ダブルピック(打ち直し)を許可する" };
+    // --- ギター Phase4(2026-09-27c要望対応): 見た目の演出(ピック横線・開放弦表示・ハンマリング塗り分け・
+    // 押下発光・フリーズ終端矢印の非表示)。std_gt.jsのGTR_LINE_*/GTR_OPEN_*/GTR_HAMMER_FILL_OPACITY/
+    // GTR_HOLD_GLOW_*/GTR_HIDE_FRZ_BOTTOM相当。---
+    private readonly CheckBox _guitarShowPickLine = new() { Content = "ピック横線を表示する" };
+    private readonly TextBox _guitarPickLineColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarPickLineOpacity = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarPickLineHeight = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly ComboBox _guitarOpenStringStyle = new() { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarOpenStringColor = new() { Width = 100, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarOpenStringOpacity = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarOpenStringWidth = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _guitarOpenStringHeight = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _guitarShowHammerFill = new() { Content = "ハンマリング(ピック非同時)ノートの矢印を塗り分ける" };
+    private readonly TextBox _guitarHammerFillOpacity = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _guitarShowHoldGlow = new() { Content = "フレット押下中のレーンを発光表示する" };
+    private readonly TextBox _guitarHoldGlowHeight = new() { Width = 60, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _guitarHideFreezeTailArrow = new() { Content = "フリーズアローの終端矢印を非表示にする" };
 
     // --- プレイテスト: キー種ごとの採用キーパターン(2026-07-26e要望対応)。
     // 追加パターンを持つキー種のみ選択欄を出す。値はコンボの表示文字列("パターン0(既定)"等)ではなく
@@ -206,6 +237,7 @@ internal sealed class PreferencesWindow : Window
     public PreferencesWindow(AppSettings current, int initialCategory = 0, TemplateRepository? templates = null)
     {
         _work = current.Clone();
+        _current = current;
         _templates = templates;
 
         Title = "環境設定";
@@ -234,6 +266,7 @@ internal sealed class PreferencesWindow : Window
         var categories = new ListBox { Margin = new Thickness(8), Width = 120 };
         categories.Items.Add("表示");
         categories.Items.Add("テスト再生");
+        categories.Items.Add("ギター");
         categories.Items.Add("新規プロジェクト");
         categories.Items.Add("編集・保存");
         categories.Items.Add("キーボードモード");
@@ -244,7 +277,7 @@ internal sealed class PreferencesWindow : Window
         categories.Items.Add("カラーピッカー");
         categories.Items.Add("統計情報");
 
-        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildShortcutsPanel(), BuildColorPickerPanel(), BuildStatsPanel() };
+        var panels = new[] { BuildDisplayPanel(), BuildTestPlaybackPanel(), BuildGuitarPanel(), BuildNewProjectPanel(), BuildEditSavePanel(), BuildKeyboardModePanel(), BuildMusicUrlPanel(), BuildTemplatePanel(), BuildKeyMacroPanel(), BuildShortcutsPanel(), BuildColorPickerPanel(), BuildStatsPanel() };
         var content = new ContentControl { Margin = new Thickness(0, 8, 8, 0) };
         categories.SelectionChanged += (_, _) =>
         {
@@ -722,6 +755,27 @@ internal sealed class PreferencesWindow : Window
 
         // --- プレイテスト ---
         p.Children.Add(Label("プレイテスト(Ctrl+P)", section: true));
+        // 2026-09-27要望対応: プレーテストの入力キーを個人の好みで上書きするウィンドウ
+        // (テンプレート本来のKeyAssignは変更しない、KeyAssignWindow参照)。
+        // 2026-09-29不具合修正: 以前は_work(環境設定ウィンドウ全体のOK/キャンセルに従う作業コピー)へ
+        // 書き込むだけだったため、キーアサインを変更した後に環境設定ウィンドウ側を「キャンセル」または
+        // ×閉じすると、キーアサインの変更も一緒に破棄されてしまう不具合があった(KeyAssignWindow自体は
+        // 「割当」ボタンを押した時点で画面上「(変更済)」と表示されるため、その場で確定したように
+        // 見えてしまうのが紛らわしかった)。KeyAssignWindowには現行(current、実際に使われている)の
+        // 設定を渡し、割当のたびに即座に反映・即座に保存させることで、環境設定ウィンドウの
+        // OK/キャンセルとは無関係に確定する独立した挙動へ変更した。
+        // ダイアログを閉じた直後に_work側の該当項目もcurrentの内容へ同期しておく。これを怠ると、
+        // 後で環境設定ウィンドウのOKを押した際にTryCommit()がResult=_work(キーアサイン変更前の
+        // 古い状態のまま)を返し、MainWindow側がそれで現在の設定を上書き・再保存してしまい、
+        // ここでせっかく即時保存した内容を消してしまう(でしたわ)。
+        var keyAssignButton = new Button { Content = "キーアサイン", Width = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8) };
+        keyAssignButton.Click += (_, _) =>
+        {
+            new KeyAssignWindow(_current, _templates) { Owner = this }.ShowDialog();
+            _work.PlaytestKeyAssignOverrides = _current.PlaytestKeyAssignOverrides.ToDictionary(
+                kv => kv.Key, kv => kv.Value.ToDictionary(kv2 => kv2.Key, kv2 => new List<string>(kv2.Value)));
+        };
+        p.Children.Add(keyAssignButton);
         _ptReverse.Margin = new Thickness(0, 0, 0, 4);
         p.Children.Add(_ptReverse);
         p.Children.Add(Label("ハイスピード(x0.25〜x10、0.25刻み):"));
@@ -851,6 +905,88 @@ internal sealed class PreferencesWindow : Window
     private const string WidthModeAuto = "auto";
     private const string WidthModePx = "px";
     private const string WidthModeKeyType = "keyType";
+
+    /// <summary>2026-09-27要望対応: ギター系キー種(std_gt.js相当、GuitarPlaytestEngine)の設定を
+    /// 集約する専用カテゴリ。GTR_TARGET_KEYS相当(対象キー種の判定)をハードコードにせずここで管理する。
+    /// 今後ピック先行猶予・離し遅れ免除等のパラメータを追加する場合も、このカテゴリに追記していく。</summary>
+    private UIElement BuildGuitarPanel()
+    {
+        var p = new StackPanel { Margin = new Thickness(4) };
+        p.Children.Add(Label("ギター判定(std_gt.js相当)を適用するキー種", section: true));
+        p.Children.Add(Label("チェックしたキー種のみ、プレイテストでピック+フレット同時押し判定" +
+            "(GuitarPlaytestEngine)を有効にする。未チェックのキー種は従来通りレーン独立判定のまま。" +
+            "対象にするキー種は、いずれかのレーンのDataNameが\"space\"であること(ピックレーンとして扱う)。"));
+
+        _guitarTargetKeyTypes.Clear();
+        if (_templates is null)
+        {
+            p.Children.Add(new TextBlock { Text = "(テンプレート一覧を取得できませんでした)", Foreground = Brushes.Gray, FontStyle = FontStyles.Italic });
+        }
+        else
+        {
+            foreach (var keyTypeId in _templates.ListKeyTypeIds())
+            {
+                var cb = new CheckBox { Content = $"{keyTypeId}k", Margin = new Thickness(0, 0, 0, 2) };
+                _guitarTargetKeyTypes[keyTypeId] = cb;
+                p.Children.Add(cb);
+            }
+        }
+
+        // 2026-09-27b要望対応(Phase2): ピック先行の猶予・離し遅れ免除・ダブルピック許可
+        // (std_gt.js GTR_PICK_EARLY_GRACE/GTR_RELEASE_EXEMPT_*/GTR_FRZ_END_GRACE/GTR_ALLOW_REPICK相当)。
+        p.Children.Add(Label("ピック先行の猶予・離し遅れ免除", section: true));
+        p.Children.Add(Label("ピックを押した瞬間に指板(フレット)が一致していなくても、この猶予(frame)内であれば" +
+            "指板が追いつくのを待つ(打ち直しのタイミングがずれても即ミスにしない):"));
+        p.Children.Add(_guitarPickEarlyGrace);
+        p.Children.Add(_guitarReleaseExemptEnable);
+        p.Children.Add(Label("直前に解決した1ノート/1組の押しっぱなしを免除する猶予(frame):"));
+        p.Children.Add(_guitarReleaseExemptMaxFrames);
+        p.Children.Add(Label("フリーズ終端後、そのレーンの押しっぱなしを免除する猶予(frame)" +
+            "(コードで必要なレーンは猶予中でも実押下が必要):"));
+        p.Children.Add(_guitarFreezeEndGraceFrames);
+        p.Children.Add(_guitarAllowRepick);
+
+        // 2026-09-27c要望対応(Phase4): 見た目の演出(ピック横線・開放弦表示・ハンマリング塗り分け・
+        // 押下発光・フリーズ終端矢印の非表示)。オートピック/オートネック(Phase3)は本体実装の
+        // 全体オートプレイに一元化する方針のため、この画面には設けない。
+        p.Children.Add(Label("見た目の演出", section: true));
+        p.Children.Add(_guitarShowPickLine);
+        p.Children.Add(Label("ピック横線の色(#RRGGBB)・不透明度(0〜1)・太さ(px):"));
+        var pickLineRow = new StackPanel { Orientation = Orientation.Horizontal };
+        pickLineRow.Children.Add(_guitarPickLineColor);
+        pickLineRow.Children.Add(_guitarPickLineOpacity);
+        pickLineRow.Children.Add(_guitarPickLineHeight);
+        p.Children.Add(pickLineRow);
+
+        p.Children.Add(Label("開放弦(構成音が無いピックノーツ)の表示方法:"));
+        if (_guitarOpenStringStyle.Items.Count == 0)
+        {
+            _guitarOpenStringStyle.Items.Add("0: ×印(ピック横線と同色・同太さを流用)");
+            _guitarOpenStringStyle.Items.Add("1: ×印(専用色・太さ)");
+            _guitarOpenStringStyle.Items.Add("2: ×印の代わりに横線を重ねる");
+        }
+        p.Children.Add(_guitarOpenStringStyle);
+        p.Children.Add(Label("開放弦表示の色(#RRGGBB)・不透明度(0〜100)・太さ(px)・×印の一辺(px)" +
+            "(スタイル1・2のときのみ使用):"));
+        var openStringRow = new StackPanel { Orientation = Orientation.Horizontal };
+        openStringRow.Children.Add(_guitarOpenStringColor);
+        openStringRow.Children.Add(_guitarOpenStringOpacity);
+        openStringRow.Children.Add(_guitarOpenStringWidth);
+        openStringRow.Children.Add(_guitarOpenStringHeight);
+        p.Children.Add(openStringRow);
+
+        p.Children.Add(_guitarShowHammerFill);
+        p.Children.Add(Label("ハンマリング矢印内側塗りつぶしの不透明度(0〜1):"));
+        p.Children.Add(_guitarHammerFillOpacity);
+
+        p.Children.Add(_guitarShowHoldGlow);
+        p.Children.Add(Label("フレット押下発光の高さ(px):"));
+        p.Children.Add(_guitarHoldGlowHeight);
+
+        p.Children.Add(_guitarHideFreezeTailArrow);
+
+        return new ScrollViewer { Content = p, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
 
     private UIElement BuildNewProjectPanel()
     {
@@ -1458,6 +1594,27 @@ internal sealed class PreferencesWindow : Window
         }
         foreach (var (keyTypeId, cb) in _ptReverseByKeyType)
             cb.IsChecked = s.PlaytestReverseByKeyType.TryGetValue(keyTypeId, out var rev) && rev;
+        foreach (var (keyTypeId, cb) in _guitarTargetKeyTypes)
+            cb.IsChecked = s.Guitar.TargetKeyTypeIds.Contains(keyTypeId);
+        _guitarPickEarlyGrace.Text = s.Guitar.PickEarlyGraceFrames.ToString(CultureInfo.InvariantCulture);
+        _guitarReleaseExemptEnable.IsChecked = s.Guitar.ReleaseExemptEnable;
+        _guitarReleaseExemptMaxFrames.Text = s.Guitar.ReleaseExemptMaxFrames.ToString(CultureInfo.InvariantCulture);
+        _guitarFreezeEndGraceFrames.Text = s.Guitar.FreezeEndGraceFrames.ToString(CultureInfo.InvariantCulture);
+        _guitarAllowRepick.IsChecked = s.Guitar.AllowRepick;
+        _guitarShowPickLine.IsChecked = s.Guitar.ShowPickLine;
+        _guitarPickLineColor.Text = s.Guitar.PickLineColorHex;
+        _guitarPickLineOpacity.Text = s.Guitar.PickLineOpacity.ToString(CultureInfo.InvariantCulture);
+        _guitarPickLineHeight.Text = s.Guitar.PickLineHeight.ToString(CultureInfo.InvariantCulture);
+        _guitarOpenStringStyle.SelectedIndex = s.Guitar.OpenStringStyle is >= 0 and <= 2 ? s.Guitar.OpenStringStyle : 0;
+        _guitarOpenStringColor.Text = s.Guitar.OpenStringColorHex;
+        _guitarOpenStringOpacity.Text = s.Guitar.OpenStringOpacity.ToString(CultureInfo.InvariantCulture);
+        _guitarOpenStringWidth.Text = s.Guitar.OpenStringWidth.ToString(CultureInfo.InvariantCulture);
+        _guitarOpenStringHeight.Text = s.Guitar.OpenStringHeight.ToString(CultureInfo.InvariantCulture);
+        _guitarShowHammerFill.IsChecked = s.Guitar.ShowHammerFill;
+        _guitarHammerFillOpacity.Text = s.Guitar.HammerFillOpacity.ToString(CultureInfo.InvariantCulture);
+        _guitarShowHoldGlow.IsChecked = s.Guitar.ShowHoldGlow;
+        _guitarHoldGlowHeight.Text = s.Guitar.HoldGlowHeight.ToString(CultureInfo.InvariantCulture);
+        _guitarHideFreezeTailArrow.IsChecked = s.Guitar.HideFreezeTailArrow;
         _markerFull.IsChecked = s.MarkerCommentFull;
         _markerHead.IsChecked = !s.MarkerCommentFull;
         _markerHeadChars.Text = s.MarkerCommentHeadChars.ToString(CultureInfo.InvariantCulture);
@@ -1506,6 +1663,30 @@ internal sealed class PreferencesWindow : Window
         { _error.Text = "プレイテストの中断キーは最低1つはcheckedにしてください"; return false; }
         if (!TryNonNegativeInt(_ptStartupWaitMs.Text, out var ptWait))
         { _error.Text = "プレイテスト起動時ウェイトは0以上の整数(ms)で入力してください"; return false; }
+        if (!TryNonNegative(_guitarPickEarlyGrace.Text, out var guitarPickGrace))
+        { _error.Text = "ギターのピック先行の猶予は0以上の数値で入力してください"; return false; }
+        if (!TryNonNegative(_guitarReleaseExemptMaxFrames.Text, out var guitarReleaseExemptMax))
+        { _error.Text = "ギターの離し遅れ免除の猶予は0以上の数値で入力してください"; return false; }
+        if (!TryNonNegative(_guitarFreezeEndGraceFrames.Text, out var guitarFreezeEndGrace))
+        { _error.Text = "ギターのフリーズ終端後の押し猶予は0以上の数値で入力してください"; return false; }
+        if (!TryColor(_guitarPickLineColor.Text))
+        { _error.Text = "ギターのピック横線の色は #RRGGBB 形式で入力してください"; return false; }
+        if (!TryRange(_guitarPickLineOpacity.Text, 0, 1, out var guitarPickLineOpacity))
+        { _error.Text = "ギターのピック横線の不透明度は0〜1で入力してください"; return false; }
+        if (!TryPositive(_guitarPickLineHeight.Text, out var guitarPickLineHeight))
+        { _error.Text = "ギターのピック横線の太さは正の数値で入力してください"; return false; }
+        if (!TryColor(_guitarOpenStringColor.Text))
+        { _error.Text = "ギターの開放弦表示の色は #RRGGBB 形式で入力してください"; return false; }
+        if (!TryRange(_guitarOpenStringOpacity.Text, 0, 100, out var guitarOpenStringOpacity))
+        { _error.Text = "ギターの開放弦表示の不透明度は0〜100で入力してください"; return false; }
+        if (!TryPositive(_guitarOpenStringWidth.Text, out var guitarOpenStringWidth))
+        { _error.Text = "ギターの開放弦表示の太さは正の数値で入力してください"; return false; }
+        if (!TryPositive(_guitarOpenStringHeight.Text, out var guitarOpenStringHeight))
+        { _error.Text = "ギターの開放弦×印の一辺は正の数値で入力してください"; return false; }
+        if (!TryRange(_guitarHammerFillOpacity.Text, 0, 1, out var guitarHammerFillOpacity))
+        { _error.Text = "ギターのハンマリング塗りつぶしの不透明度は0〜1で入力してください"; return false; }
+        if (!TryPositive(_guitarHoldGlowHeight.Text, out var guitarHoldGlowHeight))
+        { _error.Text = "ギターの押下発光の高さは正の数値で入力してください"; return false; }
         if (!TryPositive(_gridWidth.Text, out var gw))
         { _error.Text = "強調グリッドの太さは正の数値で入力してください"; return false; }
         if (!TryColor(_gridColor.Text))
@@ -1610,6 +1791,26 @@ internal sealed class PreferencesWindow : Window
         _work.PlaytestShowMeasureLines = _ptShowMeasureLines.IsChecked == true;
         _work.PlaytestPatternByKeyType = _ptPatternByKeyType.ToDictionary(kv => kv.Key, kv => Math.Max(0, kv.Value.SelectedIndex));
         _work.PlaytestReverseByKeyType = _ptReverseByKeyType.ToDictionary(kv => kv.Key, kv => kv.Value.IsChecked == true);
+        _work.Guitar.TargetKeyTypeIds = [.. _guitarTargetKeyTypes.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key)];
+        _work.Guitar.PickEarlyGraceFrames = guitarPickGrace;
+        _work.Guitar.ReleaseExemptEnable = _guitarReleaseExemptEnable.IsChecked == true;
+        _work.Guitar.ReleaseExemptMaxFrames = guitarReleaseExemptMax;
+        _work.Guitar.FreezeEndGraceFrames = guitarFreezeEndGrace;
+        _work.Guitar.AllowRepick = _guitarAllowRepick.IsChecked == true;
+        _work.Guitar.ShowPickLine = _guitarShowPickLine.IsChecked == true;
+        _work.Guitar.PickLineColorHex = _guitarPickLineColor.Text;
+        _work.Guitar.PickLineOpacity = guitarPickLineOpacity;
+        _work.Guitar.PickLineHeight = guitarPickLineHeight;
+        _work.Guitar.OpenStringStyle = Math.Max(0, _guitarOpenStringStyle.SelectedIndex);
+        _work.Guitar.OpenStringColorHex = _guitarOpenStringColor.Text;
+        _work.Guitar.OpenStringOpacity = guitarOpenStringOpacity;
+        _work.Guitar.OpenStringWidth = guitarOpenStringWidth;
+        _work.Guitar.OpenStringHeight = guitarOpenStringHeight;
+        _work.Guitar.ShowHammerFill = _guitarShowHammerFill.IsChecked == true;
+        _work.Guitar.HammerFillOpacity = guitarHammerFillOpacity;
+        _work.Guitar.ShowHoldGlow = _guitarShowHoldGlow.IsChecked == true;
+        _work.Guitar.HoldGlowHeight = guitarHoldGlowHeight;
+        _work.Guitar.HideFreezeTailArrow = _guitarHideFreezeTailArrow.IsChecked == true;
         _work.MarkerCommentFull = _markerFull.IsChecked == true;
         _work.MarkerCommentHeadChars = headChars;
         _work.TimeInfoFontSize = timeInfoFontSize;
@@ -1657,9 +1858,18 @@ internal sealed class PreferencesWindow : Window
     private static bool TryPositive(string text, out double v) =>
         double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out v) && v > 0;
 
+    /// <summary>0以上の数値(2026-09-27b、ギターのピック先行猶予・離し遅れ免除猶予等、
+    /// 0=機能実質無効も許容したい項目用)。</summary>
+    private static bool TryNonNegative(string text, out double v) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out v) && v >= 0;
+
     /// <summary>0以上の整数(2026-07-26d、プレイテスト起動時ウェイト等)</summary>
     private static bool TryNonNegativeInt(string text, out int v) =>
         int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out v) && v >= 0;
+
+    /// <summary>指定範囲[min,max]内の数値(2026-09-27c、ギターPhase4の不透明度等)。</summary>
+    private static bool TryRange(string text, double min, double max, out double v) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out v) && v >= min && v <= max;
 
     private static bool TryColor(string text)
     {

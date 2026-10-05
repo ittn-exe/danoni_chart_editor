@@ -76,6 +76,10 @@ internal sealed class PlaytestWindow : Window
     private readonly EditorDocument _doc;
     private readonly KeyTemplate _template;
     private readonly PlaytestEngine _engine;
+    /// <summary>2026-09-27要望対応: ギター系キー種(std_gt.js相当)のピック+フレット同時押し判定。
+    /// 対象外キー種、あるいはピックレーン(DataName="space")が見つからないテンプレートではnull
+    /// (通常通りPlaytestEngineのみで判定する)。HandleLaneKeyDown参照。</summary>
+    private readonly GuitarPlaytestEngine? _guitar;
     private readonly AppSettings? _appSettings; // 2026-07-26要望対応: 表示位置の保存・復元に使う
     private readonly NAudioBgmPlayer _player = new(); // 2026-07-26f: WPF MediaPlayerから移行(ハンドクラップのサンプル精度スケジューリング対応)
     /// <summary>2026-07-26要望対応: 「クラップは合っているのにノートだけ数F遅れる」報告への対策として、
@@ -240,6 +244,11 @@ internal sealed class PlaytestWindow : Window
             offsetFrames,
             minFrame: startFrame);
         _engine.Judged += OnJudged;
+        // 2026-09-27要望対応: ギター系キー種(std_gt.js相当)の対象キー種は環境設定「ギター」
+        // (AppSettings.Guitar.TargetKeyTypeIds)で管理する(GTR_TARGET_KEYSのハードコード相当をここに置かない)。
+        _guitar = appSettings is not null
+            ? GuitarPlaytestEngine.TryCreate(_template, _engine, appSettings.Guitar)
+            : null;
 
         // ノート音。環境設定でONの場合のみ選択中の音声ファイル(./sounds内)を読み込み、
         // ノート出現frame一覧をあらかじめ用意した上で、BGM再生エンジン(_player)自身のレンダー
@@ -386,7 +395,12 @@ internal sealed class PlaytestWindow : Window
 
     private async void StartPlayback()
     {
-        var path = _doc.Project.AudioFilePath;
+        // 2026-09-29要望対応・簡素化版(難易度別音源): このタブのSongIndexが2曲目以降を指していれば
+        // そちらを使う(MainWindow.ResolveEffectiveAudioFilePathと同じ考え方)。
+        var tab = _doc.CurrentTab;
+        var path = tab.SongIndex > 0 && tab.SongIndex - 1 < _doc.Project.AdditionalSongs.Count
+            ? _doc.Project.AdditionalSongs[tab.SongIndex - 1].AudioFilePath
+            : _doc.Project.AudioFilePath;
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
         {
             MessageBox.Show(this, "音楽ファイルが見つかりません。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -470,6 +484,10 @@ internal sealed class PlaytestWindow : Window
     {
         _currentFrame = _player.Position.TotalSeconds * 60.0;
         if (_autoPlay) AutoPlayAdvance();
+        // 2026-09-27b要望対応(Phase2): ギターのピック先行猶予の解決は、境界フレームでの猶予判定を
+        // 優先させるため、PlaytestEngine.Advance(通常の枠外タイムアウト・グループ一括ミス相当)より
+        // 先に呼ぶ(std_gt.js同様「グループ一括ミスより先に見る=境界フレームはプレイヤー有利」)。
+        _guitar?.Advance(_currentFrame, j => _pressedKeys[j].Count > 0);
         _engine.Advance(_currentFrame);
 
         // 2026-07-26f: ハンドクラップの発音判定・PCM重ね合わせは_player(NAudioBgmPlayer)自身の
@@ -516,8 +534,23 @@ internal sealed class PlaytestWindow : Window
     private void BuildKeyMap()
     {
         _keyToLane.Clear();
-        foreach (var kv in KeyLabelMapper.BuildKeyMap(_template.Lanes.Count, lane => _template.Lanes[lane].KeyAssign, _unmappedLabels))
+        foreach (var kv in KeyLabelMapper.BuildKeyMap(_template.Lanes.Count, LabelsForLane, _unmappedLabels))
             _keyToLane[kv.Key] = kv.Value;
+    }
+
+    /// <summary>2026-09-27要望対応: レーンlaneの実際の割当ラベルを返す。環境設定「テスト再生」の
+    /// 「キーアサイン」ウィンドウ(KeyAssignWindow)で個人的に上書きしたレーンはそちらを優先し、
+    /// 未上書きのレーンは従来通りテンプレート本来のKeyAssign(dos.txt出力・本体エンジンに影響する
+    /// 本来のキー配置)を使う。2026-09-27b「複数キーの割り当て対応」により、上書き後も
+    /// テンプレート同様に1レーンへ複数の物理キーを割り当てられる。</summary>
+    private IReadOnlyList<string> LabelsForLane(int lane)
+    {
+        var laneDef = _template.Lanes[lane];
+        if (_appSettings is not null
+            && _appSettings.PlaytestKeyAssignOverrides.TryGetValue(_template.KeyTypeId, out var overrides)
+            && overrides.TryGetValue(laneDef.LaneId, out var overrideLabels))
+            return overrideLabels;
+        return laneDef.KeyAssign;
     }
 
     private void OnKeyDownInput(object sender, KeyEventArgs e)
@@ -560,12 +593,46 @@ internal sealed class PlaytestWindow : Window
         _pressedKeys[lane].Add(e.Key);
         if (!laneWasPressed)
         {
-            _engine.KeyDown(lane, _currentFrame); // 同一レーン複数キーの同時押しは1押下扱い
+            HandleLaneKeyDown(lane, _currentFrame); // 同一レーン複数キーの同時押しは1押下扱い(ギター対応: 下記参照)
             // 2026-08-02要望対応: 「空押し」ステップゾーン点灯。判定対象ノートの有無に関わらず、
             // キーが押されている間はステップゾーンを点灯させる(本家main_stepKeyDown相当)。
             _stepKeyDown[lane] = true;
         }
         e.Handled = true;
+    }
+
+    /// <summary>2026-09-27要望対応: ギター系キー種(GuitarPlaytestEngine)対応のKeyDown振り分け。
+    /// - 対象外(_guitarがnull)またはギター対象キー種でも該当しないレーンは、従来通り常に
+    ///   PlaytestEngine.KeyDownへ直接渡す。
+    /// - ピックレーンの押下は<see cref="GuitarPlaytestEngine.PickDown"/>経由でコード判定する。
+    /// - フレットレーンの押下は、以下のいずれかの場合のみ直接PlaytestEngine.KeyDownへ渡す。
+    ///   それ以外(=ピックレーンの未判定先頭ターゲットと同tickの、真のコード構成メンバー)は何もしない
+    ///   (ピック押下時にGuitarPlaytestEngine.PickDownがまとめて消費するため)。
+    ///     (1) ホールド中断からのfrzAttempt猶予内の再押下(ホールド復帰)
+    ///     (2) 2026-09-27c追加: 「ハンマリング(ピック非同時)」ノート、つまりそのフレットの未判定
+    ///         先頭ターゲットがピックレーンの未判定先頭ターゲットと同tickでない場合。std_gt.jsでは
+    ///         このようなノートはピックを介さずフレット単体で通常判定される(GuitarPlaytestEngine.
+    ///         IsSimultaneousWithPick参照。Phase1時点ではこの種別を見落とし、常に抑制してしまっていた
+    ///         不具合の修正、2026-09-27b→cのタイミングで発覚)。</summary>
+    private void HandleLaneKeyDown(int lane, double frame)
+    {
+        if (_guitar is null)
+        {
+            _engine.KeyDown(lane, frame);
+            return;
+        }
+        if (lane == _guitar.PickLane)
+        {
+            _guitar.PickDown(frame, j => _pressedKeys[j].Count > 0);
+            return;
+        }
+        if (_guitar.FretLanes.Contains(lane))
+        {
+            bool resumable = _engine.FreezesOf(lane).Any(f => f.Started && f.Result is null && !f.Holding);
+            if (resumable || !_guitar.IsSimultaneousWithPick(lane)) _engine.KeyDown(lane, frame);
+            return;
+        }
+        _engine.KeyDown(lane, frame);
     }
 
     private void OnKeyUpInput(object sender, KeyEventArgs e)
@@ -678,10 +745,26 @@ internal sealed class PlaytestWindow : Window
             var project = o._doc.Project;
             var engine = o._doc.Project.CreateTimingEngine();
 
+            // 2026-09-27c要望対応(Phase4): ギター系キー種の見た目の演出(std_gt.js相当)。
+            // ピック横線は「全レーン幅」を通す仕様のため、フレットレーン群+ピックレーンの中心x座標の
+            // 範囲をループの外(レーンに依らない値)で1回だけ求めておく。
+            var guitar = o._guitar;
+            var gs = o._appSettings?.Guitar;
+            double guitarLineLeft = 0, guitarLineRight = 0;
+            if (guitar is not null)
+            {
+                var fretCx = guitar.FretLanes.Select(j => o._template.GetStepX(j, w) + ArrowSize / 2).ToList();
+                double pickCx = o._template.GetStepX(guitar.PickLane, w) + ArrowSize / 2;
+                guitarLineLeft = Math.Min(fretCx.Min() - ArrowSize / 2, pickCx);
+                guitarLineRight = Math.Max(fretCx.Max() + ArrowSize / 2, pickCx);
+            }
+
             for (int i = 0; i < o._template.Lanes.Count; i++)
             {
                 var laneDef = o._template.Lanes[i];
                 double cx = o._template.GetStepX(i, w) + ArrowSize / 2;
+                bool isGuitarPick = guitar is not null && i == guitar.PickLane;
+                bool isGuitarFret = guitar is not null && guitar.FretLanes.Contains(i);
                 // 2026-07-19: scrollDirectionの定義を「up=上方向スクロール(ステップゾーン上、ノーツは下から上へ)/
                 // down=下方向スクロール(ステップゾーン下)」に統一(ユーザー確定)。従来は逆に解釈していた。
                 bool flipped = (laneDef.ScrollDirection == "down") ^ o._reverse;
@@ -709,6 +792,15 @@ internal sealed class PlaytestWindow : Window
                     dc.PushOpacity(StepKeyDownOpacity);
                     DrawNote(dc, image, laneDef, cx, stepY, Colors.White);
                     dc.Pop();
+                }
+
+                // 2026-09-27c要望対応(Phase4): フレット押下発光(std_gt.js GTR_HOLD_GLOW_*相当)。
+                // ステップゾーン点灯(上記、白フラッシュ)とは別レイヤーで、フレットキーを押している間
+                // 常時淡く光らせる(離すと即消灯)。ピックレーン自体には表示しない(std_gt.js同様、
+                // 指板側=フレットのみが対象)。
+                if (isGuitarFret && gs?.ShowHoldGlow == true && o._pressedKeys[i].Count > 0)
+                {
+                    DrawHoldGlow(dc, cx, stepY, gs.HoldGlowHeight);
                 }
 
                 // 2026-07-26: ステップゾーンヒットフラッシュ(本家stepHitTargetArrow移植、2026-07-26要望対応で
@@ -752,8 +844,17 @@ internal sealed class PlaytestWindow : Window
                     bandBrush.Freeze();
                     dc.DrawRectangle(bandBrush, null,
                         new Rect(cx - ArrowSize / 4, Math.Min(y1, y2), ArrowSize / 2, Math.Abs(y2 - y1)));
+
+                    // 2026-09-27c要望対応(Phase4): フレット側で、ピック(同tick)が無い=ハンマリング
+                    // ノートなら、始点に内側塗りつぶしを重ねる(std_gt.js GTR_HAMMER_FILL_OPACITY相当)。
+                    if (isGuitarFret && gs?.ShowHammerFill == true && guitar?.HasPickAt(f.StartTick) == false)
+                        DrawHammerFill(dc, cx, y1, color, gs.HammerFillOpacity);
+
                     DrawNote(dc, image, laneDef, cx, y1, edgeColor);
-                    DrawNote(dc, image, laneDef, cx, y2, edgeColor);
+                    // 2026-09-27c要望対応(Phase4): フリーズ終端矢印の非表示(std_gt.js GTR_HIDE_FRZ_BOTTOM相当)。
+                    // 帯(上記)はそのまま表示し、終端の矢印グラフィックのみ省略する。
+                    bool hideTail = guitar is not null && gs?.HideFreezeTailArrow == true;
+                    if (!hideTail) DrawNote(dc, image, laneDef, cx, y2, edgeColor);
                 }
 
                 // 矢印(判定済みは消去。ただし見逃しウワァン分はそのまま流れていく)
@@ -766,10 +867,91 @@ internal sealed class PlaytestWindow : Window
                     string? noteColorCode = ChartCanvas.ResolveImmediateAppliedColor(
                         tab.Lanes[i].ColorOverrides, a.Tick, o._currentFrame, e => e.Color, engine.TickToFrame, nOver?.Color);
                     var noteColor = noteColorCode is { } nc ? ChartCanvas.ParseDisplayColor(nc, color) : color;
+
+                    // 2026-09-27c要望対応(Phase4): フレット側のハンマリング内側塗りつぶし(上記フリーズ始点と同様)。
+                    if (isGuitarFret && gs?.ShowHammerFill == true && guitar?.HasPickAt(a.Tick) == false)
+                        DrawHammerFill(dc, cx, y, noteColor, gs.HammerFillOpacity);
+
                     DrawNote(dc, image, laneDef, cx, y, noteColor);
+
+                    // 2026-09-27c要望対応(Phase4): ピックノーツの全レーン幅横線・開放弦の×印
+                    // (std_gt.js GTR_LINE_*/GTR_OPEN_*相当)。フリーズはピックではないため対象外
+                    // (std_gt.js同様、ピックの"矢印"のみに表示する)。
+                    if (isGuitarPick && gs?.ShowPickLine == true && guitar is not null)
+                    {
+                        DrawGuitarPickLine(dc, guitarLineLeft, guitarLineRight, y, gs);
+                        if (guitar.MembersAtTick(a.Tick).Count == 0)
+                            DrawGuitarOpenMarks(dc, guitar.FretLanes, o._template, w, y, gs);
+                    }
                 }
             }
         }
+
+        // ============================================================
+        // ギター系キー種の見た目の演出(2026-09-27c要望対応、Phase4、std_gt.js相当)
+        // ============================================================
+
+        /// <summary>ピックノーツの全レーン幅横線(std_gt.js _gtrCreateLine相当)。</summary>
+        private static void DrawGuitarPickLine(DrawingContext dc, double left, double right, double y, GuitarSettings gs)
+        {
+            var brush = new SolidColorBrush(ParseHexColor(gs.PickLineColorHex)) { Opacity = gs.PickLineOpacity };
+            brush.Freeze();
+            double h = gs.PickLineHeight;
+            var rect = new Rect(left, y - h / 2, Math.Max(right - left, 1), h);
+            dc.DrawRoundedRectangle(brush, null, rect, h / 2, h / 2);
+        }
+
+        /// <summary>開放弦(構成音の無いピックノーツ)の表示(std_gt.js GTR_OPEN_STYLE 0/1/2相当)。
+        /// 0=ピック横線と同色・同太さの×印 / 1=専用色・太さの×印 / 2=×印の代わりに追加の横線を重ねる。</summary>
+        private static void DrawGuitarOpenMarks(DrawingContext dc, IReadOnlyList<int> fretLanes, KeyTemplate template, double playingWidth, double y, GuitarSettings gs)
+        {
+            if (gs.OpenStringStyle == 2)
+            {
+                var brush = new SolidColorBrush(ParseHexColor(gs.OpenStringColorHex)) { Opacity = gs.OpenStringOpacity / 100.0 };
+                brush.Freeze();
+                double h = gs.OpenStringWidth;
+                var xs = fretLanes.Select(j => template.GetStepX(j, playingWidth) + ArrowSize / 2).ToList();
+                var rect = new Rect(xs.Min() - ArrowSize / 2, y - h / 2, Math.Max(xs.Max() - xs.Min() + ArrowSize, 1), h);
+                dc.DrawRoundedRectangle(brush, null, rect, h / 2, h / 2);
+                return;
+            }
+
+            var crossColor = gs.OpenStringStyle == 1 ? ParseHexColor(gs.OpenStringColorHex) : ParseHexColor(gs.PickLineColorHex);
+            double crossThickness = gs.OpenStringStyle == 1 ? gs.OpenStringWidth : gs.PickLineHeight;
+            double crossOpacity = gs.OpenStringStyle == 1 ? gs.OpenStringOpacity / 100.0 : 1.0;
+            var pen = new Pen(new SolidColorBrush(crossColor) { Opacity = crossOpacity }, crossThickness) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+            pen.Freeze();
+            double r = gs.OpenStringHeight / 2;
+            foreach (var j in fretLanes)
+            {
+                double cx = template.GetStepX(j, playingWidth) + ArrowSize / 2;
+                dc.DrawLine(pen, new Point(cx - r, y - r), new Point(cx + r, y + r));
+                dc.DrawLine(pen, new Point(cx - r, y + r), new Point(cx + r, y - r));
+            }
+        }
+
+        /// <summary>ハンマリング(ピック非同時)矢印の内側塗りつぶし(std_gt.js _gtrAddHammerFill相当)。
+        /// 本家はDOM上の枠要素の内側へ塗りを差し込むが、このエディタは矢印画像の上に半透明のレーン色を
+        /// 重ねることで同等の「他の矢印と区別しやすい」見た目を再現する。</summary>
+        private static void DrawHammerFill(DrawingContext dc, double cx, double y, Color laneColor, double opacity)
+        {
+            var brush = new SolidColorBrush(laneColor) { Opacity = opacity * 0.55 };
+            brush.Freeze();
+            double size = ArrowSize * 0.62;
+            dc.DrawEllipse(brush, null, new Point(cx, y), size / 2, size / 2);
+        }
+
+        /// <summary>フレット押下発光(std_gt.js GTR_HOLD_GLOW_*相当)。ラジアルグラデーションで
+        /// ステップゾーン中心から淡く広がる光を表現する(本家のCSS radial-gradientの簡易再現)。</summary>
+        private static void DrawHoldGlow(DrawingContext dc, double cx, double stepY, double diameter)
+        {
+            var brush = new RadialGradientBrush(Color.FromArgb(76, 255, 255, 255), Color.FromArgb(0, 255, 255, 255));
+            brush.Freeze();
+            dc.DrawEllipse(brush, null, new Point(cx, stepY), diameter / 2, diameter / 2);
+        }
+
+        private static Color ParseHexColor(string hex) =>
+            (Color)ColorConverter.ConvertFromString(hex.StartsWith('#') ? hex : $"#{hex}");
 
         private static void DrawNote(DrawingContext dc, System.Windows.Media.Imaging.BitmapImage? image, LaneDef laneDef, double cx, double y, Color color, double size = ArrowSize)
         {

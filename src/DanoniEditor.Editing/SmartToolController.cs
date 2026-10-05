@@ -137,7 +137,12 @@ public sealed class SmartToolController
                 ? (IReadOnlyList<ObjectRef>)[.. _doc.Selection]
                 : [hit];
             int laneDelta = LaneDeltaFor(hit.Kind);
-            long tickDelta = SnappedTickAt(_lastPos) - SnappedTickAt(_startPos);
+            // 2026-09-27要望対応: 従来は「ドラッグ開始地点のクリック座標をスナップした値」を基準にしていたが、
+            // dos.txtインポート等でグリッドに乗っていないオブジェクトを掴んだ場合、クリック座標のスナップ先と
+            // オブジェクト本来のTickが一致せず、ドラッグ後もグリッドからずれたままになる不具合があった。
+            // 掴んだオブジェクト自身の実際のTick(hit.Tick)を基準にすることで、掴んだオブジェクトは常に
+            // ドロップ先のグリッドへ正確に乗るようになる(複数選択時も、他の対象は同じ量だけ平行移動する)。
+            long tickDelta = SnappedTickAt(_lastPos) - hit.Tick;
             return (targets, laneDelta, tickDelta);
         }
     }
@@ -764,7 +769,9 @@ public sealed class SmartToolController
             : [hit];
 
         int laneDelta = LaneDeltaFor(hit.Kind);
-        long tickDelta = SnappedTickAt(_lastPos) - SnappedTickAt(_startPos);
+        // 2026-09-27要望対応: MoveObjectsPreviewと同様、掴んだオブジェクト自身の実際のTick(hit.Tick)を
+        // 基準にする(詳細はMoveObjectsPreview側のコメント参照)。
+        long tickDelta = SnappedTickAt(_lastPos) - hit.Tick;
         if (laneDelta == 0 && tickDelta == 0) return;
 
         // 2026-07-26要望対応: 左ボタンを離した瞬間にCtrlが押されていれば、移動ではなく

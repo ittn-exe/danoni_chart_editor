@@ -22,6 +22,21 @@ public sealed class CollabHost : IAsyncDisposable
         "#911eb4", "#42d4f4", "#f032e6", "#bfef45",
     ];
 
+    // 2026-10-05: 未認証の接続に対する最低限の資源上限(共同編集は実験的機能。認証・暗号化は未実装のため、
+    // 信頼できる相手にだけポートを教える運用が前提)。
+    private const int MaxGuests = 8;
+    private const int MaxHelloBytes = 4096;
+    private const int MaxDisplayNameLength = 32;
+    private static readonly TimeSpan HelloTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(15);
+    private static readonly System.Text.RegularExpressions.Regex ColorPattern = new("^#[0-9a-fA-F]{6}$");
+
+    private readonly object _joinGate = new();
+    private readonly ConcurrentDictionary<Task, byte> _clientTasks = new();
+
+    /// <summary>参加者1人ぶんの処理中に予期しない例外が起きた(その参加者の接続は切断される)。ログ用。</summary>
+    public event Action<Exception>? ClientError;
+
     private readonly TcpListener _listener;
     private readonly ConcurrentDictionary<string, CollabConnection> _connections = new();
     private readonly ConcurrentDictionary<string, ParticipantInfo> _roster = new();
@@ -89,7 +104,21 @@ public sealed class CollabHost : IAsyncDisposable
     {
         if (_cts is null)
             throw new InvalidOperationException("Start()を呼ぶ前に外部接続を受け付けることはできません。");
-        _ = HandleClientAsync(client, _cts.Token);
+        TrackClient(client, _cts.Token);
+    }
+
+    private void TrackClient(TcpClient client, CancellationToken ct)
+    {
+        var task = HandleClientAsync(client, ct);
+        _clientTasks[task] = 0;
+        _ = task.ContinueWith(t => _clientTasks.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    private static string SanitizeDisplayName(string? name)
+    {
+        var cleaned = new string((name ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        if (cleaned.Length > MaxDisplayNameLength) cleaned = cleaned[..MaxDisplayNameLength];
+        return cleaned.Length == 0 ? "Guest" : cleaned;
     }
 
     private async Task AcceptLoopAsync(CancellationToken ct)
@@ -110,32 +139,53 @@ public sealed class CollabHost : IAsyncDisposable
                 break;
             }
 
-            _ = HandleClientAsync(client, ct);
+            TrackClient(client, ct);
         }
     }
 
     private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
     {
         client.NoDelay = true;
+        try { client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true); }
+        catch { /* 設定できない環境では無視 */ }
         var connection = new CollabConnection(client.GetStream());
         string? participantId = null;
         try
         {
-            var first = await connection.ReceiveAsync(ct).ConfigureAwait(false);
+            // 挨拶は小さなサイズ・短い制限時間で受け取る(未認証の接続が巨大確保や居座りをしないように)
+            CollabMessage? first;
+            using (var helloCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                helloCts.CancelAfter(HelloTimeout);
+                first = await connection.ReceiveAsync(helloCts.Token, MaxHelloBytes).ConfigureAwait(false);
+            }
             if (first is not HelloMessage hello)
                 return; // 挨拶以外が最初に届いた場合は不正な接続として静かに切る
+            if (hello.ProtocolVersion != CollabProtocol.Version)
+                return; // プロトコルバージョン不一致(互換性の無い相手)は参加させない
 
-            participantId = Guid.NewGuid().ToString("N");
-            var color = ResolveColor(hello.PreferredColor);
-            var info = new ParticipantInfo(participantId, hello.DisplayName, color);
+            var displayName = SanitizeDisplayName(hello.DisplayName);
+            var preferredColor = hello.PreferredColor is { } pc && ColorPattern.IsMatch(pc) ? pc : null;
 
-            var rosterBeforeJoin = _roster.Values.ToList();
-            _roster[participantId] = info;
-            _connections[participantId] = connection;
+            ParticipantInfo info;
+            List<ParticipantInfo> rosterBeforeJoin;
+            var newId = Guid.NewGuid().ToString("N");
+            lock (_joinGate)
+            {
+                if (_connections.Count >= MaxGuests)
+                    return; // 参加者数の上限
+                var color = ResolveColor(preferredColor);
+                info = new ParticipantInfo(newId, displayName, color);
+                rosterBeforeJoin = _roster.Values.ToList();
+                _roster[newId] = info;
+                _connections[newId] = connection;
+                participantId = newId;
+            }
+            var color2 = info.Color;
 
-            await connection.SendAsync(new WelcomeMessage(participantId, color, rosterBeforeJoin), ct).ConfigureAwait(false);
+            await SendWithTimeoutAsync(connection, new WelcomeMessage(participantId, color2, rosterBeforeJoin), ct).ConfigureAwait(false);
             if (SnapshotProvider is not null)
-                await connection.SendAsync(SnapshotProvider(), ct).ConfigureAwait(false);
+                await SendWithTimeoutAsync(connection, SnapshotProvider(), ct).ConfigureAwait(false);
 
             await BroadcastAsync(new ParticipantJoinedMessage(info), excludeParticipantId: participantId, ct).ConfigureAwait(false);
             ParticipantJoined?.Invoke(info);
@@ -153,6 +203,12 @@ public sealed class CollabHost : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception ex)
+        {
+            // 不正なデータ・購読側(エディタ本体)の例外など。この参加者の接続だけを切断し、
+            // 未観測のタスク例外としてプロセスへ波及させない。
+            try { ClientError?.Invoke(ex); } catch { /* ログ処理の失敗は無視 */ }
         }
         finally
         {
@@ -190,12 +246,25 @@ public sealed class CollabHost : IAsyncDisposable
             if (id == excludeParticipantId) continue;
             try
             {
-                await connection.SendAsync(message, ct).ConfigureAwait(false);
+                await SendWithTimeoutAsync(connection, message, ct).ConfigureAwait(false);
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
             {
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // 送信が制限時間内に終わらない(受信が極端に遅い/止まっている)参加者は切断する。
+                // 1人の滞留で全員への配信が止まり続けないようにするための措置。
+                _ = connection.DisposeAsync().AsTask();
+            }
         }
+    }
+
+    private static async Task SendWithTimeoutAsync(CollabConnection connection, CollabMessage message, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(SendTimeout);
+        await connection.SendAsync(message, cts.Token).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -212,6 +281,10 @@ public sealed class CollabHost : IAsyncDisposable
         }
         _connections.Clear();
         _roster.Clear();
+        // 2026-10-05: 参加者ごとの処理タスクの完了を(上限付きで)待つ。接続破棄とキャンセルで受信ループは
+        // 終了へ向かうが、終了処理中のイベント通知がDispose後に走り続けないようにする。
+        try { await Task.WhenAll(_clientTasks.Keys.ToArray()).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+        catch { /* 終了処理。個々の失敗・待ちタイムアウトは無視 */ }
         _cts?.Dispose();
     }
 }

@@ -22,7 +22,8 @@ internal static class ExtraHeaderDefs
     [
         // --- 楽曲・譜面情報 ---
         new("dosNo", HeaderParamType.Number, "楽曲・譜面情報", "0"),
-        new("musicNo", HeaderParamType.Number, "楽曲・譜面情報", "0"),
+        // 2026-09-29: musicNoは「難易度別音源」機能(DifficultyTab.SongIndex)の専用出力へ移行した
+        // ため、汎用のその他ヘッダーからは除外する(二重出力・競合を防ぐため。DosExporter.Export参照)。
         new("packageName", HeaderParamType.Text, "楽曲・譜面情報"),
         new("musicGroup", HeaderParamType.Text, "楽曲・譜面情報"),
         new("musicFolder", HeaderParamType.Text, "楽曲・譜面情報"),

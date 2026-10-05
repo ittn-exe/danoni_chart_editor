@@ -88,8 +88,13 @@ public sealed class CollabSessionController : IAsyncDisposable
         _document = document;
         var host = new CollabHost(port)
         {
-            SnapshotProvider = () => SnapshotSync.CreateSnapshot(_document!.Project),
+            // 2026-10-05: スナップショットの生成(プロジェクトのシリアライズ)は、ホストの接続処理スレッド
+            // (スレッドプール)ではなくUIスレッドで行う。編集操作はUIスレッドがプロジェクトを書き換えるため、
+            // 別スレッドからの読み取りは「列挙中にコレクションが変更された」例外や不整合なスナップショットの
+            // 原因になる。UIが固まっている場合に接続処理が無期限で待たないよう、待ち時間には上限を設ける。
+            SnapshotProvider = CreateSnapshotOnUiThread,
         };
+        host.ClientError += ex => AppLog.Write("CollabHost client error", ex);
         // 2026-09-20: ホスト自身も1人の参加者として登録する(ノート所有者アイコン用)。
         // Start()より前(=誰も接続してくる前)に確定させておく必要がある。
         host.SetSelfIdentity(displayName);
@@ -316,6 +321,11 @@ public sealed class CollabSessionController : IAsyncDisposable
         RaiseOnUi(() =>
         {
             if (_document is null) return;
+            // 2026-10-05: 相手から届いたデータが不正(範囲外のレーン番号・壊れたスナップショット等)でも
+            // 例外をUIスレッドの未処理例外へ波及させない(=アプリ全体が落ちるのを防ぐ)。その1件を
+            // 破棄してログへ残し、セッションは継続する。
+            try
+            {
             switch (message)
             {
                 case SnapshotMessage snapshot:
@@ -334,6 +344,12 @@ public sealed class CollabSessionController : IAsyncDisposable
             }
             _document.NotifyChanged(); // 画面再描画+未保存マーク(受信内容の保存はローカルの保存操作に委ねる)
             RemoteEditApplied?.Invoke();
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidDataException or InvalidOperationException
+                                           or System.Text.Json.JsonException or NullReferenceException)
+            {
+                AppLog.Write($"共同編集: 受信メッセージの適用に失敗したため破棄しました({message.GetType().Name})", ex);
+            }
         });
     }
 
@@ -361,6 +377,22 @@ public sealed class CollabSessionController : IAsyncDisposable
     /// <summary>DispatcherがバインドされたUIスレッド上でactionを実行する
     /// (既にUIスレッドの場合は同期的にそのまま実行される、WPF Dispatcherの通常の挙動)。</summary>
     private void RaiseOnUi(Action action) => _dispatcher.Invoke(action);
+
+    private SnapshotMessage CreateSnapshotOnUiThread()
+    {
+        SnapshotMessage? snapshot = null;
+        var op = _dispatcher.BeginInvoke(() =>
+        {
+            var doc = _document;
+            if (doc is not null) snapshot = SnapshotSync.CreateSnapshot(doc.Project);
+        });
+        if (op.Wait(TimeSpan.FromSeconds(10)) != System.Windows.Threading.DispatcherOperationStatus.Completed || snapshot is null)
+        {
+            op.Abort();
+            throw new TimeoutException("スナップショットを作成できませんでした(UIスレッドが応答しません)。");
+        }
+        return snapshot;
+    }
 
     public async Task DisconnectAsync()
     {

@@ -121,7 +121,15 @@ public partial class MainWindow : Window
     // 2026-07-26f: WPF MediaPlayerから自前のNAudioBgmPlayerへ移行(ハンドクラップのサンプル精度
     // スケジューリング対応、詳細はNAudioBgmPlayer.cs参照)。
     private readonly NAudioBgmPlayer _audioPlayer = new();
-    private readonly DispatcherTimer _playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(33) }; // ≒30fps同期
+    /// <summary>2026-09-29要望対応: 目視テストのスクロールが「物凄くガクガクする」報告への対策として、
+    /// 固定間隔(33ms、≒30fps)のDispatcherTimerから、WPFが実際に次のフレームを合成する直前に同期して
+    /// 発火するCompositionTarget.Renderingへ切り替えた(PlaytestWindow.csで既に採用済みの手法と同一)。
+    /// DispatcherTimerだと「位置を読む瞬間」と「それが画面に出る瞬間」の間に別のディスパッチャ処理が
+    /// 挟まりズレうる上、固定33ms刻みの階段状の動きにしかならないが、Renderingイベントは実際の描画
+    /// タイミングに同期するため、コマ落ち・ズレの両方が緩和される。静的イベントのため、購読しっぱなしに
+    /// するとウィンドウを閉じた後もハンドラが生き続けてリークするので、目視テスト終了時は必ず解除する
+    /// (_visualTestRenderingSubscribedで二重解除を防ぐ)。</summary>
+    private bool _visualTestRenderingSubscribed;
 
     /// <summary>自動保存(クラッシュ復旧用、2026-07-25)。間隔・ON/OFFはApplyAutoSaveTimerSettingsで反映。</summary>
     private readonly DispatcherTimer _autoSaveTimer = new();
@@ -240,6 +248,15 @@ public partial class MainWindow : Window
         // 2026-07-26: 音楽読込完了(非同期)のたびに全体長(フレーム)をChartCanvas/ChartMinimapへ反映。
         // ノートを置いていなくても曲の長さぶんスクロールできるようにするための値(要望対応)。
         _audioPlayer.MediaOpened += AudioPlayer_MediaOpened;
+        _audioPlayer.OpenFailed += AudioPlayer_OpenFailed;
+        _audioPlayer.OutputFailed += AudioPlayer_OutputFailed;
+        // 描画エラーは描画処理中にUIツリーを触らないよう、あとでまとめて通知する
+        Canvas.RenderFailed += _ => Dispatcher.BeginInvoke(() => Notify(NotificationLevel.Error,
+            "譜面ビューの描画中にエラーが発生しました。表示が乱れる場合は、プロジェクトを保存してからエディタを再起動してください。\n詳細: settings/app_log.txt",
+            key: "render-failed"));
+        Canvas2.RenderFailed += _ => Dispatcher.BeginInvoke(() => Notify(NotificationLevel.Error,
+            "譜面ビューの描画中にエラーが発生しました。表示が乱れる場合は、プロジェクトを保存してからエディタを再起動してください。\n詳細: settings/app_log.txt",
+            key: "render-failed"));
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         // 2026-07-26: Alt+ホイール(譜面ビューの横ズーム)でAltキーを離した際、Windows/WPF標準の
@@ -248,7 +265,6 @@ public partial class MainWindow : Window
         // メニューのアクセスキー処理へ渡らないようにする(Ctrl+Alt等の組み合わせは通常通り通す)。
         PreviewKeyDown += MainWindow_SuppressLoneAltMenuFocus;
         PreviewKeyUp += MainWindow_SuppressLoneAltMenuFocus;
-        _playbackTimer.Tick += PlaybackTimer_Tick;
         _autoSaveTimer.Tick += AutoSaveTimer_Tick; // 2026-07-25
 
         // 2026-07-20: D&Dによるファイル読み込み(仕様書TBD#7)。ウィンドウ全体を対象にする。
@@ -924,6 +940,17 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "既に共同編集セッションが開始されています。先に切断してください。", "共同編集", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+
+        // 2026-10-05: 共同編集は実験的機能。通信は暗号化・認証されないため、信頼できる相手にだけ
+        // 接続先を伝える運用が前提であることを、ホスト開始の前に明示して同意を得る。
+        if (MessageBox.Show(this,
+                "共同編集は実験的な機能です。\n\n" +
+                "・通信は暗号化されず、参加時のパスワード認証もありません。\n" +
+                "・ポートを知っている相手は誰でも参加できます。信頼できる相手にだけ接続先を伝えてください。\n" +
+                "・参加者は譜面を編集できます。開始前にプロジェクトを保存しておくことをお勧めします。\n\n" +
+                "ホストを開始しますか?",
+                "共同編集(実験的)", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
 
         var dlg = new Collab.CollabHostStartDialog(this, Environment.UserName);
         if (dlg.ShowDialog() != true) return;
@@ -1989,7 +2016,7 @@ public partial class MainWindow : Window
 
         if (_visualTestActive) StopVisualTest(returnToStart: false);
         _audioPlayer.Stop();
-        _playbackTimer.Stop();
+        UnsubscribeVisualTestRendering();
 
         int closingIndex = _activeSessionIndex;
         AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, _sessions[closingIndex].SlotId); // 2026-07-25
@@ -2053,14 +2080,25 @@ public partial class MainWindow : Window
     // 音楽ファイル読み込み/再生(目テスト・プレイテスト用)
     // =====================================================================
 
-    /// <summary>ドキュメントを開き直した時の音楽状態リセット。プロジェクトに保存済みパスがあれば自動読込を試みる</summary>
-    private void ResetAudioForDocument(EditorDocument doc)
+    /// <summary>2026-09-29要望対応・簡素化版(難易度別音源): タブが使う音源のローカルパスを解決する。
+    /// SongIndex=0(既定)なら共通のProject.AudioFilePath、1以上ならAdditionalSongs[SongIndex-1]の
+    /// AudioFilePath(dos.txt出力向けのMusicUrlとは別物、こちらはローカル再生専用)。範囲外の値は
+    /// 安全のため共通の音源へフォールバックする。</summary>
+    private static string ResolveEffectiveAudioFilePath(DifficultyTab tab, ChartProject project)
     {
-        _visualTestActive = false; // ドキュメント切替時は目視テストを強制終了(2026-07-17g)
-        _loopPlaybackEnabled = false; // 2026-07-29要望対応: ドキュメント切替時はループ再生も強制OFF
-        LoopPlaybackToggle.IsChecked = false;
-        _playbackTimer.Stop();
-        _audioPlayer.Stop();
+        if (tab.SongIndex <= 0) return project.AudioFilePath;
+        int i = tab.SongIndex - 1;
+        return i < project.AdditionalSongs.Count ? project.AdditionalSongs[i].AudioFilePath : project.AudioFilePath;
+    }
+
+    /// <summary>現在読み込み中の音源パス(ResolveEffectiveAudioFilePathの解決結果)。タブ切替時、
+    /// 実際に鳴らすべき音源が変わったかどうかの判定に使う(2026-09-29要望対応)。</summary>
+    private string? _currentLoadedAudioPath;
+
+    /// <summary>音声関連の表示状態を「未読込」相当へ戻す(ResetAudioForDocument/
+    /// ReloadAudioForCurrentTabIfNeeded共通、2026-09-29要望対応で分離)。</summary>
+    private void ClearAudioUiState()
+    {
         Canvas.PlaybackTick = null;
         _waveformPeaks = null; // 波形キャッシュは曲に紐づくためクリア(2026-07-18)
         _waveformPath = null;
@@ -2068,10 +2106,21 @@ public partial class MainWindow : Window
         Canvas.AudioTotalFrames = null; // 2026-07-26: 曲切替時はいったんクリア(未読込なら8小節下限に戻る)
         Minimap.AudioTotalFrames = null;
         if (_splitViewEnabled) Minimap2.AudioTotalFrames = null;
+        _currentLoadedAudioPath = null;
+    }
 
-        if (!string.IsNullOrEmpty(doc.Project.AudioFilePath) && File.Exists(doc.Project.AudioFilePath))
+    /// <summary>effectivePathが実在すれば読み込み、そうでなければ「未読込」表示にする
+    /// (ResetAudioForDocument/ReloadAudioForCurrentTabIfNeeded共通、2026-09-29要望対応で分離)。</summary>
+    private void LoadOrClearAudio(string? effectivePath)
+    {
+        // 2026-10-06: 音源パスが記録されているのにファイルが無い場合は、旧バージョンが一時フォルダへ
+        // 書き出したファイルの救済を試み、だめなら理由を通知する(従来は黙って「未読込」になっていた)。
+        if (!string.IsNullOrEmpty(effectivePath) && !File.Exists(effectivePath))
+            effectivePath = TryRecoverMissingAudio(effectivePath);
+
+        if (!string.IsNullOrEmpty(effectivePath) && File.Exists(effectivePath))
         {
-            LoadAudioFile(doc.Project.AudioFilePath);
+            OpenAudioFileCore(effectivePath);
         }
         else
         {
@@ -2080,6 +2129,35 @@ public partial class MainWindow : Window
             _audioLoaded = false;
             AudioTimeText.Text = "-";
         }
+    }
+
+    /// <summary>ドキュメントを開き直した時の音楽状態リセット。カレントタブが実際に使うべき音源
+    /// (ResolveEffectiveAudioFilePath参照)があれば自動読込を試みる</summary>
+    private void ResetAudioForDocument(EditorDocument doc)
+    {
+        _visualTestActive = false; // ドキュメント切替時は目視テストを強制終了(2026-07-17g)
+        _loopPlaybackEnabled = false; // 2026-07-29要望対応: ドキュメント切替時はループ再生も強制OFF
+        LoopPlaybackToggle.IsChecked = false;
+        UnsubscribeVisualTestRendering();
+        _audioPlayer.Stop();
+        ClearAudioUiState();
+        LoadOrClearAudio(ResolveEffectiveAudioFilePath(doc.CurrentTab, doc.Project));
+    }
+
+    /// <summary>2026-09-29要望対応(難易度別音源): 難易度タブ切替時、実際に鳴らすべき音源が
+    /// (タブのSongIndexが指す曲が変わったことで)変わった場合のみ読み直す。同じ曲を使う
+    /// タブ同士の切替(=AdditionalSongsを1件も使っていないプロジェクトでは常にこちら)では
+    /// 何もしない(無駄な再デコードを避ける)。</summary>
+    private void ReloadAudioForCurrentTabIfNeeded()
+    {
+        if (_document is null) return;
+        string? effective = ResolveEffectiveAudioFilePath(_document.CurrentTab, _document.Project);
+        if (string.Equals(effective, _currentLoadedAudioPath, StringComparison.Ordinal)) return;
+
+        if (_visualTestActive) StopVisualTest(returnToStart: false);
+        _audioPlayer.Stop();
+        ClearAudioUiState();
+        LoadOrClearAudio(effective);
     }
 
     private void LoadAudio_Click(object sender, RoutedEventArgs e)
@@ -2094,7 +2172,59 @@ public partial class MainWindow : Window
         LoadAudioFile(dlg.FileName);
     }
 
+    /// <summary>共通(プロジェクト全体)の音源として読み込む。</summary>
     private void LoadAudioFile(string path)
+    {
+        _document!.Project.AudioFilePath = path;
+        OpenAudioFileCore(path);
+    }
+
+    /// <summary>2026-09-29要望対応・簡素化版(難易度別音源): 音楽ファイルが1曲もまだ読み込まれていない
+    /// (Project.AudioFilePathが空)状態でのD&amp;D/BASE64読込は、従来通り1曲目(共通)として読み込む。
+    /// 既に1曲目が読み込まれている状態でのD&amp;D/BASE64読込は、上書きせず「2曲目以降」として
+    /// project.AdditionalSongsへストックする(Window_Drop/LoadBase64MusicFile共通)。</summary>
+    private void ImportDroppedAudio(string path)
+    {
+        if (_document is null) return;
+        // 2026-10-06: 1曲目が「パスは記録されているがファイルが存在しない」状態(一時ファイルが消えた等)も、
+        // 1曲目が未読込とみなして置き換える(従来はパスが空かどうかだけで判定していたため、この状態で
+        // ドロップすると2曲目以降へ入ってしまっていた)。
+        if (string.IsNullOrEmpty(_document.Project.AudioFilePath) || !File.Exists(_document.Project.AudioFilePath))
+        {
+            LoadAudioFile(path);
+        }
+        else
+        {
+            _document.Project.AdditionalSongs.Add(new SongInfo
+            {
+                MusicTitle = Path.GetFileNameWithoutExtension(path),
+                AudioFilePath = path,
+            });
+            _document.NotifyChanged();
+            RefreshMusicPanel();
+            StatusText.Text = $"「{Path.GetFileName(path)}」を{_document.Project.AdditionalSongs.Count + 1}曲目としてストックしました" +
+                "(右パネル「楽曲」タブで選択・編集できます)。";
+        }
+    }
+
+    /// <summary>2026-09-29要望対応(難易度別音源): 「楽曲」タブの各曲の「読込...」ボタン用。
+    /// 指定した2曲目以降(AdditionalSongs[additionalSongIndex])の音源ファイルを差し替える。</summary>
+    private void ChangeAdditionalSongAudioFile(int additionalSongIndex)
+    {
+        if (_document is null) return;
+        var dlg = new OpenFileDialog { Filter = "音楽ファイル (*.mp3;*.wav;*.wma;*.ogg)|*.mp3;*.wav;*.wma;*.ogg|すべてのファイル (*.*)|*.*" };
+        if (dlg.ShowDialog(this) != true) return;
+
+        _document.Project.AdditionalSongs[additionalSongIndex].AudioFilePath = dlg.FileName;
+        _document.NotifyChanged();
+        RefreshMusicPanel();
+        ReloadAudioForCurrentTabIfNeeded();
+    }
+
+    /// <summary>実際に_audioPlayerへ音源を開かせ、UI表示を更新する共通処理(2026-09-29要望対応で分離、
+    /// 元は旧LoadAudioFile本体)。呼び出し元がProject.AudioFilePath/AdditionalSongs[].AudioFilePathへの
+    /// 書き込みを済ませた上で呼ぶこと(このメソッド自体はどちらのフィールドも変更しない)。</summary>
+    private void OpenAudioFileCore(string path)
     {
         try
         {
@@ -2102,7 +2232,7 @@ public partial class MainWindow : Window
             Minimap.AudioTotalFrames = null;
             if (_splitViewEnabled) Minimap2.AudioTotalFrames = null;
             _audioPlayer.Open(path);
-            _document!.Project.AudioFilePath = path;
+            _currentLoadedAudioPath = path;
             AudioFileText.Text = Path.GetFileName(path);
             AudioFileText.FontStyle = FontStyles.Normal;
             _audioLoaded = true;
@@ -2265,7 +2395,7 @@ public partial class MainWindow : Window
             {
                 foreach (var (path, kind) in deferredAudio)
                 {
-                    if (kind == DroppedFileKind.RawAudio) LoadAudioFile(path);
+                    if (kind == DroppedFileKind.RawAudio) ImportDroppedAudio(path);
                     else LoadBase64MusicFile(path);
                 }
             }
@@ -2294,10 +2424,13 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, $"楽曲データ(BASE64)のデコードに失敗しました: {Path.GetFileName(path)}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
-            var ext = Core.Audio.Base64MusicDecoder.GuessExtension(bytes);
-            var tempPath = Path.Combine(Path.GetTempPath(), $"danoni_music_{Guid.NewGuid():N}{ext}");
-            File.WriteAllBytes(tempPath, bytes);
-            LoadAudioFile(tempPath);
+            // 2026-10-06: OS一時フォルダではなく./temp(AppPaths.TempDir)へ、内容から決まる名前で保存する
+            // (OS側の掃除で消えない・同じ楽曲を読み込んでもファイルが増えない)。
+            Directory.CreateDirectory(AppPaths.TempDir);
+            var savedPath = Path.Combine(AppPaths.TempDir, Core.Audio.Base64MusicDecoder.BuildContentFileName(bytes));
+            if (!File.Exists(savedPath) || new FileInfo(savedPath).Length != bytes.Length)
+                File.WriteAllBytes(savedPath, bytes);
+            ImportDroppedAudio(savedPath);
         }
         catch (Exception ex)
         {
@@ -2347,13 +2480,25 @@ public partial class MainWindow : Window
                 var json = ProjectSerializer.Serialize(s.Document.Project);
                 AutoSaveManager.WriteSlot(AppPaths.AutoSaveDir, s.SlotId, _instanceId, s.FilePath, name, json);
             }
-            catch
+            catch (Exception ex)
             {
-                // 自動保存の失敗で編集作業自体を止めたくないため、ここでは静かに無視する
-                // (次回のTickで再試行される)。
+                // 自動保存の失敗で編集作業自体を止めたくないため処理は継続する(次回のTickで再試行される)。
+                // ただし失敗に気付けないと復旧データが無いまま作業を続けてしまうため、最初の失敗だけ通知する。
+                AppLog.Write("AutoSave failed", ex);
+                if (!_autoSaveFailureNotified)
+                {
+                    _autoSaveFailureNotified = true;
+                    Notify(NotificationLevel.Error,
+                        $"自動保存に失敗しました: {ex.Message}\n作業内容を失わないよう、Ctrl+Sで手動保存してください。",
+                        key: "autosave-failed");
+                }
+                continue;
             }
+            _autoSaveFailureNotified = false; // 成功したら、次に失敗した時にまた通知できるようにする
         }
     }
+
+    private bool _autoSaveFailureNotified;
 
     /// <summary>2026-07-26: 予期しない例外を検出した際の緊急保存(App.OnDispatcherUnhandledException/
     /// AppDomain.UnhandledExceptionから呼ばれる)。変更のある全セッションを自動保存スロットへ
@@ -2411,6 +2556,54 @@ public partial class MainWindow : Window
             }
             AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, slot.SlotId);
         }
+    }
+
+    /// <summary>「ファイル>自動保存データの復旧」(2026-10-04要望対応)。起動時の自動クラッシュ検知
+    /// (OfferCrashRecovery)は一方通行の一度きりの確認ダイアログで、「いいえ」を選んだ・判定を
+    /// すり抜けた等の場合に後から見返す手段が無かったため、manifest.json上の全スロットを一覧から
+    /// 選んで手動で開けるようにする。OfferCrashRecoveryと異なり、開いた後にスロット自体を削除するかは
+    /// ユーザーに確認する(生存中の別ウィンドウのスロットを誤って消してしまわないための配慮)。</summary>
+    private void RecoverAutoSave_Click(object sender, RoutedEventArgs e)
+    {
+        var manifest = AutoSaveManager.LoadManifest(AppPaths.AutoSaveDir);
+        if (manifest.Count == 0)
+        {
+            MessageBox.Show(this, "自動保存データは見つかりませんでした。", "自動保存データの復旧", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var aliveInstanceIds = AutoSaveManager.GetAliveInstanceIds(AppPaths.AutoSaveDir);
+        var selected = AutoSaveRecoveryWindow.Ask(this, manifest, aliveInstanceIds);
+        if (selected is null) return;
+
+        try
+        {
+            var json = AutoSaveManager.ReadSlotContent(AppPaths.AutoSaveDir, selected.SlotId);
+            var project = ProjectSerializer.Deserialize(json);
+            var doc = new EditorDocument(project, _templates);
+            doc.NotifyChanged(); // 復元直後は「未保存の変更あり」状態にする(既定markModified:true)
+            AddSession(doc, selected.LastKnownPath);
+
+            var clear = MessageBox.Show(this,
+                "開いた自動保存データを、自動保存の控えから削除しますか?\n" +
+                "(そのまま残しても、後でこのタブをCtrl+Sで保存すれば自動的に削除されます)",
+                "自動保存データの復旧", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (clear == MessageBoxResult.Yes)
+                AutoSaveManager.ClearSlot(AppPaths.AutoSaveDir, selected.SlotId);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"復元に失敗しました: {ex.Message}", "自動保存データの復旧", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>目視テストのCompositionTarget.Rendering購読を解除する(二重解除防止・リーク防止)。
+    /// 目視テストの各種終了経路(通常終了・プロジェクト切替・プロジェクトを閉じる)から共通で呼ぶ。</summary>
+    private void UnsubscribeVisualTestRendering()
+    {
+        if (!_visualTestRenderingSubscribed) return;
+        CompositionTarget.Rendering -= PlaybackTimer_Tick;
+        _visualTestRenderingSubscribed = false;
     }
 
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
@@ -2523,9 +2716,14 @@ public partial class MainWindow : Window
             }
         }
 
-        Canvas.PlaybackTick = engine.FrameToTick(frame);
+        // 2026-09-29要望対応: 「目視テストのスクロールがガクガクする」報告への対策。ここから下の
+        // スクロール・ノート描画位置の計算だけは、生のPosition(=WasapiOutのバッファ更新間隔=既定20ms
+        // ごとにしか進まない階段状の値)ではなく、実時間で先読みするSmoothedPositionを使う。
+        // ループ再生・自動復帰の判定(上記のframe)は正確性が必要なため生のPosition基準のまま変更しない。
+        double smoothFrame = _audioPlayer.SmoothedPosition.TotalSeconds * 60.0;
+        Canvas.PlaybackTick = engine.FrameToTick(smoothFrame);
         InvalidateChartViews();
-        _previewSurface.CurrentFrame = frame; // 2026-07-29要望対応: 目視テスト中はプレビューも連動して動く
+        _previewSurface.CurrentFrame = smoothFrame; // 2026-07-29要望対応: 目視テスト中はプレビューも連動して動く
 
         // 2026-07-26f: ハンドクラップの発音判定・PCM重ね合わせは_audioPlayer(NAudioBgmPlayer)自身の
         // レンダースレッド内で直接行われるため、ここでの処理は不要になった(StartVisualTest参照)。
@@ -2888,6 +3086,11 @@ public partial class MainWindow : Window
         CommitPendingEdits();
 
         _document.CurrentTabIndex = DifficultyTabControl.SelectedIndex;
+        // 2026-09-29修正: 以前はここでReloadAudioForCurrentTabIfNeeded()を呼び、タブ切替のたびに
+        // 音源を先読みしていた(先読み方式)が、これがWasapiOutの頻繁な作り直しを招き、Windowsの
+        // 共有オーディオエンジンを不安定化させる(他アプリの音声にまで影響する)重大な不具合の原因と
+        // 判明したため、実際に目視テスト/プレイテストを開始する直前まで読込を遅らせる方式へ変更した
+        // (StartVisualTest/StartPlaytest参照)。タブをパラパラ切り替えるだけではWASAPIに一切触れない。
         Canvas.InvalidateMeasure();
         if (_splitViewEnabled) Canvas2.InvalidateMeasure(); // 2026-07-26: 分割ビュー中は右ペインも再計測
         InvalidateChartViews();
@@ -3414,6 +3617,9 @@ public partial class MainWindow : Window
         InitialSpeedBox.Text = tab.InitialSpeed.ToString(CultureInfo.InvariantCulture);
         ToolValueText.Text = CalculateToolValueLabel(tab);
 
+        // 2026-09-29要望対応・簡素化版(難易度別音源): 現在の選択状況のみ表示(選択自体は「楽曲」タブ)。
+        CurrentTabSongText.Text = DescribeSongIndex(p, tab.SongIndex);
+
         _suppressPropertyPanelEvents = false;
 
         UpdateRequiredFieldWarning(MusicTitleBox, MusicTitleWarning);
@@ -3423,6 +3629,179 @@ public partial class MainWindow : Window
         // (このビューでmusicURLを編集していない状態からスタート)
         _musicUrlDirty = false;
         UpdateMusicUrlLoadButtonState();
+        RefreshMusicPanel(); // 2026-09-29要望対応: 難易度別音源、「楽曲」タブも同じタイミングで最新化する
+    }
+
+    /// <summary>2026-09-29要望対応(難易度別音源): 曲番号から表示用ラベルを作る
+    /// (0=1曲目/共通、1以上=AdditionalSongs[n-1]、範囲外は安全のため1曲目扱い)。</summary>
+    private static string DescribeSongIndex(ChartProject p, int songIndex)
+    {
+        if (songIndex <= 0) return $"1曲目(共通): {(string.IsNullOrEmpty(p.MusicTitle) ? "(曲名未設定)" : p.MusicTitle)}";
+        int i = songIndex - 1;
+        if (i >= p.AdditionalSongs.Count) return $"1曲目(共通): {(string.IsNullOrEmpty(p.MusicTitle) ? "(曲名未設定)" : p.MusicTitle)}";
+        var s = p.AdditionalSongs[i];
+        return $"{songIndex + 1}曲目: {(string.IsNullOrEmpty(s.MusicTitle) ? "(曲名未設定)" : s.MusicTitle)}";
+    }
+
+    /// <summary>2026-09-29要望対応(難易度別音源): 「楽曲」タブ(曲一覧・各タブの使用曲)を再構築する。</summary>
+    private void RefreshMusicPanel()
+    {
+        if (_document is null) return;
+        var p = _document.Project;
+        MusicSongsPanel.Children.Clear();
+        MusicTabAssignPanel.Children.Clear();
+
+        // --- 曲一覧 ---
+        AddMusicSong1Row(p);
+        for (int i = 0; i < p.AdditionalSongs.Count; i++)
+            AddAdditionalMusicSongRow(p, i);
+
+        // --- 各タブの使用曲 ---
+        var songLabels = BuildSongLabels(p);
+        for (int t = 0; t < p.Tabs.Count; t++)
+            AddMusicTabAssignRow(p.Tabs[t], songLabels);
+    }
+
+    /// <summary>「1曲目(共通)」の選択肢ラベル一覧(コンボボックス用、0番目=1曲目)。</summary>
+    private static List<string> BuildSongLabels(ChartProject p)
+    {
+        var labels = new List<string> { $"1曲目(共通): {(string.IsNullOrEmpty(p.MusicTitle) ? "(曲名未設定)" : p.MusicTitle)}" };
+        for (int i = 0; i < p.AdditionalSongs.Count; i++)
+        {
+            var s = p.AdditionalSongs[i];
+            labels.Add($"{i + 2}曲目: {(string.IsNullOrEmpty(s.MusicTitle) ? "(曲名未設定)" : s.MusicTitle)}");
+        }
+        return labels;
+    }
+
+    /// <summary>「楽曲」タブ: 1曲目(共通)の行。読み取り専用の要約表示のみ(編集は「プロジェクト」タブ)。</summary>
+    private void AddMusicSong1Row(ChartProject p)
+    {
+        var border = new Border
+        {
+            BorderBrush = SystemColors.ActiveBorderBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(6),
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = "1曲目(共通)", FontWeight = FontWeights.Bold });
+        stack.Children.Add(new TextBlock
+        {
+            Text = $"曲名: {(string.IsNullOrEmpty(p.MusicTitle) ? "(未設定)" : p.MusicTitle)} / " +
+                   $"音源: {(string.IsNullOrEmpty(p.AudioFilePath) ? "(未読込)" : Path.GetFileName(p.AudioFilePath))}",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brushes.Gray,
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "編集は「プロジェクト」タブの曲名/アーティスト名/アーティストURL/musicURL/音楽ファイル読込から行います。",
+            FontStyle = FontStyles.Italic,
+            FontSize = 10,
+            Foreground = Brushes.Gray,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        border.Child = stack;
+        MusicSongsPanel.Children.Add(border);
+    }
+
+    /// <summary>「楽曲」タブ: 2曲目以降(AdditionalSongs[index])の編集可能な行。</summary>
+    private void AddAdditionalMusicSongRow(ChartProject p, int index)
+    {
+        var song = p.AdditionalSongs[index];
+        var border = new Border
+        {
+            BorderBrush = SystemColors.ActiveBorderBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(6),
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        var stack = new StackPanel();
+
+        var headerRow = new DockPanel { LastChildFill = true };
+        headerRow.Children.Add(new TextBlock { Text = $"{index + 2}曲目", FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center });
+        var removeButton = new Button { Content = "削除", Width = 50, Margin = new Thickness(8, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
+        DockPanel.SetDock(removeButton, Dock.Right);
+        removeButton.Click += (_, _) => RemoveAdditionalSong(index);
+        headerRow.Children.Add(removeButton);
+        headerRow.Children.Add(new TextBlock()); // LastChildFillの余白埋め
+        stack.Children.Add(headerRow);
+
+        TextBox AddField(string label, string value, Action<string> onChanged)
+        {
+            stack.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 6, 0, 2) });
+            var box = new TextBox { Text = value };
+            box.TextChanged += (_, _) => { onChanged(box.Text); _document?.NotifyChanged(); };
+            stack.Children.Add(box);
+            return box;
+        }
+        AddField("曲名", song.MusicTitle, v => song.MusicTitle = v);
+        AddField("アーティスト名", song.ArtistName, v => song.ArtistName = v);
+        AddField("アーティストURL", song.ArtistUrl, v => song.ArtistUrl = v);
+        AddField("musicURL", song.MusicUrl, v => song.MusicUrl = v);
+
+        stack.Children.Add(new TextBlock { Text = "音楽ファイル(ローカル再生用)", Margin = new Thickness(0, 6, 0, 2) });
+        var audioRow = new DockPanel { LastChildFill = true };
+        var loadButton = new Button { Content = "読込...", Width = 60, Margin = new Thickness(4, 0, 0, 0) };
+        DockPanel.SetDock(loadButton, Dock.Right);
+        loadButton.Click += (_, _) => ChangeAdditionalSongAudioFile(index);
+        audioRow.Children.Add(loadButton);
+        audioRow.Children.Add(new TextBlock
+        {
+            Text = string.IsNullOrEmpty(song.AudioFilePath) ? "(未設定)" : Path.GetFileName(song.AudioFilePath),
+            FontStyle = string.IsNullOrEmpty(song.AudioFilePath) ? FontStyles.Italic : FontStyles.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        stack.Children.Add(audioRow);
+
+        border.Child = stack;
+        MusicSongsPanel.Children.Add(border);
+    }
+
+    /// <summary>2曲目以降を削除する。参照していたタブはSongIndex=0(1曲目)へ戻し、それより後ろの
+    /// 曲を参照していたタブはインデックスを1つ詰める(2026-09-29要望対応)。</summary>
+    private void RemoveAdditionalSong(int index)
+    {
+        if (_document is null) return;
+        var p = _document.Project;
+        if (index < 0 || index >= p.AdditionalSongs.Count) return;
+
+        int removedSongIndex = index + 1; // AdditionalSongs[index] は曲番号(SongIndex)で index+1 番目
+        foreach (var t in p.Tabs)
+        {
+            if (t.SongIndex == removedSongIndex) t.SongIndex = 0;
+            else if (t.SongIndex > removedSongIndex) t.SongIndex--;
+        }
+        p.AdditionalSongs.RemoveAt(index);
+
+        _document.NotifyChanged();
+        RefreshProjectPropertiesPanel(); // CurrentTabSongTextも含めて再同期(RefreshMusicPanelも内部で呼ばれる)
+        ReloadAudioForCurrentTabIfNeeded();
+    }
+
+    /// <summary>「楽曲」タブ: 各難易度タブの使用曲選択行(コンボボックス)。</summary>
+    private void AddMusicTabAssignRow(DifficultyTab tab, List<string> songLabels)
+    {
+        var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
+        var label = new TextBlock { Text = tab.DisplayLabel, VerticalAlignment = VerticalAlignment.Center, Width = 140, TextTrimming = TextTrimming.CharacterEllipsis };
+        DockPanel.SetDock(label, Dock.Left);
+        row.Children.Add(label);
+
+        var combo = new ComboBox { ItemsSource = songLabels, SelectedIndex = Math.Clamp(tab.SongIndex, 0, songLabels.Count - 1) };
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedIndex < 0 || _document is null) return;
+            tab.SongIndex = combo.SelectedIndex;
+            _document.NotifyChanged();
+            if (ReferenceEquals(tab, _document.CurrentTab))
+            {
+                CurrentTabSongText.Text = DescribeSongIndex(_document.Project, tab.SongIndex);
+                ReloadAudioForCurrentTabIfNeeded();
+            }
+        };
+        row.Children.Add(combo);
+        MusicTabAssignPanel.Children.Add(row);
     }
 
     /// <summary>
@@ -4177,7 +4556,10 @@ public partial class MainWindow : Window
     private async void EnsureWaveformDecoded()
     {
         if (_document is null || _waveformDecoding) return;
-        var path = _document.Project.AudioFilePath;
+        // 2026-09-29要望対応(難易度別音源): 波形もタブ専用の音源が設定されていればそちらを解析する
+        // (_currentLoadedAudioPathと同じ解決結果になるはずだが、念のためResolveEffectiveAudioFilePath
+        // 経由で明示的に求める)。
+        var path = ResolveEffectiveAudioFilePath(_document.CurrentTab, _document.Project);
         if (path == _waveformPath && _waveformPeaks is not null)
         {
             Canvas.Waveform = _waveformPeaks;
@@ -4185,13 +4567,25 @@ public partial class MainWindow : Window
             return;
         }
         _waveformDecoding = true;
+        bool decodeAgain = false;
         try
         {
             var peaks = await System.Threading.Tasks.Task.Run(() => WaveformDecoder.Decode(path));
             _waveformPeaks = peaks;
             _waveformPath = path;
-            Canvas.Waveform = peaks;
-            InvalidateChartViews();
+            // 2026-10-05: デコード中にタブ(=音源)が切り替わっていた場合、古い音源の波形を今のタブへ
+            // 表示してしまわないよう、現在の音源と一致する時のみ反映し、違えばデコードし直す。
+            var currentPath = _document is null ? null
+                : ResolveEffectiveAudioFilePath(_document.CurrentTab, _document.Project);
+            if (string.Equals(currentPath, path, StringComparison.Ordinal))
+            {
+                Canvas.Waveform = peaks;
+                InvalidateChartViews();
+            }
+            else
+            {
+                decodeAgain = true;
+            }
         }
         catch (Exception ex)
         {
@@ -4203,6 +4597,7 @@ public partial class MainWindow : Window
         {
             _waveformDecoding = false;
         }
+        if (decodeAgain) EnsureWaveformDecoded();
     }
 
     /// <summary>StartNumber編集モード切替(2026-07-18、要望メモ07-15項目8)。
@@ -4458,7 +4853,7 @@ public partial class MainWindow : Window
 
         LayoutAnchorable[] fixedOrder =
         {
-            ProjectPropertyPane, ColorSettingsPane, ObjectPropertyPane, OtherPropertyPane,
+            ProjectPropertyPane, ColorSettingsPane, MusicPane, ObjectPropertyPane, OtherPropertyPane,
             ColorEditTabItem, MacroTabItem, MarkerTabItem, LinkTabItem,
             AnalysisTabItem, PreviewTabItem, ParticipantsTabItem,
         };
@@ -6128,6 +6523,10 @@ public partial class MainWindow : Window
     {
         CommitPendingEdits(); // 2026-08-06: 入力途中の値(InitialSpeed等)を確定してから開始する
         if (_document is null) return;
+
+        // 2026-09-29修正(遅延読込方式): タブ切替時点では音源を読み直さず、実際に再生を開始する
+        // このタイミングで初めてカレントタブが使うべき音源を確認・必要なら読み直す。
+        ReloadAudioForCurrentTabIfNeeded();
         if (!_audioLoaded)
         {
             MessageBox.Show(this, "音楽ファイルが読み込まれていません。目視テストには音楽の読み込みが必要です。", "目視テスト", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -6162,7 +6561,7 @@ public partial class MainWindow : Window
 
         _audioPlayer.Position = TimeSpan.FromSeconds(startFrame / 60.0);
         _audioPlayer.Play();
-        _playbackTimer.Start();
+        if (!_visualTestRenderingSubscribed) { CompositionTarget.Rendering += PlaybackTimer_Tick; _visualTestRenderingSubscribed = true; }
         _visualTestActive = true;
 
         // 2026-09-13要望対応: WASAPI自動復旧のスタック検知状態をリセットする(PlaybackTimer_Tick参照)。
@@ -6195,7 +6594,7 @@ public partial class MainWindow : Window
 
         _visualTestActive = false;
         _audioPlayer.Stop();
-        _playbackTimer.Stop();
+        UnsubscribeVisualTestRendering();
         Canvas.PlaybackTick = null;
         InvalidateChartViews();
         AudioTimeText.Text = "-";
@@ -6432,6 +6831,7 @@ public partial class MainWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         base.OnClosing(e);
+        UnsubscribeVisualTestRendering(); // 2026-09-29: 静的イベントのため、終了時に必ず解除しておく
         if (_collab is not null)
         {
             _ = _collab.DisconnectAsync(); // 2026-09-20: ベストエフォート、終了処理はブロックしない
@@ -6477,6 +6877,11 @@ public partial class MainWindow : Window
     {
         CommitPendingEdits(); // 2026-08-06: 入力途中の値(InitialSpeed等)を確定してから開始する
         if (_document is null) return;
+
+        // 2026-09-29修正(遅延読込方式): MainWindow側の表示・_audioLoaded判定をカレントタブの実際の
+        // 音源に同期させる(実際の再生はPlaytestWindowが自前のNAudioBgmPlayerで別途開くため、ここでの
+        // 読込自体はUI表示・ガード判定の整合性確保が目的)。
+        ReloadAudioForCurrentTabIfNeeded();
         if (!_audioLoaded)
         {
             MessageBox.Show(this, "音楽ファイルが読み込まれていません。プレイテストには音楽の読み込みが必要です。", "プレイテスト", MessageBoxButton.OK, MessageBoxImage.Information);

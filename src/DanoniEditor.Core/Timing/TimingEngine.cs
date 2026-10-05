@@ -44,20 +44,41 @@ public sealed class TimingEngine
     /// <summary>tick 0 の絶対フレーム位置(仕様書のStartNumber)</summary>
     public double StartNumber { get; }
 
-    public IReadOnlyList<BpmEvent> BpmEvents => _bpmEvents;
-    public IReadOnlyList<TimeSignatureEvent> TimeSignatures => _timeSignatures;
+    // 2026-10-05: 構築時に一度だけ計算するキャッシュ(従来はTickToFrame/FrameToTick/MeasureStartTick等の
+    // 呼び出しのたびに区間開始フレームを再計算しており、描画ループから大量に呼ばれる際の負荷の主因だった)。
+    // このクラスはイミュータブル(イベント列は構築後に変更されない)なので、キャッシュの無効化は不要。
+    private readonly double[] _segmentStartFrames;
+    private readonly long[] _sigStartTicks;
+
+    // 外部からキャスト経由でイベント列を書き換えられないよう、読み取り専用ラッパーで公開する。
+    public IReadOnlyList<BpmEvent> BpmEvents { get; }
+    public IReadOnlyList<TimeSignatureEvent> TimeSignatures { get; }
 
     public TimingEngine(double startNumber, IEnumerable<BpmEvent> bpmEvents,
                         IEnumerable<TimeSignatureEvent>? timeSignatures = null)
     {
+        if (!double.IsFinite(startNumber))
+            throw new ArgumentException("StartNumberが有限の数値ではありません");
         StartNumber = startNumber;
         _bpmEvents = bpmEvents.OrderBy(e => e.Tick).ToList();
         if (_bpmEvents.Count == 0 || _bpmEvents[0].Tick != 0)
             throw new ArgumentException("tick 0 に初期BPMイベントが必要です(仕様書7.3)");
 
         _timeSignatures = (timeSignatures ?? []).OrderBy(e => e.MeasureIndex).ToList();
+
+        // 不正値の検出(2026-10-05): BPM<=0/非数/無限大は0除算・無限ループ・NaN伝播の原因になり、
+        // 拍子の分子/分母<=0は1小節のtick数が0以下になって小節探索が無限ループする。
+        // 外部ファイル由来の値で描画ループやUIスレッドが固まらないよう、構築時に弾く。
+        var problem = TimingValidator.FindProblem(_bpmEvents, _timeSignatures);
+        if (problem is not null)
+            throw new ArgumentException(problem);
+
         if (_timeSignatures.Count == 0 || _timeSignatures[0].MeasureIndex != 0)
             _timeSignatures.Insert(0, new TimeSignatureEvent(0, 4, 4)); // デフォルト4/4(仕様書7.5)
+        BpmEvents = _bpmEvents.AsReadOnly();
+        TimeSignatures = _timeSignatures.AsReadOnly();
+        _segmentStartFrames = ComputeSegmentStartFrames();
+        _sigStartTicks = ComputeSignatureStartTicks();
     }
 
     /// <summary>各BPM区間の開始tickにおける絶対フレーム値をあらかじめ計算しておく。
@@ -67,6 +88,17 @@ public sealed class TimingEngine
     /// 区間ごとの開始フレームを先に確定させることで、境界のあいまいさを完全に排除する。
     /// 2026-08-23: 直前の区間がBPMリンク(LinkGridDivision)されている場合、区分定数の積算ではなく
     /// RampElapsedFrames(解析解)で積算する(FrameAnchorが優先される点は従来通り)。</summary>
+    private long[] ComputeSignatureStartTicks()
+    {
+        var starts = new long[_timeSignatures.Count];
+        for (int i = 1; i < starts.Length; i++)
+        {
+            long measures = (long)_timeSignatures[i].MeasureIndex - _timeSignatures[i - 1].MeasureIndex;
+            starts[i] = starts[i - 1] + measures * _timeSignatures[i - 1].TicksPerMeasure;
+        }
+        return starts;
+    }
+
     private double[] ComputeSegmentStartFrames()
     {
         var starts = new double[_bpmEvents.Count];
@@ -133,19 +165,25 @@ public sealed class TimingEngine
     /// 2026-08-23: 区間がBPMリンクされていれば、区分定数ではなくRampElapsedFrames(解析解)を使う。</summary>
     public double TickToFrame(long tick)
     {
-        var starts = ComputeSegmentStartFrames();
-        for (int i = _bpmEvents.Count - 1; i >= 0; i--)
+        var starts = _segmentStartFrames;
+        // tick以下で最後のBPMイベントを二分探索(イベント列はTick昇順)
+        int lo = 0, hi = _bpmEvents.Count - 1, found = -1;
+        while (lo <= hi)
         {
-            if (tick >= _bpmEvents[i].Tick)
+            int mid = (lo + hi) >>> 1;
+            if (tick >= _bpmEvents[mid].Tick) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (found >= 0)
+        {
+            int i = found;
+            if (_bpmEvents[i].LinkGridDivision is { } div && div > 0 && i + 1 < _bpmEvents.Count)
             {
-                if (_bpmEvents[i].LinkGridDivision is { } div && div > 0 && i + 1 < _bpmEvents.Count)
-                {
-                    return starts[i] + RampElapsedFrames(
-                        _bpmEvents[i].Tick, _bpmEvents[i].Bpm, _bpmEvents[i + 1].Tick, _bpmEvents[i + 1].Bpm, tick);
-                }
-                long span = tick - _bpmEvents[i].Tick;
-                return starts[i] + (double)span / TicksPerBeat * (FramesPerMinute / _bpmEvents[i].Bpm);
+                return starts[i] + RampElapsedFrames(
+                    _bpmEvents[i].Tick, _bpmEvents[i].Bpm, _bpmEvents[i + 1].Tick, _bpmEvents[i + 1].Bpm, tick);
             }
+            long span = tick - _bpmEvents[i].Tick;
+            return starts[i] + (double)span / TicksPerBeat * (FramesPerMinute / _bpmEvents[i].Bpm);
         }
         // 2026-08-08要望対応: tick<0(先頭BPMイベントより手前)は従来starts[0]を無条件に返しており、
         // どれだけ負のtickであっても同一フレームに潰れてしまっていた(speed/boostをtick<0へ配置しても
@@ -161,7 +199,9 @@ public sealed class TimingEngine
     /// 2026-08-23: 区間がBPMリンクされていれば、RampTickAtFrames(解析解の逆関数)を使う。</summary>
     public double FrameToTick(double frame)
     {
-        var starts = ComputeSegmentStartFrames();
+        // FrameAnchorにより区間開始フレームが単調とは限らないため、二分探索はせず線形探索のまま
+        // (「frame >= starts[i] を満たす最後のi」という従来の意味を保つ)。
+        var starts = _segmentStartFrames;
         int active = 0;
         for (int i = 0; i < _bpmEvents.Count; i++)
         {
@@ -178,41 +218,40 @@ public sealed class TimingEngine
         return _bpmEvents[active].Tick + (frame - starts[active]) / framesPerTick;
     }
 
-    /// <summary>論理小節mの開始tick(拍子イベント列に従って積算)</summary>
+    /// <summary>論理小節mの開始tick(拍子イベント列に従って積算)。事前計算した区間開始tickと二分探索で
+    /// O(log 拍子イベント数)。</summary>
     public long MeasureStartTick(int measureIndex)
     {
-        long tick = 0;
-        int m = 0;
-        for (int i = 0; i < _timeSignatures.Count && m < measureIndex; i++)
+        if (measureIndex <= 0) return 0;
+        // MeasureIndex <= measureIndex を満たす最後の拍子イベントを探す
+        int lo = 0, hi = _timeSignatures.Count - 1, found = 0;
+        while (lo <= hi)
         {
-            int segEnd = i + 1 < _timeSignatures.Count
-                ? Math.Min(_timeSignatures[i + 1].MeasureIndex, measureIndex)
-                : measureIndex;
-            tick += (long)(segEnd - m) * _timeSignatures[i].TicksPerMeasure;
-            m = segEnd;
+            int mid = (lo + hi) >>> 1;
+            if (_timeSignatures[mid].MeasureIndex <= measureIndex) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
-        return tick;
+        var sig = _timeSignatures[found];
+        return _sigStartTicks[found] + ((long)measureIndex - sig.MeasureIndex) * sig.TicksPerMeasure;
     }
 
-    /// <summary>tickがどの論理小節の何tick目かを返す</summary>
+    /// <summary>tickがどの論理小節の何tick目かを返す(二分探索、O(log 拍子イベント数))</summary>
     public (int MeasureIndex, long TickInMeasure) TickToMeasurePosition(long tick)
     {
-        long cursor = 0;
-        int measure = 0;
-        for (int i = 0; i < _timeSignatures.Count; i++)
+        // tick<0は従来どおり「小節0からの負のオフセット」として返す
+        if (tick < 0) return (0, tick);
+        // 区間開始tickが tick 以下である最後の拍子イベントを探す
+        int lo = 0, hi = _timeSignatures.Count - 1, found = 0;
+        while (lo <= hi)
         {
-            var sig = _timeSignatures[i];
-            long nextBoundaryMeasure = i + 1 < _timeSignatures.Count
-                ? _timeSignatures[i + 1].MeasureIndex : int.MaxValue;
-            while (measure < nextBoundaryMeasure)
-            {
-                if (tick < cursor + sig.TicksPerMeasure)
-                    return (measure, tick - cursor);
-                cursor += sig.TicksPerMeasure;
-                measure++;
-            }
+            int mid = (lo + hi) >>> 1;
+            if (_sigStartTicks[mid] <= tick) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
-        return (measure, tick - cursor);
+        var sig = _timeSignatures[found];
+        long offset = tick - _sigStartTicks[found];
+        long measure = sig.MeasureIndex + offset / sig.TicksPerMeasure;
+        return ((int)Math.Min(measure, int.MaxValue), offset % sig.TicksPerMeasure);
     }
 
     /// <summary>指定tickの時点で有効な拍子を返す</summary>

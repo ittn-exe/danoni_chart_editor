@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -42,6 +43,14 @@ internal sealed class NAudioBgmPlayer : IDisposable
 
     private WasapiOut? _output;
 
+    // --- 目視テストのスクロール外挿(2026-09-29要望対応、SmoothedPosition参照) ---
+    private double _smoothAnchorFramePos;
+    private long _smoothAnchorTimestamp;
+    private bool _smoothAnchorInitialized;
+    /// <summary>SmoothedPositionが生の_framePos更新から先読みして良い最大時間。これを超えて生の値が
+    /// 更新されない場合は本当のスタック(既存のWASAPI自動復旧の対象)とみなし、それ以上は先読みしない。</summary>
+    private const double MaxSmoothExtrapolationSeconds = 0.05;
+
     // --- ハンドクラップ(2026-07-26f: BGMのレンダースレッド内で直接発音判定・PCM重ね合わせを行う) ---
     private float[]? _clapPcm;
     private WaveFormat? _clapFormat;
@@ -66,6 +75,13 @@ internal sealed class NAudioBgmPlayer : IDisposable
     /// 完了後の通知はawait元のSynchronizationContext(WPFならUIスレッド)へ戻る。</summary>
     public event Action? MediaOpened;
 
+    /// <summary>デコードに失敗した(ファイルが壊れている・未対応形式など)ことを通知する(2026-10-06)。
+    /// 引数は対象のファイルパスと例外。従来は失敗しても何も通知されず「未読込」のままだった。</summary>
+    public event Action<string, Exception>? OpenFailed;
+
+    /// <summary>音声出力(WASAPI)の初期化に失敗したことを通知する(2026-10-06)。</summary>
+    public event Action<Exception>? OutputFailed;
+
     /// <summary>音楽ファイルを開く(非同期、WPF MediaPlayer.Open()と同じく戻り値を待たずに使える)。
     /// 呼び出し元のスレッド(通常UIスレッド)のSynchronizationContextを捕捉した上でTask.Runへ
     /// デコードを逃がすため、完了後のMediaOpenedはUIスレッドへ戻って発火する。
@@ -73,13 +89,26 @@ internal sealed class NAudioBgmPlayer : IDisposable
     /// 「未読込」状態のままにする(WPF MediaPlayerも不正ファイルを同期的には検知できなかった点は同じ)。</summary>
     public void Open(string path) => _ = OpenAsync(path);
 
+    // 2026-10-05: OpenAsyncが連続して呼ばれた場合(曲の切替え直後など)、古い呼び出しのデコードが後から
+    // 完了して新しい曲を上書きしないよう、世代番号で「最新の呼び出しの結果だけ」を採用する。
+    private int _openGeneration;
+    private volatile bool _disposed;
+
     public async Task OpenAsync(string path)
     {
+        int generation = Interlocked.Increment(ref _openGeneration);
         Stop();
         (float[] Pcm, WaveFormat Format, TimeSpan Duration)? result;
         try { result = await Task.Run(() => DecodeWholeFile(path)).ConfigureAwait(true); }
-        catch { result = null; }
+        catch (Exception ex)
+        {
+            AppLog.Write("NAudioBgmPlayer.OpenAsync decode", ex);
+            if (!_disposed && generation == Volatile.Read(ref _openGeneration))
+                OpenFailed?.Invoke(path, ex);
+            result = null;
+        }
         if (result is not { } decoded) return;
+        if (_disposed || generation != Volatile.Read(ref _openGeneration)) return; // 破棄済み/より新しいOpenが始まっている
 
         lock (_lock)
         {
@@ -92,10 +121,18 @@ internal sealed class NAudioBgmPlayer : IDisposable
             _pendingSeek = null;
             _clapNextIndex = 0;
             _activeClapPositions.Clear();
+            _smoothAnchorInitialized = false; // 新規読込時は次回SmoothedPosition取得時にアンカーを作り直す
             RecomputeClapCursorLocked();
         }
         Duration = decoded.Duration;
-        SetupOutput(decoded.Format);
+        try { SetupOutput(decoded.Format); }
+        catch (Exception ex)
+        {
+            // 出力デバイスが無い/使用中などで初期化に失敗しても、呼び出し元(fire-and-forget)へ
+            // 未観測例外として漏らさず、ログに残して「音は出ないが編集は続けられる」状態にする。
+            AppLog.Write("NAudioBgmPlayer.SetupOutput", ex);
+            OutputFailed?.Invoke(ex);
+        }
         MediaOpened?.Invoke();
     }
 
@@ -103,12 +140,28 @@ internal sealed class NAudioBgmPlayer : IDisposable
     {
         using var reader = new AudioFileReader(path);
         var format = reader.WaveFormat;
-        var all = new List<float>((int)(reader.Length / 4 + 1024));
+        // 2026-10-05: 従来はList<float>へ追記→ToArray()で、デコード中のピークメモリが最大でPCM本体の約3倍に
+        // なっていた。想定サイズの配列を直接確保して書き込み、サイズが外れた場合のみ倍々で拡張する
+        // (最後に実サイズへ詰め直す1回のコピーのみ)。
+        long expected = Math.Max(reader.Length / 4, 1024);
+        if (expected > int.MaxValue / 2) throw new System.IO.InvalidDataException("音声ファイルが大きすぎます");
+        var pcm = new float[expected];
+        int count = 0;
         var buf = new float[format.SampleRate * format.Channels];
         int n;
         while ((n = reader.Read(buf, 0, buf.Length)) > 0)
-            all.AddRange(new ArraySegment<float>(buf, 0, n));
-        return (all.ToArray(), format, reader.TotalTime);
+        {
+            if (count + n > pcm.Length)
+            {
+                long newSize = Math.Max((long)pcm.Length * 2, (long)count + n);
+                if (newSize > Array.MaxLength) throw new System.IO.InvalidDataException("音声ファイルが大きすぎます");
+                Array.Resize(ref pcm, (int)newSize);
+            }
+            Array.Copy(buf, 0, pcm, count, n);
+            count += n;
+        }
+        if (count != pcm.Length) Array.Resize(ref pcm, count);
+        return (pcm, format, reader.TotalTime);
     }
 
     private void SetupOutput(WaveFormat format)
@@ -137,7 +190,58 @@ internal sealed class NAudioBgmPlayer : IDisposable
                 if (_format is null) { _pendingSeek = value; return; }
                 double maxFrame = _pcm is null ? 0 : _pcm.Length / (double)_format.Channels;
                 _framePos = Math.Clamp(value.TotalSeconds * _format.SampleRate, 0, maxFrame);
+                _smoothAnchorInitialized = false; // シーク直後は次回SmoothedPosition取得時に必ずアンカーを作り直す
                 RecomputeClapCursorLocked();
+            }
+        }
+    }
+
+    /// <summary>2026-09-29要望対応: 目視テストのスクロールが「WasapiOutのバッファ更新間隔(既定20ms)ごとに
+    /// しか_framePosが進まない」ことに起因してガクガクして見える問題への対策として追加した、外挿済みの
+    /// 再生位置。生の<see cref="Position"/>は一切変更しない(スタック検知・曲末尾判定・診断ログなど、
+    /// 正確性が必要な既存処理は引き続き生のPositionを使うこと)。こちらは「スクロール・ノート描画位置の
+    /// 計算専用」として使う想定。
+    ///
+    /// 仕組みは単純で、「直近に観測した生の_framePosの値と、それを観測した実時刻(Stopwatch基準の
+    /// 高精度タイマー、DateTime.UtcNowでは分解能が粗く20ms未満の外挿には使えない)」をアンカーとして保持し、
+    /// 呼ばれるたびに①生の_framePosがアンカーと変わっていれば、その新しい値へ即座にアンカーを更新
+    /// (補間ではなく瞬時に飛ぶ。シーク・ループ再生・WASAPI自動復旧による位置の再設定も、内部的には
+    /// すべて_framePosの変化として現れるため、特別扱い無しでこの仕組みだけで自然に追従できる)、
+    /// ②変わっていなければ「アンカーからの経過実時間 × 再生速度」で先読みする、という2択のみ。
+    /// 再生速度(_speed/SpeedRatio)はこのエンジン自身が完全に把握している値のため、ブラウザ拡張機能の
+    /// ように観測から推定する必要がない(既知の値をそのまま使えるぶん、こちらの方が単純かつ正確)。
+    ///
+    /// 先読みできる時間はMaxSmoothExtrapolationSeconds(既定50ms)で頭打ちにする。これにより、本当に
+    /// 音声がスタックした場合(既存のPlaybackTimer_Tickの250ms・完全一致によるスタック検知の対象)でも、
+    /// この値は50ms先読みした時点で追従を止めて生の値相走に張り付くため、スタック検知ロジック側は
+    /// このプロパティの存在を意識せず(=生のPositionを見続けるだけで)引き続き正しく機能する。</summary>
+    public TimeSpan SmoothedPosition
+    {
+        get
+        {
+            lock (_lock)
+            {
+                if (_format is null) return _pendingSeek ?? TimeSpan.Zero;
+
+                long now = Stopwatch.GetTimestamp();
+                if (!_smoothAnchorInitialized || _framePos != _smoothAnchorFramePos)
+                {
+                    _smoothAnchorFramePos = _framePos;
+                    _smoothAnchorTimestamp = now;
+                    _smoothAnchorInitialized = true;
+                }
+
+                double smoothedFramePos = _smoothAnchorFramePos;
+                if (_playing)
+                {
+                    double elapsedSeconds = (now - _smoothAnchorTimestamp) / (double)Stopwatch.Frequency;
+                    double cappedElapsedSeconds = Math.Clamp(elapsedSeconds, 0, MaxSmoothExtrapolationSeconds);
+                    smoothedFramePos += cappedElapsedSeconds * _format.SampleRate * _speed;
+                }
+
+                double maxFrame = _pcm is null ? 0 : _pcm.Length / (double)_format.Channels;
+                smoothedFramePos = Math.Clamp(smoothedFramePos, 0, maxFrame);
+                return TimeSpan.FromSeconds(smoothedFramePos / _format.SampleRate);
             }
         }
     }
@@ -287,6 +391,7 @@ internal sealed class NAudioBgmPlayer : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         try { _output?.Stop(); } catch { /* 終了処理なので失敗しても無視 */ }
         _output?.Dispose();
     }

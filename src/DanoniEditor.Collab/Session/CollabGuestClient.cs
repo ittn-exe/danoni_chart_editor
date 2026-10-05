@@ -62,7 +62,20 @@ public sealed class CollabGuestClient : IAsyncDisposable
 
         await _connection.SendAsync(new HelloMessage(displayName, preferredColor, CollabProtocol.Version), ct).ConfigureAwait(false);
 
-        var response = await _connection.ReceiveAsync(ct).ConfigureAwait(false);
+        // 2026-10-05: ホストが応答しない場合に無期限で待たない(参加操作のUIが固まって見えるのを防ぐ)
+        CollabMessage? response;
+        using (var welcomeCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            welcomeCts.CancelAfter(TimeSpan.FromSeconds(15));
+            try
+            {
+                response = await _connection.ReceiveAsync(welcomeCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException("ホストからの応答がありませんでした(タイムアウト)。");
+            }
+        }
         if (response is not WelcomeMessage welcome)
             throw new InvalidOperationException("ホストからの応答が想定と異なります(Welcomeメッセージが届きませんでした)。");
 
@@ -90,6 +103,10 @@ public sealed class CollabGuestClient : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception)
+        {
+            // 不正なデータ/破棄済み接続: 接続断として扱い、Disconnectedで呼び出し側へ通知する
         }
         finally
         {

@@ -953,9 +953,38 @@ public sealed class ChartCanvas : FrameworkElement
     // 描画本体
     // =====================================================================
 
+    // 描画例外のログは連続して大量に出さない(毎フレーム例外になるケースで、ログとUIが埋まるのを防ぐ)。
+    private DateTime _lastRenderErrorLogUtc = DateTime.MinValue;
+
+    /// <summary>描画中に例外が発生したことの通知(2026-10-06)。連続発生時は間引かれる(ログと同じ頻度)。</summary>
+    public event Action<Exception>? RenderFailed;
+
     protected override void OnRender(DrawingContext dc)
     {
         dc.DrawRectangle(BackgroundBrush, null, new Rect(RenderSize));
+        if (Document is null) return;
+
+        // 2026-10-05: OnRender内の例外はDispatcher未処理例外となりアプリ全体が終了へ向かうため、
+        // 譜面ビュー1フレームの描画失敗に留めて、原因をログへ残す。(個別の描画段階ごとに握りつぶすと
+        // Push/Pop不整合を隠すため、ここでは全体を1か所だけで捕捉する。Push系は呼び出し側でtry/finally。)
+        try
+        {
+            RenderCore(dc);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastRenderErrorLogUtc > TimeSpan.FromSeconds(5))
+            {
+                _lastRenderErrorLogUtc = now;
+                AppLog.Write("ChartCanvas.OnRender", ex);
+                try { RenderFailed?.Invoke(ex); } catch { /* 通知側の失敗で描画を巻き込まない */ }
+            }
+        }
+    }
+
+    private void RenderCore(DrawingContext dc)
+    {
         if (Document is null) return;
 
         var layout = Document.CurrentLayout;
@@ -1254,11 +1283,12 @@ public sealed class ChartCanvas : FrameworkElement
         {
             long g = snap.GridTicks;
             long gridStart = gridTickMin - (gridTickMin % g);
+            var gridPen = new Pen(GridLineBrush, 1); // 2026-10-05: ループ外で1回だけ生成(線ごとのPen生成を廃止)
             for (long t = gridStart; t <= tickMax; t += g)
             {
                 if ((t < 0 && !allowNegative) || t % TimingEngine.TicksPerBeat == 0) continue; // 拍線と重複させない
                 double y = layout.TickToY(t);
-                dc.DrawLine(new Pen(GridLineBrush, 1), new Point(left, y), new Point(right, y));
+                dc.DrawLine(gridPen, new Point(left, y), new Point(right, y));
             }
         }
 
@@ -1266,24 +1296,30 @@ public sealed class ChartCanvas : FrameworkElement
         if (Document?.IsFrameEditMode != true)
         {
             long beatStart = gridTickMin - (gridTickMin % TimingEngine.TicksPerBeat);
+            var beatPen = new Pen(BeatLineBrush, 1);
             for (long t = beatStart; t <= tickMax; t += TimingEngine.TicksPerBeat)
             {
                 if (t < 0 && !allowNegative) continue;
                 double y = layout.TickToY(t);
-                dc.DrawLine(new Pen(BeatLineBrush, 1), new Point(left, y), new Point(right, y));
+                dc.DrawLine(beatPen, new Point(left, y), new Point(right, y));
             }
         }
 
         // 小節線(strong、仕様書7.5)。小節番号のテキスト表示は時間情報表示レーンへ移動済み
         // (2026-07-23、TBD 1-1)。DrawTimeInfoLaneが同じ小節境界の走査で描画する。
+        // 2026-10-05: 従来はtick0から可視範囲の末尾まで全小節を毎フレーム走査しており(O(小節数))、
+        // 長い譜面の終盤ほど描画が重くなっていた。可視範囲の少し手前の小節から走査を始める。
         int measureGuard = 0;
-        long tick = 0;
+        long measureLineMinTick = Math.Max(0, tickMin - 4L * TimingEngine.TicksPerBeat * 4);
+        int firstMeasure = engine.TickToMeasurePosition(measureLineMinTick).MeasureIndex;
+        long tick = engine.MeasureStartTick(firstMeasure);
+        var measurePen = new Pen(MeasureLineBrush, 1.5);
         while (tick <= tickMax)
         {
-            if (tick >= tickMin - 4L * TimingEngine.TicksPerBeat * 4)
+            if (tick >= measureLineMinTick)
             {
                 double y = layout.TickToY(tick);
-                dc.DrawLine(new Pen(MeasureLineBrush, 1.5), new Point(left, y), new Point(right, y));
+                dc.DrawLine(measurePen, new Point(left, y), new Point(right, y));
             }
             var sig = engine.SignatureAt(tick);
             tick += sig.TicksPerMeasure;
@@ -1699,8 +1735,8 @@ public sealed class ChartCanvas : FrameworkElement
             return;
         }
         dc.PushTransform(new RotateTransform(laneDef.RotationAngle, cx, y));
-        dc.DrawImage(src, rect);
-        dc.Pop();
+        try { dc.DrawImage(src, rect); }
+        finally { dc.Pop(); }
     }
 
     // =====================================================================
@@ -1926,8 +1962,10 @@ public sealed class ChartCanvas : FrameworkElement
         double lineH = fontSize + 1;
         double requiredHeight = lineH * 3;
         var measureHeadTicks = new HashSet<long>();
-        int measure = 0;
-        long mTick = 0;
+        // 2026-10-05: tick0から全小節を走査せず、可視範囲の少し手前の小節から開始する(長い譜面での負荷対策)
+        long headScanMinTick = Math.Max(0, tickMin - 4L * TimingEngine.TicksPerBeat * 4);
+        int measure = engine.TickToMeasurePosition(headScanMinTick).MeasureIndex;
+        long mTick = engine.MeasureStartTick(measure);
         int measureGuard = 0;
         double? prevY = null;
         while (mTick <= tickMax)
@@ -2222,8 +2260,8 @@ public sealed class ChartCanvas : FrameworkElement
                 // 右向きタグ(マーカー)はマーカーレーン自身の幅にクリップして収める(2026-07-16h修正:
                 // 以前は無条件にcol右側へ描画しており、隣接する小節レーンへはみ出していた)。
                 dc.PushClip(new RectangleGeometry(new Rect(col.X, labelY - fontSize, col.Width, fontSize * 2)));
-                dc.DrawText(text, new Point(col.X + 1, labelY - fontSize / 2 - 1));
-                dc.Pop();
+                try { dc.DrawText(text, new Point(col.X + 1, labelY - fontSize / 2 - 1)); }
+                finally { dc.Pop(); }
             }
         }
     }

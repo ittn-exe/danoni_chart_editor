@@ -48,5 +48,10 @@ internal static class AppPaths
 
     /// <summary>プラグインDLLの格納フォルダ(exe直下の./plugins、2026-07-26、プラグイン対応の土台)。
     /// フォルダが無ければ「プラグイン無し」として扱う(自動作成はしない)。</summary>
+    /// <summary>BASE64楽曲データ(.js/.txt)からデコードした音声ファイルの保存先(exe直下の./temp、2026-10-06)。
+    /// 以前はOSの一時フォルダへ書き出していたが、OS側の掃除で消えるとプロジェクトの音源パスだけが
+    /// 残って「未読込」になっていたため、アプリ配下の固定フォルダへ移した。</summary>
+    public static string TempDir => Path.Combine(AppContext.BaseDirectory, "temp");
+
     public static string PluginsDir => Path.Combine(AppContext.BaseDirectory, "plugins");
 }

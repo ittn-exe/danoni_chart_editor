@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DanoniEditor.Core.Models;
+using DanoniEditor.Core.Timing;
 
 namespace DanoniEditor.Core.Persistence;
 
@@ -48,13 +49,41 @@ public static class ProjectSerializer
         // schemaVersion < Current のマイグレーション
         if (env.SchemaVersion == 1) MigrateV1ToV2(env.Project);
         if (env.SchemaVersion < 3) MigrateV2ToV3(json, env.Project);
+        ValidateLoadedProject(env.Project);
         return env.Project;
     }
 
+    /// <summary>読み込んだプロジェクトの致命的な不整合(描画ループの無限化や0除算を招く値)を検査し、
+    /// 見つかれば InvalidDataException で読み込みを拒否する(2026-10-05)。</summary>
+    private static void ValidateLoadedProject(ChartProject project)
+    {
+        var problem = TimingValidator.FindProblem(project.BpmEvents, project.TimeSignatures);
+        if (problem is not null)
+            throw new InvalidDataException("プロジェクトファイルのタイミング情報が不正です: " + problem);
+        if (!double.IsFinite(project.StartNumber))
+            throw new InvalidDataException("プロジェクトファイルのStartNumberが不正です");
+        if (!project.BpmEvents.Any(e => e.Tick == 0))
+            throw new InvalidDataException("プロジェクトファイルにtick 0のBPMイベントがありません");
+
+        foreach (var tab in project.Tabs)
+            foreach (var lane in tab.Lanes)
+            {
+                foreach (var n in lane.Notes)
+                    if (n < -MaxTick || n > MaxTick)
+                        throw new InvalidDataException($"ノートのtickが範囲外です(tab={tab.DifficultyName}, tick={n})");
+                foreach (var f in lane.Freezes)
+                    if (Math.Abs(f.StartTick) > MaxTick || Math.Abs(f.EndTick) > MaxTick)
+                        throw new InvalidDataException($"フリーズのtickが不正です(tab={tab.DifficultyName}, start={f.StartTick}, end={f.EndTick})");
+            }
+    }
+
+    /// <summary>譜面上のtickの上限。ChartLayout.ContentHeight等の long 演算がオーバーフローしない十分に
+    /// 手前の値(1680tick/拍で約3.4e9拍=現実の譜面長を桁違いに超える)。</summary>
+    public const long MaxTick = long.MaxValue / 1_000_000;
+
     public static void Save(ChartProject project, string path)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        File.WriteAllText(path, Serialize(project));
+        AtomicFile.WriteAllText(path, Serialize(project));
     }
 
     public static ChartProject Load(string path) => Deserialize(File.ReadAllText(path));
@@ -118,8 +147,7 @@ public static class ProjectSerializer
 
     public static void SaveTabExport(ChartProject project, DifficultyTab tab, string path)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        File.WriteAllText(path, SerializeTabExport(project, tab));
+        AtomicFile.WriteAllText(path, SerializeTabExport(project, tab));
     }
 
     public static TabExportResult LoadTabExport(string path) => DeserializeTabExport(File.ReadAllText(path));

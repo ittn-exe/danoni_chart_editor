@@ -163,4 +163,43 @@ public class AutoSaveManagerTests : IDisposable
         var entry = Assert.Single(recoverable);
         Assert.Equal("slot-dead", entry.SlotId);
     }
+
+    [Fact]
+    public void CrashFlag_PidReusedByProcessStartedAfterFlag_IsNotReportedAlive()
+    {
+        // フラグの時刻が「現プロセスの開始より十分前」=そのPIDは使い回された別プロセス、とみなす
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(AutoSaveManager.GetInstanceFlagPath(_dir, "inst-old"), $"{OwnPid}|{new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc):o}");
+
+        Assert.DoesNotContain("inst-old", AutoSaveManager.GetAliveInstanceIds(_dir));
+    }
+
+    [Fact]
+    public void CrashFlag_LegacyFormatWithoutTimestamp_FallsBackToPidOnly()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(AutoSaveManager.GetInstanceFlagPath(_dir, "inst-legacy"), OwnPid.ToString());
+
+        Assert.Contains("inst-legacy", AutoSaveManager.GetAliveInstanceIds(_dir));
+    }
+
+    [Fact]
+    public void WriteSlot_WhenManifestCorrupted_BacksUpCorruptFileAndRecreates()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(AutoSaveManager.GetManifestPath(_dir), "{ not json");
+
+        AutoSaveManager.WriteSlot(_dir, "slot1", "inst", null, "P", "{}");
+
+        Assert.Single(AutoSaveManager.LoadManifest(_dir));
+        Assert.Single(Directory.GetFiles(_dir, "manifest.corrupt-*.json"));
+    }
+
+    [Fact]
+    public void WriteSlot_ConcurrentWriters_DoNotLoseManifestEntries()
+    {
+        Parallel.For(0, 16, i => AutoSaveManager.WriteSlot(_dir, $"slot{i}", "inst", null, $"P{i}", "{}"));
+
+        Assert.Equal(16, AutoSaveManager.LoadManifest(_dir).Count);
+    }
 }

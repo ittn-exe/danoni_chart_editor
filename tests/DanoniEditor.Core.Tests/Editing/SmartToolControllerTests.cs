@@ -154,6 +154,11 @@ public class SmartToolControllerTests
     [Fact]
     public void DragFreezeBand_MovesWholeFreeze_ToDestination()
     {
+        // 2026-09-27仕様変更: 「掴んだオブジェクトの実際のTickを基準にする」よう改修したことに伴い、
+        // 帯の途中を掴んだ場合でも「フリーズの始点(=オブジェクトとしての基準Tick)がドロップ先の
+        // スナップ位置へ正確に乗る」動作へ変わった(以前は「掴んだ座標との相対位置」を保持していた)。
+        // dos.txtインポート等でグリッドに乗っていないノートを正確にグリッドへ戻せるようにするための
+        // 意図的な仕様変更であり、この新しい期待値はその変更後の正しい挙動を表す。
         var (doc, ctrl, layout) = NewScene();
         doc.Execute(new PlaceFreezeAction(0, 48 * T, 192 * T));
         doc.Selection.Add(new ObjectRef(ObjectKind.FreezeStart, 0, 48 * T));
@@ -165,9 +170,57 @@ public class SmartToolControllerTests
 
         var moved = doc.CurrentTab.Lanes[0].Freezes.FirstOrDefault();
         Assert.NotNull(moved);
-        Assert.Equal(48 * T + 48 * T, moved!.StartTick);
-        Assert.Equal(192 * T + 48 * T, moved.EndTick);
+        Assert.Equal(96 * T + 48 * T, moved!.StartTick);
+        Assert.Equal(96 * T + 48 * T + (192 * T - 48 * T), moved.EndTick);
         Assert.Empty(doc.CurrentTab.Lanes[0].Notes); // 誤って通常ノートが配置されていないこと
+    }
+
+    [Fact]
+    public void DragOffGridNote_SnapsExactlyToGrid_RegardlessOfOriginalMisalignment()
+    {
+        // 2026-09-27要望対応: dos.txtインポート等でグリッドに乗っていないノート(この例ではDivision=16の
+        // グリッド間隔420tickに対し、10tickずれた3370に配置)をドラッグした場合、以前は
+        // 「ドラッグ開始のクリック座標をスナップした値」を基準にしていたため、元のズレ(10tick)が
+        // そのまま新しい位置にも残ってしまっていた(3790 = ズレを引き継いだ誤った位置)。
+        // 修正後は「掴んだノート自身の実際のTick」を基準にするため、ドロップ先(3780、グリッド上)へ
+        // 正確に乗るようになる。
+        var (doc, ctrl, layout) = NewScene();
+        const long offGridTick = 3360 + 10; // グリッド(420刻み)から10tickずれた位置
+        doc.Execute(new PlaceNoteAction(0, offGridTick));
+        var col = layout.NoteColumn(0);
+
+        var from = At(col, layout, offGridTick);
+        var to = At(col, layout, offGridTick + 420); // 1グリッド分下へドラッグ(=3780、グリッド上)
+        DragLeft(ctrl, from, to);
+
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes);
+        Assert.Equal(3780, doc.CurrentTab.Lanes[0].Notes[0]);
+    }
+
+    [Fact]
+    public void DragOffGridNote_WithOtherSelectedObjects_MovesOthersByGrabbedNoteAmount()
+    {
+        // 2026-09-27要望対応: 複数選択中に「グリッドに乗っていないノート」を掴んでドラッグした場合、
+        // 掴んだノート自身は正確にグリッドへ乗り、他の選択オブジェクトは「掴んだノートの実際の移動量」と
+        // 同じ量だけ平行移動する(相対位置は保たれる)ことを確認する。
+        var (doc, ctrl, layout) = NewScene();
+        const long offGridTick = 3360 + 10; // グリッドから10tikずれたノート(掴む対象)
+        const long otherTick = 3360; // 既にグリッド上にある別のノート(同じレーンで少し先に配置)
+        doc.Execute(new PlaceNoteAction(1, otherTick));
+        doc.Execute(new PlaceNoteAction(0, offGridTick));
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 0, offGridTick)); // 掴む対象自身も選択に含める
+        doc.Selection.Add(new ObjectRef(ObjectKind.Note, 1, otherTick));
+        var col = layout.NoteColumn(0);
+
+        var from = At(col, layout, offGridTick);
+        var to = At(col, layout, offGridTick + 420);
+        DragLeft(ctrl, from, to);
+
+        Assert.Single(doc.CurrentTab.Lanes[0].Notes);
+        Assert.Single(doc.CurrentTab.Lanes[1].Notes);
+        Assert.Equal(3780, doc.CurrentTab.Lanes[0].Notes[0]); // 掴んだノートは正確にグリッドへ
+        long actualDelta = 3780 - offGridTick; // 掴んだノートの実際の移動量(=410)
+        Assert.Equal(otherTick + actualDelta, doc.CurrentTab.Lanes[1].Notes[0]); // 他方も同じ量だけ平行移動
     }
 
     // --- 6.3.1: Shift+click=freeze place (note lanes only) ---

@@ -64,9 +64,17 @@ internal sealed class AboutWindow : Window
     }
 
     /// <summary>csprojの&lt;Version&gt;(AssemblyInformationalVersion)を読む。
-    /// DiagnosticsReport.csと同じ取得方法・フォールバック順(2026-07-26パターン踏襲)。</summary>
-    private static string GetVersionText() =>
-        typeof(AboutWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? typeof(AboutWindow).Assembly.GetName().Version?.ToString()
-        ?? "(不明)";
+    /// DiagnosticsReport.csと同じ取得方法・フォールバック順(2026-07-26パターン踏襲)。
+    /// 2026-09-29要望対応: gitリポジトリ環境でビルドすると、.NET SDKの既定動作により
+    /// InformationalVersionへ"+<コミットハッシュ>"が自動付加される(Major.Minor.Patch.Build自体は
+    /// csprojの&lt;Version&gt;通り)。バージョン情報ダイアログでは"Major.Minor.Patch.Build"
+    /// (=ビルド番号まで)だけを表示し、それより後ろ("+"以降)は表示しない。</summary>
+    private static string GetVersionText()
+    {
+        var raw = typeof(AboutWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? typeof(AboutWindow).Assembly.GetName().Version?.ToString()
+            ?? "(不明)";
+        int plusIndex = raw.IndexOf('+');
+        return plusIndex < 0 ? raw : raw[..plusIndex];
+    }
 }

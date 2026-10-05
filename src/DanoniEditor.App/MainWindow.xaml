@@ -82,6 +82,7 @@
                     </Style>
     </Window.Resources>
     <!-- 仕様書6.1: 上段=グローバル設定 / 左=編集ツール / 中央=譜面 / 右=プロパティ / 下=ステータス -->
+    <Grid>
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="ファイル(_F)">
@@ -95,6 +96,9 @@
                 <MenuItem Header="上書き保存(_S)" InputGestureText="Ctrl+S" Click="SaveProject_Click"/>
                 <!-- 2026-07-26要望対応: 上書き保存と処理は同じで、保存先を毎回選び直す -->
                 <MenuItem Header="名前を付けて保存(_A)..." Click="SaveProjectAs_Click"/>
+                <!-- 2026-10-04要望対応: 起動時のクラッシュ検知(自動)を見逃した・「いいえ」を選んだ等の
+                     場合に備え、自動保存スロットを一覧から選んで手動で開ける導線(AutoSaveRecoveryWindow参照) -->
+                <MenuItem Header="自動保存データの復旧(_U)..." Click="RecoverAutoSave_Click"/>
                 <Separator/>
                 <MenuItem Header="dos.txtをエクスポート(_E)..." InputGestureText="Ctrl+E" Click="ExportDos_Click"/>
                 <!-- 2026-07-23: 合作用途(TBD 5)。カレント難易度タブ1つだけをITTNエディタ形式で書き出す -->
@@ -132,7 +136,7 @@
             </MenuItem>
             <!-- 2026-09-20: 共同編集(複数人リアルタイム編集、realtime_collab_edit_design_2026-09-20.md参照)。
                  フェーズ1(MVP)、簡易版(双方向スナップショット送信)。 -->
-            <MenuItem Header="共同編集(_C)">
+            <MenuItem Header="共同編集(実験的)(_C)">
                 <MenuItem x:Name="CollabStartHostMenuItem" Header="ホストを開始(_H)..." Click="CollabStartHost_Click"/>
                 <MenuItem x:Name="CollabJoinMenuItem" Header="セッションに参加(_J)..." Click="CollabJoin_Click"/>
                 <Separator/>
@@ -392,6 +396,11 @@
                             <TextBlock Text="初期speed" Margin="0,8,0,2"/>
                             <TextBox x:Name="InitialSpeedBox" LostFocus="ProjectNumericField_LostFocus" PreviewKeyDown="CommitOnEnter_PreviewKeyDown"/>
 
+                            <!-- 2026-09-29要望対応・簡素化版: 難易度別音源。曲のストック・選択自体は
+                                 右パネル「楽曲」タブで行うため、ここでは現在の選択状況の確認のみ表示する。 -->
+                            <TextBlock Text="使用中の曲" Margin="0,8,0,2"/>
+                            <TextBlock x:Name="CurrentTabSongText" Text="1曲目(共通)" FontWeight="Bold" TextWrapping="Wrap"/>
+
                             <!-- 2026-07-26: ダンおに本体の「レベル計算ツール++」アルゴリズムを移植した参考値。
                                  タブ切替・プロパティ再読込のたびに再計算する(編集の都度リアルタイムではない)。 -->
                             <TextBlock Text="ツール値(難易度、参考値)" Margin="0,8,0,2"/>
@@ -420,6 +429,24 @@
                             <StackPanel x:Name="FrzColorPanel"/>
 
                             <Separator Margin="0,12,0,8"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </xcad:LayoutAnchorable>
+                <!-- 2026-09-29要望対応・簡素化版: 難易度別音源。楽曲ファイルが1曲も読み込まれていない状態で
+                     D&Dすれば従来通り1曲目として読み込み、既に1曲読み込まれている状態でD&Dすると上書きせず
+                     「2曲目以降」としてストックする(Window_Drop参照)。ここでは、ストックされた曲の一覧・
+                     編集・削除と、各難易度タブがどの曲を使うかの選択を行う。 -->
+                <xcad:LayoutAnchorable x:Name="MusicPane" Title="楽曲" CanClose="False">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8">
+                            <TextBlock Text="曲一覧" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <TextBlock Text="1曲目(共通)は「プロジェクト」タブの曲名/アーティスト名/アーティストURL/musicURLで編集します。楽曲ファイルが既に1曲読み込まれている状態で音楽ファイルをD&amp;Dすると、ここに2曲目以降として追加されます。"
+                                       FontStyle="Italic" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            <StackPanel x:Name="MusicSongsPanel"/>
+
+                            <Separator Margin="0,12,0,8"/>
+                            <TextBlock Text="各難易度タブの使用曲" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <StackPanel x:Name="MusicTabAssignPanel"/>
                         </StackPanel>
                     </ScrollViewer>
                 </xcad:LayoutAnchorable>
@@ -839,4 +866,7 @@
         </Grid>
         </Grid>
     </DockPanel>
+    <!-- 2026-10-06: 右下の通知ポップアップ(ウィンドウ内オーバーレイ、×で閉じるまで表示) -->
+    <local:ToastHost x:Name="Toasts"/>
+    </Grid>
 </Window>

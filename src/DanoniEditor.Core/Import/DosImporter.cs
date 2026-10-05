@@ -72,6 +72,8 @@ public sealed class DosImporter
         List<TimeSignatureEvent> timeSignatures = [];
         string source;
 
+        try
+        {
         if (options.TimingOverride is { } ov)
         {
             (startNumber, bpmEvents, source) = (ov.StartNumber, [.. ov.BpmEvents], "override");
@@ -133,6 +135,22 @@ public sealed class DosImporter
             source = "default";
         }
 
+        // 復元した値が不正(BPM<=0、拍子0、tick0のBPMが無い等)な場合は、クラッシュさせず既定値へ戻す
+        if (!double.IsFinite(startNumber) || !bpmEvents.Any(e => e.Tick == 0)
+            || TimingValidator.FindProblem(bpmEvents, timeSignatures) is not null)
+            throw new InvalidDataException(TimingValidator.FindProblem(bpmEvents, timeSignatures) ?? "復元したタイミングが不正です");
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidDataException
+                                       or IndexOutOfRangeException or ArgumentException)
+        {
+            // 2026-10-05: de_*/es_* 等のメタデータが壊れている場合の安全弁(入力ファイルは外部由来)
+            startNumber = 0;
+            bpmEvents = [new BpmEvent(0, options.DefaultBpm)];
+            timeSignatures = [];
+            source = "default";
+            warnings.Add($"タイミング情報の復元に失敗したためBPM={options.DefaultBpm}・4/4拍子を仮定しました({ex.Message})");
+        }
+
         var engine = new TimingEngine(startNumber, bpmEvents, timeSignatures);
 
         // --- プロジェクト組み立て(ヘッダー) ---
@@ -143,14 +161,41 @@ public sealed class DosImporter
             TimeSignatures = timeSignatures,
             BlankFrame = (int)Math.Round(blankFrame),
         };
-        if (p.TryGetValue("musicTitle", out var mt))
+        // 2026-09-29要望対応(難易度別音源・簡素化版): musicTitle/musicUrlは"$"(ver27.5.0以降は改行も)
+        // 区切りで複数曲を列挙できる(dos-h0011/h0001)。1曲目(インデックス0)はproject.MusicTitle/
+        // ArtistName/ArtistUrl/MusicUrlへ、2曲目以降はproject.AdditionalSongsへ格納する
+        // (musicNoが無い従来形式では1曲目のみのため、従来通りの挙動になる)。
+        var musicTitleEntries = p.TryGetValue("musicTitle", out var mt)
+            ? mt.Split('$', '\n').Select(s => s.Trim()).Where(s => s.Length > 0).ToList()
+            : [];
+        var musicUrlEntries = p.TryGetValue("musicUrl", out var mu)
+            ? mu.Split('$', '\n').Select(s => s.Trim()).Where(s => s.Length > 0).ToList()
+            : [];
+        if (musicTitleEntries.Count > 0)
         {
-            var parts = mt.Split(',');
+            var parts = musicTitleEntries[0].Split(',');
             project.MusicTitle = parts[0].Trim();
             if (parts.Length > 1) project.ArtistName = parts[1].Trim();
             if (parts.Length > 2) project.ArtistUrl = parts[2].Trim();
         }
-        if (p.TryGetValue("musicUrl", out var mu)) project.MusicUrl = mu;
+        if (musicUrlEntries.Count > 0) project.MusicUrl = musicUrlEntries[0];
+        int songCount = Math.Max(musicTitleEntries.Count, musicUrlEntries.Count);
+        for (int i = 1; i < songCount; i++)
+        {
+            var titleParts = i < musicTitleEntries.Count ? musicTitleEntries[i].Split(',') : [];
+            project.AdditionalSongs.Add(new SongInfo
+            {
+                MusicTitle = titleParts.Length > 0 ? titleParts[0].Trim() : "",
+                ArtistName = titleParts.Length > 1 ? titleParts[1].Trim() : "",
+                ArtistUrl = titleParts.Length > 2 ? titleParts[2].Trim() : "",
+                MusicUrl = i < musicUrlEntries.Count ? musicUrlEntries[i] : "",
+            });
+        }
+        List<int>? musicNoList = p.TryGetValue("musicNo", out var mn)
+            ? mn.Split('$', '\n').Select(s => s.Trim()).Where(s => s.Length > 0)
+                .Select(s => int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0)
+                .ToList()
+            : null;
         if (p.TryGetValue("tuning", out var tu)) project.Tuning = tu;
         if (GetDouble(p, "startFrame") is { } sf) project.StartFrame = (int)sf;
         if (GetDouble(p, "frzAttempt") is { } fa) project.FrzAttempt = (int)fa;
@@ -283,6 +328,14 @@ public sealed class DosImporter
             ImportWordData($"word{suffix}_data", p, tab, Snap, isReverse: false);
             ImportWordData($"wordRev{suffix}_data", p, tab, Snap, isReverse: true);
 
+            // 2026-09-29要望対応(難易度別音源・簡素化版): musicNoがあれば、このタブが使う曲番号を
+            // そのままSongIndexへ設定する(範囲外の値は安全のため0=1曲目へフォールバック)。
+            if (musicNoList is not null && i < musicNoList.Count)
+            {
+                int idx = musicNoList[i];
+                tab.SongIndex = idx >= 0 && idx <= project.AdditionalSongs.Count ? idx : 0;
+            }
+
             project.Tabs.Add(tab);
         }
 
@@ -301,7 +354,7 @@ public sealed class DosImporter
                          "BPM/StartNumber設定が実際と異なる可能性があります");
 
         // --- その他ヘッダー(既知キー・データ系・メタデータ系を除いて保持) ---
-        var handled = new HashSet<string> { "musicTitle", "difData", "musicUrl", "tuning",
+        var handled = new HashSet<string> { "musicTitle", "difData", "musicUrl", "musicNo", "tuning",
             "startFrame", "blankFrame", "frzAttempt" };
         foreach (var (key, value) in p)
         {

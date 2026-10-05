@@ -81,6 +81,10 @@ public sealed class SkbImporter
         // pageBlockNumが非整数(例:4.5)の場合もtick数は整数になるよう丸める(0.5刻みならTicksPerBeat=48との
         // 積は必ず整数になるが、念のためRoundで安全側に倒す)。
         long ticksPerPage = (long)Math.Round(t0.pageBlockNum * TimingEngine.TicksPerBeat);
+        if (!double.IsFinite(t0.bpm) || t0.bpm <= 0 || !double.IsFinite(t0.startNum))
+            throw new InvalidDataException("最初のtimingのbpm/startNumが不正です");
+        if (!double.IsFinite(t0.pageBlockNum) || ticksPerPage <= 0 || ticksPerPage > ImportLimits.MaxTicksPerPage)
+            throw new InvalidDataException($"pageBlockNum({t0.pageBlockNum})が不正です");
 
         // 2026-07-18c: 軸の修正。エディタ内部のフレーム軸は「曲頭=0」(再生同期・波形表示と同一基準)で、
         // blankFrameはヘッダー値として別途保持し、本体側が再生時に加算する設計。SKBの
@@ -102,9 +106,31 @@ public sealed class SkbImporter
         foreach (var t in skb.timings.Skip(1))
         {
             long tick = (t.label - 1) * ticksPerPage;
+            // 2026-10-05: 不正値の防御。BPMが0以下/非数、または区間のtickが戻る(単調でない)timingは
+            // 区間開始フレームの逆転や0除算を招くため、警告を出して読み飛ばす。
+            if (!double.IsFinite(t.bpm) || t.bpm <= 0 || !double.IsFinite(t.startNum))
+            {
+                warnings.Add($"timing(label={t.label})のbpm/startNumが不正なため無視しました");
+                continue;
+            }
+            if (tick <= bpmEvents[^1].Tick)
+            {
+                warnings.Add($"timing(label={t.label})の位置が前のtimingと同じか前になるため無視しました");
+                continue;
+            }
             bpmEvents.Add(new BpmEvent(tick, t.bpm, t.startNum));
             if (Math.Abs(t.pageBlockNum - t0.pageBlockNum) > 0.001)
                 warnings.Add($"timing(label={t.label})のpageBlockNum={t.pageBlockNum}が先頭と異なります(グリッド変更は未対応、{t0.pageBlockNum}を継続)");
+        }
+
+        // 区間開始フレームが単調に増えない場合(再同期の値が前後している)は、FrameToTick等が前提とする
+        // 単調性が崩れるため警告する(2026-10-05)。
+        if (bpmEvents.Count > 1)
+        {
+            var probe = new TimingEngine(startNumber, bpmEvents);
+            for (int i = 1; i < bpmEvents.Count; i++)
+                if (probe.TickToFrame(bpmEvents[i].Tick) <= probe.TickToFrame(bpmEvents[i - 1].Tick))
+                    warnings.Add($"timing{i + 1}の開始フレームが前のtimingより後ろになっていません(再生位置と譜面位置が正しく対応しない可能性があります)");
         }
 
         // --- ノート/フリーズ/速度 ---
